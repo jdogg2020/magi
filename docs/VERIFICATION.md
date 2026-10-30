@@ -1,3 +1,24 @@
+# Magi 0.7.0 native substream preview
+
+The full local suite passed 80 tests (one Unix-socket restriction skip).
+Focused tests confirm a copied substream MP4 retains native dimensions/frame rate
+and encoded-packet SHA-256 payloads from its H.264 input. Main capture remains
+alive/buffering when the substream fails and reconnects. A real decode test confirms
+analysis uses native geometry/rate despite conflicting legacy dimensions/FPS.
+The motion-to-browser integration covers original, native substream preview,
+selected thumbnail, analysis replay/overlays and authenticated routes. A regression
+check leaves a pre-start archived event idle across automatic status snapshots.
+
+A real synthetic 4K HEVC original still produces a native full frame and color
+object crop, unchanged original hash, and no generated video. The dashboard's DOM
+harness passed native-substream default selection and separate pixel overlays,
+plus the existing sign-in/settings/save/ignore-zone behaviors. This does not
+validate browser visual layout, real camera RTSP behavior or actual Pi CPU load.
+The original 0.6 full-video transcode has been removed. Native-resolution detection
+can cost more than the previous reduced-resolution detector; field measurement
+remains necessary. GitHub runs the complete suite on Python 3.11 and 3.13 before
+publishing a release.
+
 # Magi 0.6.0 original-derived review media
 
 A real synthetic 3840×2160 HEVC clip produced a native-size selected JPEG, a

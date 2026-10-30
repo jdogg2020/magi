@@ -27,13 +27,14 @@ class Application:
     def __init__(self, path):
         self.path = Path(path)
         self.cfg = Config.load(path)
-        self.recorder = self.analysis = self.previews = None
+        self.recorder = self.substream = self.analysis = self.previews = None
         self.queue = queue.Queue(maxsize=16)
         self.lock = threading.RLock()
         self.view = {}
         self.frame_jpeg = None
         self.frame_at = 0
         self.started = time.monotonic()
+        self.review_since = time.time()
         self.next_status = self.next_start = 0
         self.health = metrics()
         self.cpu = cpu_counters()
@@ -121,6 +122,14 @@ class Application:
         if not self.recorder:
             raise ValueError('Camera is not recording yet. Check settings and SSD status.')
         result = self.recorder.trigger(kind=kind, track=track)
+        if self.substream:
+            if self.substream.active and self.substream.active['meta']['id'] != result['event_id']:
+                self.substream._finish_event('main_event_ended')
+            try:
+                self.substream.trigger(kind=kind, event_id=result['event_id'])
+            except ValueError:
+                # A missing substream must never prevent saving the original.
+                LOG.warning('substream preview unavailable for event %s', result['event_id'])
         if not result['merged']:
             self.event_count += 1
             self.previews.begin(result['event_id'], time.monotonic())
@@ -169,6 +178,7 @@ class Application:
             self.next_start = now + 5
             try:
                 self.recorder = Recorder(self.cfg)
+                self.substream = Recorder(self.cfg, companion_volume=self.recorder.volume)
                 self.analysis = Analysis(self.cfg)
                 self.previews = Previews(self.cfg)
                 self.last_error = None
@@ -177,8 +187,12 @@ class Application:
                 self.stop_capture()
         if self.recorder:
             try:
-                self.recorder.extra_protected = self.previews.protected() | self.identifier.protected() | self.media.protected()
+                self.recorder.extra_protected = self.substream.extra_protected = set()
+                protected = self.previews.protected() | self.identifier.protected() | self.media.protected()
+                self.recorder.extra_protected = protected | set(self.substream._protected())
+                self.substream.extra_protected = protected | set(self.recorder._protected())
                 self.recorder.tick()
+                self.substream.tick()
                 if not self.recorder.active and self.previews.active:
                     self.previews.finish()
                 for timestamp, frame, objects, events, motion in self.analysis.poll():
@@ -186,7 +200,7 @@ class Application:
                     if self.cfg.detection['enabled']:
                         for track in events[:4]:
                             try:
-                                self.trigger('motion', {**track, 'sample_host_unix': timestamp + self.previews.wall_offset})
+                                self.trigger('motion', {**track, 'sample_host_unix': timestamp + self.previews.wall_offset, 'analysis_fps': self.analysis.settings['fps']})
                                 self.last_trigger_error = None
                             except ValueError:
                                 self.last_trigger_error = 'Motion seen while main stream is not ready or event queue is busy.'
@@ -215,7 +229,7 @@ class Application:
         if not self.recorder or len(self.media.protected()) >= 4 or meta['id'] in self.media.protected():
             return False
         used, free = self.recorder.volume.usage()
-        reserve = self.media.budget(meta)[0] + self.media.reserved()
+        reserve = self.media.budget(meta) + self.media.reserved()
         if used + reserve >= self.cfg.max_bytes or free - reserve < self.cfg.min_free:
             return False
         return self.media.submit(directory, meta, force)
@@ -242,6 +256,7 @@ class Application:
                 media_path = path.parent / 'media.json'
                 media = json.loads(media_path.read_text()) if media_path.is_file() else {}
                 if (not media_considered and index < 20 and meta['state'] in ('complete', 'interrupted')
+                        and meta.get('trigger_unix', 0) >= self.review_since
                         and not media.get('status') in ('ready', 'failed')
                         and meta['id'] not in self.media.protected()):
                     media_considered = True
@@ -253,7 +268,8 @@ class Application:
                 clips.append({key: meta.get(key) for key in
                               ('id', 'state', 'trigger_type', 'trigger_utc', 'trigger_count',
                                'estimated_duration_seconds', 'interruption', 'pre_roll_complete', 'post_roll_complete')}
-                             | {'hq_preview': (path.parent / 'preview-hq.mp4').is_file(),
+                             | {'hq_preview': (path.parent / 'preview-substream.mp4').is_file(),
+                                'substream_preview': (path.parent / 'preview-substream.mp4').is_file(),
                                 'best_frame': (path.parent / 'best-frame.jpg').is_file(),
                                 'media_status': 'queued' if meta['id'] in self.media.protected() else media.get('status', 'not_generated'),
                                 'media_detail': media.get('thumbnail', {}),
@@ -283,7 +299,11 @@ class Application:
                        'analysis': {'state': self.analysis.state if self.analysis else 'idle',
                                     'frames': self.analysis.frames if self.analysis else 0,
                                     'dropped_frames': self.analysis.dropped if self.analysis else 0,
-                                    'suppressed_frames': self.analysis.tracker.suppressed_frames if self.analysis else 0},
+                                    'suppressed_frames': self.analysis.tracker.suppressed_frames if self.analysis else 0,
+                                    'width': self.analysis.settings['width'] if self.analysis else None,
+                                    'height': self.analysis.settings['height'] if self.analysis else None,
+                                    'fps': self.analysis.settings['fps'] if self.analysis else None},
+                       'substream': {'state': self.substream.state if self.substream else 'idle'},
                        'frame_age_seconds': round(time.monotonic() - self.frame_at, 1) if self.frame_at else None})
         with self.lock:
             self.view = {'status': status, 'clips': clips, 'settings': self.safe_settings()}
@@ -295,7 +315,7 @@ class Application:
             self.recorder.volume.check()
         elif self.cfg.require_mount and not os.path.ismount(self.cfg.mount):
             raise ValueError('Recording volume is not mounted.')
-        names = {'original': 'clip.mkv', 'preview': 'preview.mp4', 'thumbnail': 'thumbnail.jpg', 'metadata': 'event.json', 'motion': 'motion.jsonl.gz', 'identification': 'identification.json', 'video': 'preview-hq.mp4', 'frame': 'best-frame.jpg', 'media': 'media.json'}
+        names = {'original': 'clip.mkv', 'preview': 'preview.mp4', 'thumbnail': 'thumbnail.jpg', 'metadata': 'event.json', 'motion': 'motion.jsonl.gz', 'identification': 'identification.json', 'video': 'preview-substream.mp4', 'frame': 'best-frame.jpg', 'media': 'media.json'}
         if kind not in names:
             raise ValueError('Unknown file.')
         base = self.cfg.root / 'events'
@@ -305,20 +325,26 @@ class Application:
         return path
 
     def stop_capture(self):
+        if self.substream:
+            self.substream.extra_protected = self.media.protected() | self.identifier.protected() | (set(self.recorder._protected()) if self.recorder else set()) | (self.previews.protected() if self.previews else set())
+            try:
+                self.substream.close()
+            except OSError:
+                pass
         if self.analysis:
             self.analysis.close()
         if self.recorder:
-            self.recorder.extra_protected = self.media.protected() | self.identifier.protected() | (self.previews.protected() if self.previews else set())
+            self.recorder.extra_protected = self.media.protected() | self.identifier.protected() | (set(self.substream._protected()) if self.substream else set()) | (self.previews.protected() if self.previews else set())
             try:
                 self.recorder.close()
             except OSError:
                 pass
         if self.previews:
             try:
-                self.previews.close(self.recorder.volume if self.recorder else None, self.media.protected() | self.identifier.protected())
+                self.previews.close(self.recorder.volume if self.recorder else None, self.media.protected() | self.identifier.protected() | (set(self.substream._protected()) if self.substream else set()))
             except OSError:
                 self.previews.close()
-        self.analysis = self.recorder = self.previews = None
+        self.analysis = self.recorder = self.substream = self.previews = None
         self.frame_jpeg = None
         self.frame_at = 0
 

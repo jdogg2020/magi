@@ -1,6 +1,8 @@
 """Small-substream frame differences and bounded nearest-neighbor tracks."""
 from collections import deque
 import math
+import json
+from fractions import Fraction
 import os
 import subprocess
 import time
@@ -100,6 +102,7 @@ class Analysis:
     def __init__(self, cfg):
         self.cfg = cfg
         self.tracker = Tracker(cfg.detection)
+        self.settings = dict(cfg.detection)
         self.process = None
         self.partial = bytearray()
         self.last_frame = 0
@@ -111,10 +114,30 @@ class Analysis:
         self.reconnects = 0
 
     def start(self):
-        cfg, s = self.cfg, self.cfg.detection
+        cfg = self.cfg
+        # Probe the actual camera feed; stored analysis dimensions are legacy hints.
+        probe_args = [cfg.ffprobe, '-v', 'error']
+        if not cfg.file_source:
+            probe_args += ['-rtsp_transport', 'tcp', '-timeout', '3000000']
+        probe_args += ['-select_streams', 'v:0', '-show_entries',
+                      'stream=width,height,r_frame_rate', '-of', 'json', cfg.analysis_source]
+        try:
+            result = subprocess.run(probe_args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    timeout=5, check=True)
+            stream = json.loads(result.stdout)['streams'][0]
+            width, height = int(stream['width']), int(stream['height'])
+            fps = float(Fraction(stream['r_frame_rate']))
+            if not (0 < width <= 1920 and 0 < height <= 1080 and 0 < fps <= 60):
+                raise ValueError('unsupported substream geometry')
+        except (OSError, ValueError, KeyError, IndexError, ZeroDivisionError, subprocess.SubprocessError):
+            self.state = 'substream_probe_failed'
+            self.retry_at = time.monotonic() + 10
+            return
+        self.settings = {**cfg.detection, 'width': width, 'height': height, 'fps': fps}
+        self.tracker = Tracker(self.settings)
         args = [cfg.ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '1']
         args += ['-re', '-stream_loop', '-1'] if cfg.file_source else ['-rtsp_transport', 'tcp', '-timeout', '5000000']
-        args += ['-i', cfg.analysis_source, '-an', '-vf', f"fps={s['fps']},scale={s['width']}:{s['height']}",
+        args += ['-i', cfg.analysis_source, '-an', '-map', '0:v:0', '-fps_mode', 'passthrough',
                  '-pix_fmt', 'gray', '-threads', '1', '-f', 'rawvideo', 'pipe:1']
         self.process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         os.set_blocking(self.process.stdout.fileno(), False)
@@ -128,7 +151,7 @@ class Analysis:
             if now >= self.retry_at:
                 self.start()
             return []
-        size = self.cfg.detection['width'] * self.cfg.detection['height']
+        size = self.settings['width'] * self.settings['height']
         # Drain available output and keep only the latest few frames under load.
         for _ in range(32):
             try:
@@ -148,8 +171,8 @@ class Analysis:
             # Approximate receipt times preserve frame spacing within a batch.
             for index in range(skip, count):
                 pixels = bytes(self.partial[index * size:(index + 1) * size])
-                timestamp = now - (count - index - 1) / self.cfg.detection['fps']
-                frame = np.frombuffer(pixels, dtype=np.uint8).reshape(self.cfg.detection['height'], self.cfg.detection['width'])
+                timestamp = now - (count - index - 1) / self.settings['fps']
+                frame = np.frombuffer(pixels, dtype=np.uint8).reshape(self.settings['height'], self.settings['width'])
                 objects, events = self.tracker.update(frame, timestamp)
                 frames.append((timestamp, frame, objects, events,
                                {'mask': self.tracker.last_mask.copy(), 'suppressed': self.tracker.mask_suppressed}))
@@ -158,7 +181,7 @@ class Analysis:
             self.backoff = 1
         if self.process.poll() is not None or now - self.last_frame > 15:
             self.close()
-            self.tracker = Tracker(self.cfg.detection)
+            self.tracker = Tracker(self.settings)
             self.state = 'reconnecting'
             self.retry_at = now + self.backoff
             self.backoff = min(self.backoff * 2, 60)

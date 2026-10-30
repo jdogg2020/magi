@@ -12,7 +12,7 @@ run the installer, open `http://PI-IP:8090`, sign in and configure the camera.
 - Browser dashboard: camera preview, recording status, CPU, temperature, memory,
   disk, throttling flags and uptime. Missing Pi sensors report unavailable.
 - Automatic frame-difference motion detection and bounded object tracking on
-  a 320×180, 8 FPS analysis stream. Continuous operation, day and night.
+  the camera's native-resolution, native-frame-rate substream. Continuous operation, day and night.
 - Main-stream SSD ring buffer; original H.264/H.265 event recordings via stream-copy.
 - Configurable pre/post-roll; overlapping event merging and maximum event length.
 - Event list (latest 200), thumbnails, playable low-resolution MP4 review copies,
@@ -27,8 +27,9 @@ run the installer, open `http://PI-IP:8090`, sign in and configure the camera.
   config preservation and a dashboard health check.
 
 The record path does not re-encode. A background worker builds sharper review
-assets from finalized originals: native-resolution selected frames, object crops
-and color H.264 video up to 720p at 15 FPS. The quick analysis replay is retained
+thumbnails from finalized originals: native-resolution selected frames and object
+crops. Color preview video is recorded directly from the camera substream using
+stream-copy, without video transcoding. The quick analysis replay is retained
 for toggleable pixel/box overlays. See [review quality](docs/REVIEW-QUALITY.md).
 Originals and derived assets remain separate; audio is not captured.
 

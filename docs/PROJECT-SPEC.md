@@ -8,15 +8,15 @@ The clean-room specification and these revisions govern implementation:
 
 1. Continually buffer compressed main-stream footage on the SSD. Preserve
    original event recordings without re-encoding, with configurable pre/post-roll.
-2. Analyze a small substream for moving objects. Save tracked-motion events and
+2. Analyze the camera substream at native resolution/frame rate for moving objects. Save tracked-motion events and
    manual events. This prototype does not classify what moved.
 3. Provide an installed web dashboard, camera setup/settings, live analysis
    snapshots, event review/download and Pi health information.
 4. Include storage quotas, retention, free-space protection, reconnect/restart
    recovery, and clear interruption metadata from the first usable prototype.
-5. Keep the quick analysis replay for motion overlays; from 0.6, also decode
-   finalized originals in a bounded background worker for native-resolution
-   thumbnails and higher-quality color review video. Originals remain unchanged.
+5. Keep the quick analysis replay for motion overlays. From 0.7, stream-copy the
+   substream for color preview video; decode finalized main-stream originals only
+   for native-resolution selected thumbnails. Do not transcode 4K review videos.
 6. Authenticate the dashboard even on localhost. LAN binding is explicit at
    installation; no port forwarding or account service is required.
 7. Run as a dedicated unprivileged user, install from reviewed local source,

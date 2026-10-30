@@ -127,6 +127,70 @@ class RecorderTests(unittest.TestCase):
         original = set(packets(self.sample))
         self.assertTrue(set(expected).issubset(original), "buffering must preserve camera/file video packets")
 
+    def test_substream_preview_preserves_native_encoded_packets(self):
+        cfg = dataclasses.replace(self.cfg, analysis_source=str(self.sample))
+        companion = Recorder(cfg, companion_volume=self.rec.volume)
+        try:
+            def wait_for(predicate):
+                deadline = time.monotonic() + 12
+                while time.monotonic() < deadline:
+                    self.rec.extra_protected = companion.extra_protected = set()
+                    self.rec.extra_protected = set(companion._protected())
+                    companion.extra_protected = set(self.rec._protected())
+                    self.rec.tick(); companion.tick()
+                    if predicate(): return
+                    time.sleep(.04)
+                self.fail('main/substream did not finish')
+            wait_for(lambda: len(self.rec.segments) >= 4 and len(companion.segments) >= 4)
+            event_id = self.rec.trigger()['event_id']
+            self.assertEqual(companion.trigger(event_id=event_id)['event_id'], event_id)
+            wait_for(lambda: not self.rec.active and not companion.active and not self.rec.jobs and not companion.jobs)
+            directory = cfg.root / 'events' / event_id
+            meta = json.loads((directory / 'substream.json').read_text())
+            self.assertEqual(meta['recording'], 'video_only_stream_copy')
+            self.assertEqual(meta['stream'], 'camera_substream')
+            self.assertTrue((directory / 'clip.mkv').is_file())
+            video = directory / 'preview-substream.mp4'
+            properties = meta['stream_properties']['streams'][0]
+            self.assertEqual((properties['width'], properties['height']), (160,90))
+            self.assertEqual(properties['r_frame_rate'], '10/1')
+            def packets(path):
+                result = subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0',
+                    '-show_packets','-show_data_hash','sha256','-show_entries','packet=data_hash','-of','json',str(path)],timeout=10)
+                return {row['data_hash'] for row in json.loads(result)['packets']}
+            copied = packets(video)
+            self.assertTrue(copied)
+            self.assertTrue(copied.issubset(packets(self.sample)), 'Preview packets must be unchanged camera packets')
+            subprocess.run(['ffmpeg','-v','error','-i',str(video),'-f','null','-'],check=True,timeout=10)
+            # Failure of the preview input does not terminate the original capture.
+            companion.cfg = dataclasses.replace(companion.cfg, source=str(Path(self.tmp.name)/'missing.mkv'))
+            companion._disconnect('test_substream_failure')
+            companion.retry_at = 0
+            wait_for(lambda: companion.reconnects >= 2)
+            self.assertIsNone(self.rec.process.poll())
+            self.assertEqual(self.rec.state, 'buffering')
+        finally:
+            companion.extra_protected = set(self.rec._protected())
+            companion.close()
+
+    def test_analysis_uses_native_substream_geometry_and_rate(self):
+        from magi.detection import Analysis
+        cfg = Config.from_dict({'camera':{'test_file':str(self.sample)},
+            'storage':{'mount':self.tmp.name,'directory':str(self.cfg.root),'require_mount':False},
+            'control_socket':str(self.cfg.socket), 'detection':{'width':320,'height':180,'fps':2}})
+        analysis = Analysis(cfg)
+        try:
+            deadline = time.monotonic()+5
+            frames = []
+            while not frames and time.monotonic()<deadline:
+                frames = analysis.poll();time.sleep(.025)
+            self.assertTrue(frames)
+            self.assertEqual(frames[0][1].shape,(90,160))
+            self.assertEqual(analysis.settings['fps'],10)
+            self.assertNotIn('-vf',analysis.process.args,'Native analysis must not resize or apply an FPS filter')
+        finally:
+            analysis.close()
+
     def test_disconnect_marks_partial_clip_and_reconnects(self):
         self.warm()
         event_id = self.rec.trigger()["event_id"]

@@ -137,7 +137,7 @@ class PrototypeTests(unittest.TestCase):
                         'require_mount': False, 'min_free_bytes': 0, 'max_bytes': 50_000_000, 'retention_days': 14},
             'recording': {'segment_seconds': .5, 'pre_roll_seconds': 1, 'post_roll_seconds': 1,
                           'max_event_seconds': 6, 'stall_seconds': 3},
-            'detection': {'enabled': True, 'width': 160, 'height': 90, 'fps': 8},
+            'detection': {'enabled': True, 'width': 320, 'height': 180, 'fps': 2},
             'identification': {'opensky_client_id': 'private-client-sentinel', 'opensky_client_secret': 'private-secret-sentinel'},
             'web': {'host': '127.0.0.1', 'port': 8090, 'username': 'admin', 'password_hash': password_hash('test-password-123')},
             'control_socket': str(self.root / 'run' / 'control.sock')}
@@ -201,7 +201,7 @@ class PrototypeTests(unittest.TestCase):
         while time.monotonic() < end:
             with self.request('/api/clips') as r:
                 clips = json.load(r)['clips']
-            saved = next((clip for clip in clips if clip['original'] and clip['preview'] and clip.get('hq_preview') and clip.get('best_frame')), None)
+            saved = next((clip for clip in clips if clip['original'] and clip['preview'] and clip.get('substream_preview') and clip.get('best_frame')), None)
             if saved:
                 break
             if self.failures:
@@ -209,6 +209,9 @@ class PrototypeTests(unittest.TestCase):
             time.sleep(.15)
         self.assertIsNotNone(saved, json.dumps(self.app.read()))
         self.assertEqual(saved['trigger_type'], 'motion')
+        self.assertEqual(self.app.analysis.settings['width'],160)
+        self.assertEqual(self.app.analysis.settings['height'],90)
+        self.assertEqual(self.app.analysis.settings['fps'],8)
         with self.request('/api/frame.jpg') as r:
             self.assertEqual(r.headers['Content-Type'], 'image/jpeg')
             self.assertTrue(r.read().startswith(b'\xff\xd8'))
@@ -222,7 +225,7 @@ class PrototypeTests(unittest.TestCase):
             self.assertEqual(r.headers['Content-Type'],'image/jpeg');self.assertTrue(r.read().startswith(b'\xff\xd8'))
         with self.request(base + '/media') as r:
             self.assertEqual(json.load(r)['status'],'ready')
-        for kind, filename in (('preview', 'preview.mp4'), ('video', 'hd.mp4'), ('original', 'original.mkv')):
+        for kind, filename in (('preview', 'preview.mp4'), ('video', 'substream.mp4'), ('original', 'original.mkv')):
             with self.request(base + '/' + kind) as r:
                 output = self.root / filename
                 output.write_bytes(r.read())
@@ -231,10 +234,13 @@ class PrototypeTests(unittest.TestCase):
         with self.request(base + '/motion') as r:
             motion = [json.loads(line) for line in gzip.decompress(r.read()).decode().splitlines()]
             self.assertEqual(motion[0]['kind'], 'magi_motion_v1')
+            self.assertEqual((motion[0]['width'],motion[0]['height']),(160,90))
             self.assertTrue(any(any(base64.b64decode(row['mask'])) for row in motion[1:]))
         with self.request(base + '/metadata') as r:
             meta = json.load(r)
             self.assertTrue(meta['track_samples'])
+            self.assertEqual((meta['detection_settings']['width'],meta['detection_settings']['height']),(160,90))
+            self.assertEqual(meta['detection_settings']['fps'],8)
             self.assertEqual(meta['recording'], 'video_only_stream_copy')
         with self.request('/api/identify', {'id': saved['id']}, {'X-CSRF-Token': csrf}) as r:
             self.assertTrue(json.load(r)['queued'])
@@ -253,6 +259,23 @@ class PrototypeTests(unittest.TestCase):
             self.assertTrue(json.load(r)['ok'])
         with self.assertRaises(urllib.error.HTTPError):
             self.request('/api/status')
+
+    def test_old_event_does_not_start_automatic_thumbnail_backfill(self):
+        from magi.storage import atomic_json
+        event_id = '20261030T000000-abcdef123456'
+        directory = self.app.cfg.root / 'events' / event_id
+        deadline = time.monotonic()+3
+        while not (self.app.cfg.root / 'events').is_dir() and time.monotonic()<deadline:
+            time.sleep(.025)
+        directory.mkdir()
+        (directory / 'clip.mkv').write_bytes(self.sample.read_bytes())
+        atomic_json(directory / 'event.json', {'id':event_id, 'state':'complete',
+            'trigger_unix':self.app.review_since-60, 'trigger_type':'manual'})
+        # Multiple status snapshots must leave the pre-upgrade archive idle.
+        time.sleep(2.2)
+        self.assertNotIn(event_id,self.app.media.protected())
+        self.assertFalse((directory/'media.json').exists())
+        self.assertFalse((directory/'best-frame.jpg').exists())
 
     def test_web_blocks_bad_host_cross_origin_and_filesystem_escape(self):
         with self.assertRaises(urllib.error.HTTPError) as error:

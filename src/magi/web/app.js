@@ -40,7 +40,7 @@ function renderStatus(status) {
   const buffering = status.state === 'buffering';
   $('connection').textContent = buffering ? '● Recording' : status.state.replaceAll('_', ' ');
   $('connection').classList.toggle('warning', !buffering);
-  $('analysis-state').textContent = status.analysis?.state || 'idle';
+  $('analysis-state').textContent = `${status.analysis?.state || 'idle'}${status.analysis?.width ? ` · ${status.analysis.width}×${status.analysis.height} / ${number(status.analysis.fps, ' fps')}` : ''}`;
   $('camera-status').textContent = buffering ? 'Main stream buffering continuously' : `Camera: ${status.state.replaceAll('_', ' ')}`;
   $('trigger').disabled = !buffering;
   $('session-events').textContent = status.event_count_since_start || 0;
@@ -73,11 +73,11 @@ function eventCard(event) {
   const image = document.createElement('div'); image.className = 'event-image';
   const base = `/api/clips/${encodeURIComponent(event.id)}`;
   if (event.thumbnail) { const thumb = document.createElement('img'); thumb.src = base + '/thumbnail'; thumb.alt = event.best_frame ? 'Native-resolution crop of the selected event frame' : 'Detection thumbnail for this event'; thumb.loading = 'lazy'; image.append(thumb); }
-  if (event.preview || event.hq_preview) { const play = document.createElement('button'); play.textContent = '▶'; play.setAttribute('aria-label', 'Play event preview'); play.onclick = () => openReview(event); image.append(play); }
+  if (event.preview || event.substream_preview) { const play = document.createElement('button'); play.textContent = '▶'; play.setAttribute('aria-label', 'Play event preview'); play.onclick = () => openReview(event); image.append(play); }
   const info = document.createElement('div'); info.className = 'event-info';
   const type = document.createElement('span'); type.className = 'type'; type.textContent = (event.trigger_type || 'event').replaceAll('_', ' ');
   const title = document.createElement('h3'); title.textContent = new Date(event.trigger_utc).toLocaleString();
-  const detail = document.createElement('p'); detail.textContent = `${event.state}${event.estimated_duration_seconds ? ` · ${event.estimated_duration_seconds.toFixed(1)} sec` : ''}${event.interruption ? ' · interrupted' : ''}${event.hq_preview ? ' · HD review' : event.preview ? ' · detection replay' : ' · preview pending or unavailable'}${event.best_frame ? ' · native crop' : ''}`;
+  const detail = document.createElement('p'); detail.textContent = `${event.state}${event.estimated_duration_seconds ? ` · ${event.estimated_duration_seconds.toFixed(1)} sec` : ''}${event.interruption ? ' · interrupted' : ''}${event.substream_preview ? ' · substream video' : event.preview ? ' · detection replay' : ' · preview pending or unavailable'}${event.best_frame ? ' · native crop' : ''}`;
   const links = document.createElement('div'); links.className = 'event-links';
   for (const [label, kind] of [['Original ↓', 'original'], ['Full-res frame ↓', 'frame'], ['Object crop ↗', 'thumbnail'], ['Review details ↓', 'media'], ['Metadata ↓', 'metadata']]) { if (kind === 'original' && !event.original || kind === 'frame' && !event.best_frame || kind === 'thumbnail' && !event.best_frame || kind === 'media' && !event.best_frame) continue; const link = document.createElement('a'); link.href = base + '/' + kind; link.textContent = label; if (kind === 'thumbnail') { link.target = '_blank'; link.rel = 'noopener'; } links.append(link); }
   const identification = document.createElement('p'); identification.textContent = `Reference check: ${(event.identification || 'disabled').replaceAll('_', ' ')}`; info.append(type, title, detail, identification, links); card.append(image, info); return card;
@@ -223,7 +223,7 @@ async function openReview(event) {
   $('motion-info').textContent = event.motion ? 'Loading motion data…' : 'Motion data unavailable for this older event.';
   $('identification-detail').textContent = ''; $('identification-status').textContent = 'Loading reference check…';
   updateReviewAvailability(event);
-  $('review-quality').value = event.hq_preview ? 'hd' : 'analysis';
+  $('review-quality').value = event.substream_preview ? 'substream' : 'analysis';
   selectReviewVideo();
   $('review').showModal(); drawMotion(); $('review-video').play().catch(() => {});
   loadIdentification(event.id);
@@ -242,7 +242,7 @@ async function openReview(event) {
 function drawMotion() {
   const canvas = $('motion-overlay'); const context = canvas.getContext('2d');
   context.clearRect(0,0,canvas.width,canvas.height);
-  if($('review-quality').value !== 'analysis') { $('motion-info').textContent = 'HD color video · choose Detection replay for pixel highlights.'; return; }
+  if($('review-quality').value !== 'analysis') { $('motion-info').textContent = 'Camera substream · choose Detection replay for pixel highlights.'; return; }
   if(!reviewMeta || !reviewFrames.length) return;
   canvas.width = reviewMeta.width; canvas.height = reviewMeta.height;
   const index = Math.min(reviewFrames.length-1, Math.max(0, Math.floor(($('review-video').currentTime||0)*reviewMeta.fps)));
@@ -273,9 +273,11 @@ $('identify-again').onclick = async () => {
 };
 
 function updateReviewAvailability(event) {
-  $('quality-hd').disabled = !event.hq_preview; $('quality-analysis').disabled = !event.preview;
+  $('quality-substream').disabled = !event.substream_preview; $('quality-analysis').disabled = !event.preview;
   $('render-preview').disabled = !event.original || event.media_status === 'queued';
-  $('render-status').textContent = event.hq_preview ? 'HD color review ready — select HD video to watch.' : !event.original ? 'Waiting for the recording to finish.' : event.media_status === 'failed' ? `HD review unavailable: ${event.media_error || 'render failed'}. You can retry.` : event.media_status === 'queued' ? 'Preparing a sharper frame and HD video…' : 'HD review has not been generated yet.';
+  const video = event.substream_preview ? 'Camera substream recording ready.' : 'Substream recording pending or unavailable; older events may only have detection replay.';
+  const thumbnail = event.best_frame && event.media_status !== 'failed' ? 'Full-resolution thumbnail ready.' : event.media_status === 'failed' ? `Thumbnail unavailable: ${event.media_error || 'selection failed'}. You can retry.` : event.media_status === 'queued' ? 'Selecting a full-resolution thumbnail…' : 'Full-resolution thumbnail has not been generated yet.';
+  $('render-status').textContent = `${video} ${thumbnail}`;
 }
 function selectReviewVideo() {
   if (!reviewEvent) return;
@@ -288,6 +290,6 @@ $('review-quality').onchange = () => { selectReviewVideo(); $('review-video').pl
 $('render-preview').onclick = async () => {
   if (!reviewEvent) return;
   $('render-preview').disabled = true;
-  try { await api('/api/render', {id: reviewEvent.id}); $('render-status').textContent = 'Queued. HD video becomes available here when rendering finishes.'; }
+  try { await api('/api/render', {id: reviewEvent.id}); $('render-status').textContent = 'Queued. The full-resolution thumbnail will update when frame selection finishes.'; }
   catch (error) { $('render-status').textContent = error.message; $('render-preview').disabled = false; }
 };

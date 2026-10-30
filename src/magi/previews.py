@@ -26,6 +26,7 @@ class Previews:
         self.jobs = []
         self.latest = None
         self.latest_at = 0
+        self.size = (cfg.detection['width'], cfg.detection['height'])
         self.next_sample = 0
         self.wall_offset = time.time() - time.monotonic()
 
@@ -33,6 +34,11 @@ class Previews:
         if timestamp < self.next_sample:
             return
         self.next_sample = timestamp + 1 / self.fps - .015
+        size = (frame.shape[1], frame.shape[0])
+        if size != self.size:
+            self.finish()
+            self.ring.clear()
+        self.size = size
         image = Image.fromarray(frame).convert('RGB')
         output = io.BytesIO()
         image.save(output, 'JPEG', quality=70)
@@ -70,8 +76,8 @@ class Previews:
         directory = self.cfg.root / 'events' / event_id
         handle = (directory / 'review.mjpeg').open('wb')
         motion = gzip.open(directory / 'motion.jsonl.gz', 'wt', encoding='utf-8', compresslevel=3)
-        motion.write(json.dumps({'kind': 'magi_motion_v1', 'width': self.cfg.detection['width'],
-                               'height': self.cfg.detection['height'], 'fps': self.fps,
+        motion.write(json.dumps({'kind': 'magi_motion_v1', 'width': self.size[0],
+                               'height': self.size[1], 'fps': self.fps,
                                'encoding': 'base64_packbits_big_row_major',
                                'threshold': self.cfg.detection['threshold'],
                                'ignore_zones': self.cfg.detection.get('ignore_zones', []),
@@ -122,8 +128,8 @@ class Previews:
             if process.returncode == 0 and partial.exists():
                 partial.replace(directory / 'preview.mp4')
                 atomic_json(directory / 'preview.json', {
-                    'kind': 'derived_analysis_preview', 'width': self.cfg.detection['width'],
-                    'height': self.cfg.detection['height'], 'fps': self.fps, 'frames': job['count'],
+                    'kind': 'derived_analysis_preview', 'width': self.size[0],
+                    'height': self.size[1], 'fps': self.fps, 'frames': job['count'],
                     'timing': 'sampled host receipt; frame loss can shorten playback',
                     'overlay': 'separate per-frame pixel masks and boxes; toggle in review',
                     'motion_file': 'motion.jsonl.gz'})

@@ -130,12 +130,12 @@ post-roll and clip assembly to finish. Open **Events** to play the small browser
 preview, download the full-quality original, and inspect the event metadata.
 Then move an object across the view to test automatic detection.
 
-When ready, the review opens a color video built from the original recording.
+When ready, the review opens the camera's recorded color substream, without re-encoding.
 Event thumbnails use native-resolution object crops. Choose **Detection replay**
 for motion overlays, then
 toggle changed-pixel highlights and motion boxes. **The original file preserves the camera's compressed video without
 re-encoding.** Detection replay timing is approximate; use originals and metadata for analysis.
-HD generation runs in the background; see [REVIEW-QUALITY.md](docs/REVIEW-QUALITY.md).
+Full-resolution thumbnail selection runs in the background; see [REVIEW-QUALITY.md](docs/REVIEW-QUALITY.md).
 
 ## Updates
 

@@ -24,7 +24,7 @@ as well as decoding the result; codec matching alone is not the proof.
 ## Detection and browser review
 
 A separate FFmpeg process decodes the small substream into grayscale frames at
-320×180, 8 FPS by default. Raw output is drained nonblockingly with bounded
+its probed native resolution and frame rate, without scale/FPS filters. Raw output is drained nonblockingly with bounded
 per-tick work, retained partial data and dropped-frame reporting. Broad frame
 changes are suppressed. Sparse connected components feed bounded nearest-neighbor
 tracks; minimum hits, duration and travel are required before saving motion.
@@ -129,11 +129,16 @@ provider setup, caching, uncertainty, credential handling and coverage semantics
 Identification reports are separate from original event metadata; they never
 control deletion or recording.
 
-## Original-derived review assets (0.6)
+## Substream recording and selected thumbnails (0.7)
 
-A separate `Media` worker reads finalized originals, selects native-resolution
-frames/crops, and renders color H.264 video up to 720p/15 FPS. It runs one
-low-priority FFmpeg job at a time with four admitted events, storage reservations,
-volume identity guards and retention protection shared across original assembly,
-analysis previews, identification and media jobs. HD playback does not reuse
-detection overlays because its time base differs. See [REVIEW-QUALITY.md](REVIEW-QUALITY.md).
+The substream has its own stream-copy ring and assembly metadata, sharing the
+main recorder's volume and event IDs. Its buffer/source/manifest/output paths
+are separate. Triggers are coordinated, but keyframe cuts and host-receipt timing
+are independently estimated. Cross-recorder retention protection preserves both
+assemblies. Substream failures leave the main capture running.
+
+A separate `Media` worker reads finalized originals only to select native-resolution
+frames/crops. It no longer renders HD video. Only new events are automatically
+queued; older originals can be selected manually. Camera-substream playback does
+not reuse detection overlays because its time base differs. See
+[REVIEW-QUALITY.md](REVIEW-QUALITY.md) for limits, recovery and upgrade behavior.

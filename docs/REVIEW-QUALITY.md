@@ -1,62 +1,66 @@
-# Higher-quality event review (0.6.0)
+# Native substream previews and full-resolution thumbnails (0.7.0)
 
-After the original event is saved, Magi now builds review assets from that original
-recording. The event card first has a quick detection thumbnail/replay while a
-background worker prepares:
+Magi uses the camera's substream at its native resolution and frame rate for
+motion detection. It decodes grayscale pixels for comparison, without spatial
+resizing or an FPS filter. The actual dimensions/rate are probed on connection
+and shown in status; legacy detection width/height/fps config values no longer
+resize the camera feed. The input is bounded to 1920×1080 and 60 FPS. Under load,
+analysis can still drop frames, reported in status. Native-resolution processing
+can itself cost more CPU than the former 320×180/8 FPS detector; thresholds are
+in actual substream pixels and may need tuning.
 
-- A selected native-resolution JPEG from the original camera stream. A 4K
-  recording yields a 3840×2160 full frame; it is not an enlarged analysis image.
-- An object-centred thumbnail cropped from that frame at native pixel resolution,
-  with no upscaling. Open **Object crop** for the crop or **Full-res frame** for the
-  complete selected frame. Manual events without a usable track use a full-frame
-  thumbnail rather than inventing an object location.
-- A color H.264 MP4, up to 1280×720 at 15 fps, encoded at CRF 19. Smaller original
-  recordings are not enlarged. The saved original is never overwritten/re-encoded.
+## Video previews
 
-## Which frame is selected
+A separate stream-copy recorder maintains a compressed substream ring alongside
+the main recording. Triggers save both streams under the same event ID, with
+independent pre/post-roll and recovery metadata. The color preview is
+`preview-substream.mp4`, copied into a browser-friendly MP4 container without
+video decoding/re-encoding, resizing or frame-rate conversion. Its quality is
+whatever the camera supplies; Magi does not manufacture a higher resolution.
+H.264 substreams have the broadest browser support. A camera supplying an
+unsupported codec can produce a file the browser cannot play; Magi does not
+silently transcode it. The original `clip.mkv` remains the main-stream recording.
 
-Magi considers up to four separated track samples, favouring more visible/larger
-tracked detections. Their estimated host-receipt times are mapped through the
-original clip's concatenated segments. The resulting source frames are ranked by
-local contrast and edge detail in the object crop. With no usable track it checks
-three points in the clip and ranks the full frame.
+`substream.json` records actual codec/dimensions/rate, segment timing and estimated
+pre/post coverage. A missing/reconnecting substream does not prevent saving main
+footage. Separate RTSP connections have approximate host-receipt timing and
+independent keyframe cuts; the videos are not guaranteed exposure-synchronized.
+The shared storage cap, volume guard and retention protections cover both rings,
+both event assemblies, thumbnail jobs and the analysis replay. The two compressed
+rings use additional storage/network bandwidth but no video encoder.
 
-This is a best-candidate heuristic, not a guarantee of finding the sharpest object
-in every frame. Timing is estimated and main/substream fields of view are assumed
-to match. Misaligned camera streams or timestamp drift can misplace a crop; the
-full frame and original remain available to inspect. `media.json` records source
-frame time, native dimensions, crop coordinates, selection score/method and video
-properties. It makes no object identity claim.
+Choose **Camera substream** for the recorded color preview. Choose **Detection
+replay (pixel highlights)** for the separate grayscale sampled replay, up to
+4 FPS, with frame-indexed changed-pixel masks and boxes. Overlays stay on that
+replay because its timing differs from the native substream recording.
 
-## Video modes and overlays
+## Thumbnails
 
-The event review opens HD color video when ready. Choose **Detection replay
-(pixel highlights)** for the existing 320×180 sampled analysis video and its
-changed-pixel/box overlays. Those overlays remain tied to the detection replay;
-they are not pasted onto a differently timed original-derived video. Switching
-video type restarts playback. A processing message updates when HD becomes ready.
+After a newly captured original event is finalized, one low-priority worker
+extracts up to four candidate frames from it. Candidates favour larger tracked
+detections; native object crops are ranked by local contrast and edge detail.
+The complete selected JPEG is `best-frame.jpg` and its object-centred,
+non-upscaled crop is `thumbnail.jpg`. Both use original main-stream pixels.
+With no usable track, three full-frame candidates are considered and the
+thumbnail remains a full frame rather than inventing an object location.
 
-## Work scheduling and older clips
+The heuristic does not guarantee the best object image across every frame.
+Estimated host timing and a matching main/substream field of view are assumed;
+misalignment can misplace crops. Full frames and original footage remain
+available. `media.json` records selection time, score, native dimensions and crop.
+The thumbnail worker no longer encodes any video. It still briefly decodes
+main-stream footage for stills; this is not zero-cost on a Pi.
 
-One background worker handles at most four admitted events, using low CPU priority
-and one decoder/encoder thread per FFmpeg operation. Only finalized saved clips
-are decoded; there is no continuous 4K review transcode. The latest 20 events are
-considered for automatic improvement, newest first. Older events can be queued with
-**Improve preview** in the review dialog; failed jobs can be retried there too.
+Only events triggered after this service start are considered for automatic
+thumbnail generation, at most four admitted at once. Existing thumbnails remain.
+Use **Improve thumbnail** to request selection/retry for an older original.
+Old events cannot acquire a missing substream recording retrospectively: they
+retain their detection replay and any files already saved. Existing 0.6 HD video
+files are left on disk for ordinary retention but are not offered as the new
+substream preview.
 
-Storage admission reserves space for frames, video and temporary files. Active
-review jobs are protected from ordinary retention. Video size is capped at 32 MB
-(or one tenth of the configured recording cap, with a 1 MB floor). Each frame
-extraction has a 30-second deadline; video encoding has a 10-minute deadline. A
-truncated video is not published as complete. If a job fails or there is insufficient
-space, the original and quick detection replay remain available. A selected frame
-may become available before HD encoding completes.
-
-Settings changes and shutdown cancel active rendering. Interrupted jobs may be
-retried after restart. Small temporary directories left by an abrupt power loss
-remain inside the event and are reclaimed with that event's normal retention.
-No additional OS packages are required beyond Magi's existing FFmpeg/Pillow/NumPy
-installation and the normal Linux `nice` utility.
-
-This adds background processing on the Pi; rendering throughput and capture
-headroom need measurement on the actual Pi/camera, especially during many events.
+Jobs reserve temporary storage, use one FFmpeg decoder thread at low priority,
+validate volume identity before writes, and impose a 30-second extraction timeout.
+Failure keeps the original and available replay. Shutdown/settings changes
+cancel rendering. No new packages are required. Real Pi capture headroom and
+native-substream detection throughput still require field measurement.

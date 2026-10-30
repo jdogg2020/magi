@@ -16,7 +16,7 @@ from PIL import Image
 from .recorder import stop_process
 from .storage import atomic_json
 
-PROFILE = 1
+PROFILE = 2
 
 
 def clip_time(meta, host_unix):
@@ -103,8 +103,7 @@ class Media:
         stream = (meta.get('stream_properties', {}).get('streams') or [{}])[0]
         width, height = stream.get('width', 3840), stream.get('height', 2160)
         frame = min(12_000_000, width*height*3+65536)
-        video = min(32_000_000, max(1_000_000, self.cfg.max_bytes//10))
-        return frame*2 + video + 4_000_000, video
+        return frame*3 + 4_000_000
 
     def submit(self, directory, meta, force=False):
         directory = Path(directory)
@@ -122,13 +121,13 @@ class Media:
             marker = (self.cfg.mount / '.magi-volume').read_text()
             st = self.cfg.mount.stat()
             identity = (st.st_dev, st.st_ino, marker)
-            reserve, video_cap = self.budget(meta)
+            reserve = self.budget(meta)
             with self.lock:
                 if meta['id'] in self.ids or len(self.ids) >= 4:
                     return False
                 self.ids.add(meta['id']); self.reservations[meta['id']] = reserve
                 try:
-                    self.pending.put_nowait((directory, meta, identity, video_cap))
+                    self.pending.put_nowait((directory, meta, identity))
                 except queue.Full:
                     self.ids.discard(meta['id']); self.reservations.pop(meta['id'], None)
                     return False
@@ -185,7 +184,7 @@ class Media:
             stop_process(self.process)
             self.process = None
 
-    def _render(self, directory, meta, identity, video_cap):
+    def _render(self, directory, meta, identity):
         self._guard(directory, identity)
         original = directory / 'clip.mkv'
         work = directory / ('.media-work-' + uuid.uuid4().hex[:12])
@@ -234,25 +233,8 @@ class Media:
             self._guard(directory, identity)
             (work / 'best.jpg').replace(directory / 'best-frame.jpg')
             (work / 'thumbnail.jpg').replace(directory / 'thumbnail.jpg')
-            atomic_json(directory / 'media.json', {'profile': PROFILE, 'status': 'rendering_video',
-                'thumbnail': {'file': 'thumbnail.jpg', 'full_frame_file': 'best-frame.jpg',
-                    'selection': 'highest_contrast_and_sharpness_among_candidates', 'candidate_count': ranked, 'attempted_candidate_count': attempted,
-                    'crop_format': 'left_top_right_bottom_native_pixels',
-                    'zoom': 'native_pixel_crop; no upscaling', 'timing': 'estimated host-receipt mapping',
-                    'geometry': 'main and analysis streams assumed to share the same field of view', **best}})
-            # Decode only saved events, one CPU-priority-limited job at a time.
-            self._run(common + ['-i', str(original), '-map', '0:v:0', '-an', '-vf',
-                "fps=15,scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-                '-c:v', 'libx264', '-threads', '1', '-preset', 'ultrafast', '-crf', '19',
-                '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-fs', str(video_cap), str(work / 'preview.mp4')], 600)
-            output = self._probe(work / 'preview.mp4', 'stream=width,height:format=duration')
-            if float(output['format']['duration']) < duration - max(.3, duration*.02):
-                raise ValueError('review video reached its size limit before completing')
-            self._guard(directory, identity)
-            (work / 'preview.mp4').replace(directory / 'preview-hq.mp4')
-            atomic_json(directory / 'media.json', {'profile': PROFILE, 'status': 'ready',
-                'source': 'clip.mkv', 'video': {'file': 'preview-hq.mp4', 'fps': 15, 'crf': 19,
-                    'width': output['streams'][0]['width'], 'height': output['streams'][0]['height']},
+            atomic_json(directory / 'media.json', {'profile': PROFILE, 'status': 'ready', 'source': 'clip.mkv',
+                'video': {'file': 'preview-substream.mp4', 'method': 'camera_substream_stream_copy; no video transcode'},
                 'thumbnail': {'file': 'thumbnail.jpg', 'full_frame_file': 'best-frame.jpg',
                     'selection': 'highest_contrast_and_sharpness_among_candidates', 'candidate_count': ranked, 'attempted_candidate_count': attempted,
                     'crop_format': 'left_top_right_bottom_native_pixels',
@@ -268,11 +250,11 @@ class Media:
     def _work(self):
         while not self.stop.is_set():
             try:
-                directory, meta, identity, video_cap = self.pending.get(timeout=.2)
+                directory, meta, identity = self.pending.get(timeout=.2)
             except queue.Empty:
                 continue
             try:
-                self._render(directory, meta, identity, video_cap)
+                self._render(directory, meta, identity)
             except InterruptedError:
                 pass
             except Exception as error:

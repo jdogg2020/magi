@@ -5,6 +5,7 @@ Only completed keyframe-delimited segments enter the ring and event sources.
 """
 
 import csv
+from dataclasses import replace
 import fcntl
 import json
 import logging
@@ -37,15 +38,25 @@ def stop_process(process):
 
 
 class Recorder:
-    def __init__(self, cfg):
-        self.cfg = cfg
-        self.volume = Volume(cfg)
-        self.lock = (cfg.root / "recorder.lock").open("a")
-        try:
-            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            self.lock.close()
-            raise OSError("another recorder already owns this storage") from None
+    def __init__(self, cfg, *, companion_volume=None):
+        self.companion = companion_volume is not None
+        self.cfg = replace(cfg, source=cfg.analysis_source) if self.companion else cfg
+        self.volume = companion_volume if self.companion else Volume(cfg)
+        self.meta_name = 'substream.json' if self.companion else 'event.json'
+        self.source_name = 'source-substream' if self.companion else 'source'
+        self.clip_name = 'preview-substream.mp4' if self.companion else 'clip.mkv'
+        self.part_name = 'substream.part' if self.companion else 'clip.part'
+        self.concat_name = 'concat-substream.txt' if self.companion else 'concat.txt'
+        self.buffer = cfg.root / ('buffer-substream' if self.companion else 'buffer')
+        self.buffer.mkdir(mode=0o700, exist_ok=True)
+        self.lock = None
+        if not self.companion:
+            self.lock = (cfg.root / "recorder.lock").open("a")
+            try:
+                fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                self.lock.close()
+                raise OSError("another recorder already owns this storage") from None
         self.process = None
         self.session = None
         self.segments = []
@@ -66,30 +77,30 @@ class Recorder:
 
     def _recover(self):
         # Atomic manifests plus hardlinks keep completed input footage recoverable.
-        for path in sorted((self.cfg.root / "events").glob("*/event.json")):
+        for path in sorted((self.cfg.root / "events").glob("*/" + self.meta_name)):
             meta = json.loads(path.read_text())
             if meta["state"] in ("collecting", "assembling"):
                 meta["interruption"] = "service_restart"
                 meta["state"] = "assembling"
                 atomic_json(path, meta)
                 self.jobs.append({"dir": path.parent, "meta": meta, "process": None})
-        for directory in (self.cfg.root / "buffer").iterdir():
+        for directory in self.buffer.iterdir():
             if directory.is_dir():
                 shutil.rmtree(directory)
 
     def _save(self, event):
-        atomic_json(event["dir"] / "event.json", event["meta"])
+        atomic_json(event["dir"] / self.meta_name, event["meta"])
 
     def _spawn(self):
         self.volume.check()
         # Never join media across reconnects or codec changes. Events already
         # hold independent hardlinks to any input they still need.
-        for directory in (self.cfg.root / "buffer").iterdir():
+        for directory in self.buffer.iterdir():
             if directory.is_dir():
                 shutil.rmtree(directory)
         self.segments.clear()
         self.session = uuid.uuid4().hex
-        self.session_dir = self.cfg.root / "buffer" / self.session
+        self.session_dir = self.buffer / self.session
         self.session_dir.mkdir(mode=0o700)
         args = [self.cfg.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error"]
         if self.cfg.file_source:
@@ -110,7 +121,7 @@ class Recorder:
         self.last_index = -1
         self.origin = None
         self.state = "connecting"
-        LOG.info("capture session starting")
+        LOG.info("%s capture session starting", "substream" if self.companion else "main")
 
     def _read_segments(self):
         path = self.session_dir / "segments.csv"
@@ -160,7 +171,7 @@ class Recorder:
         entries = event["meta"]["segments"]
         if any(s["file"] == name for s in entries):
             return
-        target = event["dir"] / "source" / name
+        target = event["dir"] / self.source_name / name
         os.link(segment["path"], target)
         with target.open("rb") as saved:
             os.fsync(saved.fileno())
@@ -175,7 +186,7 @@ class Recorder:
                         "host_end_unix": segment["end"] + self.wall_offset})
         self._save(event)
 
-    def trigger(self, kind='manual', track=None):
+    def trigger(self, kind='manual', track=None, event_id=None):
         now = time.monotonic()
         if self.state != "buffering" or not self.segments or now - self.last_closed > self.cfg.stall:
             raise ValueError("camera is not buffering; wait for completed segments")
@@ -190,9 +201,9 @@ class Recorder:
             return {"event_id": event["meta"]["id"], "merged": True}
         if len(self.jobs) >= 4:
             raise ValueError("clip assembly backlog; try again after it completes")
-        event_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:12]
+        event_id = event_id or (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:12])
         directory = self.cfg.root / "events" / event_id
-        (directory / "source").mkdir(parents=True, mode=0o700)
+        (directory / self.source_name).mkdir(parents=True, mode=0o700)
         event = {"dir": directory, "start": now - self.cfg.pre,
                  "deadline": now + self.cfg.post, "limit": now - self.cfg.pre + self.cfg.max_event,
                  "meta": {"schema_version": 1, "software_version": __version__,
@@ -221,7 +232,7 @@ class Recorder:
             samples = event['meta'].setdefault('track_samples', [])
             if len(samples) < 1200:
                 samples.append({'host_utc': utc(track.get('sample_host_unix', time.time())), **track})
-            event['meta']['detection_settings'] = self.cfg.detection
+            event['meta']['detection_settings'] = {**self.cfg.detection, 'width': track.get('width', self.cfg.detection.get('width')), 'height': track.get('height', self.cfg.detection.get('height')), 'fps': track.get('analysis_fps', self.cfg.detection.get('fps'))}
             if kind == 'motion' and event['meta']['trigger_type'] == 'manual':
                 event['meta']['trigger_type'] = 'manual_and_motion'
 
@@ -250,7 +261,7 @@ class Recorder:
                     self._save(event)
                     self.jobs.remove(event)
                     continue
-                reserve = sum((directory / "source" / s["file"]).stat().st_size for s in segments)
+                reserve = sum((directory / self.source_name / s["file"]).stat().st_size for s in segments)
                 if not self.volume.prune(self._protected(), reserve=int(reserve * 1.05) + 65536):
                     # Keep original segments for a later operator recovery.
                     meta["state"] = "interrupted"
@@ -258,11 +269,16 @@ class Recorder:
                     self._save(event)
                     self.jobs.remove(event)
                     continue
-                listing = directory / "concat.txt"
-                listing.write_text("".join(f"file 'source/{s['file']}'\n" for s in segments))
+                listing = directory / self.concat_name
+                listing.write_text("".join(f"file '{self.source_name}/{s['file']}'\n" for s in segments))
                 args = [self.cfg.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
                         "-f", "concat", "-safe", "1", "-auto_convert", "0", "-i", str(listing), "-map", "0:v:0",
-                        "-c:v", "copy", "-f", "matroska", str(directory / "clip.part")]
+                        "-c:v", "copy"]
+                if self.companion:
+                    args += ["-movflags", "+faststart", "-f", "mp4"]
+                else:
+                    args += ["-f", "matroska"]
+                args += [str(directory / self.part_name)]
                 event["process"] = subprocess.Popen(args, stdin=subprocess.DEVNULL,
                                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 event["assembly_started"] = time.monotonic()
@@ -270,33 +286,34 @@ class Recorder:
             if process.poll() is None and time.monotonic() - event["assembly_started"] <= 60:
                 continue
             stop_process(process)
-            output = directory / "clip.part"
+            output = directory / self.part_name
             if process.returncode == 0 and output.exists() and output.stat().st_size:
                 with output.open("rb") as saved:
                     os.fsync(saved.fileno())
-                output.replace(directory / "clip.mkv")
+                output.replace(directory / self.clip_name)
                 first = meta["segments"][0]
                 meta["estimated_pre_roll_seconds"] = max(0, meta["trigger_unix"] - first["host_start_unix"])
                 meta["pre_roll_complete"] = meta["estimated_pre_roll_seconds"] + 0.1 >= meta["requested_pre_roll_seconds"]
                 meta["estimated_duration_seconds"] = sum(s["media_end"] - s["media_start"] for s in meta["segments"])
                 meta["post_roll_complete"] = meta["segments"][-1]["host_end_unix"] + 0.1 >= meta["requested_end_unix"]
                 meta["state"] = "interrupted" if meta["interruption"] else "complete"
-                meta["file"] = "clip.mkv"
+                meta["file"] = self.clip_name
+                meta["stream"] = "camera_substream" if self.companion else "camera_mainstream"
                 try:
                     probe = subprocess.run(
                         [self.cfg.ffprobe, "-v", "error", "-select_streams", "v:0",
                          "-show_entries", "stream=codec_name,width,height,r_frame_rate:format=duration",
-                         "-of", "json", str(directory / "clip.mkv")],
+                         "-of", "json", str(directory / self.clip_name)],
                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=True)
                     meta["stream_properties"] = json.loads(probe.stdout)
                 except (OSError, ValueError, subprocess.SubprocessError):
                     meta["stream_properties"] = {"unavailable": True}
                 self._save(event)
                 # Publish clip and manifest before releasing pinned source bytes.
-                shutil.rmtree(directory / "source")
-                listing = directory / "concat.txt"
+                shutil.rmtree(directory / self.source_name)
+                listing = directory / self.concat_name
                 listing.unlink(missing_ok=True)
-                LOG.info("event %s saved (%s)", meta["id"], meta["state"])
+                LOG.info("%s event %s saved (%s)", "substream" if self.companion else "main", meta["id"], meta["state"])
             else:
                 output.unlink(missing_ok=True)
                 meta["state"] = "failed"
@@ -317,7 +334,7 @@ class Recorder:
         self.retry_at = time.monotonic() + self.backoff
         self.backoff = min(self.backoff * 2, 60)
         self.reconnects += 1
-        LOG.warning("capture interrupted (%s); retry scheduled", reason)
+        LOG.warning("%s capture interrupted (%s); retry scheduled", "substream" if self.companion else "main", reason)
 
     def _trim_ring(self):
         cutoff = time.monotonic() - self.cfg.pre - self.cfg.stall - self.cfg.segment * 2
@@ -329,7 +346,7 @@ class Recorder:
                 keep.append(segment)
         self.segments = keep
         # Remove empty old session directories; never remove an open segment.
-        for directory in (self.cfg.root / "buffer").iterdir():
+        for directory in self.buffer.iterdir():
             if directory.name != self.session and not any(directory.glob("*.mkv")):
                 shutil.rmtree(directory)
 
@@ -388,4 +405,5 @@ class Recorder:
         finally:
             for event in self.jobs:
                 stop_process(event["process"])
-            self.lock.close()
+            if self.lock:
+                self.lock.close()

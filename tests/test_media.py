@@ -38,7 +38,7 @@ class MediaTests(unittest.TestCase):
             self.assertLess(right-x,3840)
         self.assertEqual(crop_box((160,90),[.5,.5,.01,.01]),(0,0,160,90))
 
-    def test_original_produces_native_color_crop_and_better_color_video(self):
+    def test_original_produces_native_color_crop_without_video_transcoding(self):
         with tempfile.TemporaryDirectory() as folder:
             base=Path(folder);root=base/'recordings'
             cfg=Config.from_dict({'camera':{},'storage':{'mount':str(base),'directory':str(root),
@@ -62,9 +62,8 @@ class MediaTests(unittest.TestCase):
                 while media.protected() and time.monotonic()<deadline:time.sleep(.05)
                 status=json.loads((directory/'media.json').read_text())
                 self.assertEqual(status['status'],'ready',status)
-                self.assertEqual(status['video']['width'],1280)
-                self.assertEqual(status['video']['height'],720)
-                self.assertEqual(status['video']['fps'],15)
+                self.assertEqual(status['video']['file'],'preview-substream.mp4')
+                self.assertIn('no video transcode',status['video']['method'])
                 with Image.open(directory/'best-frame.jpg') as full:
                     self.assertEqual(full.size,(3840,2160))
                 with Image.open(directory/'thumbnail.jpg') as thumbnail:
@@ -72,9 +71,10 @@ class MediaTests(unittest.TestCase):
                     pixel=np.asarray(thumbnail)[thumbnail.height//2,thumbnail.width//2]
                     self.assertGreater(int(pixel[0]),int(pixel[1])+100)
                 self.assertEqual(hashlib.sha256(original.read_bytes()).hexdigest(),before)
-                subprocess.run(['ffmpeg','-v','error','-i',str(directory/'preview-hq.mp4'),'-f','null','-'],check=True,timeout=10)
+                self.assertFalse((directory/'preview-hq.mp4').exists())
+                self.assertFalse((directory/'preview-substream.mp4').exists(),'Thumbnail worker must not encode video')
                 self.assertFalse(media.submit(directory,meta),'Successful renders are not queued repeatedly')
-                self.assertGreater(media.budget(meta)[0],(directory/'preview-hq.mp4').stat().st_size)
+                self.assertGreater(media.budget(meta),(directory/'best-frame.jpg').stat().st_size)
             finally:media.close()
 
     def test_converter_timeout_cleans_up_subprocess(self):

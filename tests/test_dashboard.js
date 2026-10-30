@@ -51,12 +51,12 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  for(let i=0;i<100;i++){await vm.runInContext('refreshFrame()',context);if(elements['camera-frame'].src)break;await new Promise(resolve=>setTimeout(resolve,100));}
  assert(elements['camera-frame'].src?.startsWith('blob:'),'Live image should load');
  assert.equal(elements['detection-mode'].textContent,'Tracking');
- for(let i=0;i<100;i++){await vm.runInContext('refresh()',context);if(elements['all-events'].children.some(card=>card.children[1]?.children[2]?.textContent.includes('HD review')))break;await new Promise(resolve=>setTimeout(resolve,150));}assert(elements['all-events'].children.some(el=>el.className==='event-card'),'Events should render');
- const card=elements['all-events'].children.find(el=>el.children[1]?.children[2]?.textContent.includes('HD review'));
- assert(card,'At least one event should finish its HD background render');
+ for(let i=0;i<100;i++){await vm.runInContext('refresh()',context);if(elements['all-events'].children.some(card=>card.children[1]?.children[2]?.textContent.includes('substream video')))break;await new Promise(resolve=>setTimeout(resolve,150));}assert(elements['all-events'].children.some(el=>el.className==='event-card'),'Events should render');
+ const card=elements['all-events'].children.find(el=>el.children[1]?.children[2]?.textContent.includes('substream video'));
+ assert(card,'At least one event should finish its substream recording');
  const play=card.children[0].children.find(el=>el.tagName==='button');
  assert(play,'Saved event should have a playable preview');await play.onclick();
- if(vm.runInContext('reviewEvent.hq_preview',context)){assert.equal(elements['review-quality'].value,'hd');assert(!elements['motion-overlay'].drawn,'HD video must not show misaligned detection overlays');}
+ if(vm.runInContext('reviewEvent.substream_preview',context)){assert.equal(elements['review-quality'].value,'substream');assert(!elements['motion-overlay'].drawn,'Substream video must not show misaligned detection overlays');}
  elements['review-quality'].value='analysis';elements['review-quality'].onchange();
  assert(elements['motion-overlay'].drawn,'Changed pixel overlay should draw');elements['show-pixels'].checked=false;elements['show-pixels'].onchange();assert(!elements['motion-overlay'].drawn,'Highlights should turn off');elements['show-pixels'].checked=true;elements['show-pixels'].onchange();assert(elements['motion-overlay'].drawn,'Highlights should turn back on');
  assert(elements.review.open,'Review dialog should open');assert(elements['review-video'].src.endsWith('/preview'));
@@ -92,5 +92,5 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert.equal(elements['settings-result'].textContent,'Invalid camera settings');
  assert(!submit.disabled);context.fetch=originalFetch;
  await elements.logout.onclick();assert(!elements.login.classList.contains('hidden'));
- console.log('Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, HD selection and detection overlay mode, sign-out.');
+ console.log('Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, substream selection and detection overlay mode, sign-out.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

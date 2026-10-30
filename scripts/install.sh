@@ -143,6 +143,7 @@ echo "Login prompts are interactive and are excluded from this log. Ctrl+C cance
 progress "Dashboard configuration saved."
 install -d -m 0755 /usr/local/lib/magi
 install -m 0644 "$source_dir/scripts/update.py" /usr/local/lib/magi/update.py
+install -m 0644 "$source_dir/scripts/fetch_release.py" /usr/local/lib/magi/fetch_release.py
 install -m 0755 "$source_dir/scripts/magi-update" /usr/local/bin/magi-update
 install -m 0755 "$source_dir/scripts/magi-update-github" /usr/local/bin/magi-update-github
 install -m 0644 "$source_dir/systemd/magi.service" /etc/systemd/system/magi.service

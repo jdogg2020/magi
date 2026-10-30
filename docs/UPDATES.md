@@ -33,21 +33,29 @@ sudo magi-update ~/Downloads/magi-prototype.zip --check
 sudo magi-update ~/Downloads/magi-prototype.zip
 ```
 
-Once private GitHub releases are available, an optional fetch command can download
-a specific release directly on the Pi. Install GitHub CLI separately and sign in
-as your ordinary Pi user (`gh auth login`); do not run GitHub authentication with
-sudo. That user must have access to the private repository.
+With a public repository, the installed command downloads releases directly using
+Python's standard library. No GitHub CLI, login, token or account is needed on the
+Pi. Run it as your ordinary user; it asks for sudo only for the local update.
 
 ```bash
-magi-update-github v0.4.0 --check
-magi-update-github v0.4.0
+magi-update-github --check
+magi-update-github
 ```
 
-This command downloads the archive and checksum using that user's GitHub session,
-verifies the download, then invokes the local updater with sudo. It never passes
-GitHub credentials to the recording service. Browser download/file transfer remains
-available if you prefer not to authenticate GitHub on the Pi. Fetching the release
-requires a published private release; a draft or a source-code zip is not sufficient.
+With no version argument it selects the newest published downloadable release,
+including preview releases used by this prototype, and prints the selected version.
+To select a specific release instead:
+
+```bash
+magi-update-github v0.4.2 --check
+magi-update-github v0.4.2
+```
+
+The command verifies the downloaded checksum before invoking the local updater.
+Downloads have size and time limits, and errors leave recording running. A private
+repository returns an access error; the public downloader does not accept tokens.
+Older prototypes have a GitHub-CLI wrapper; rerun the new `install-updater.sh` once
+to replace that wrapper and install the public downloader.
 
 The first command validates the package, repairs legacy installed-source permissions
 and verifies the installed version, imports dependencies and validates the
@@ -102,19 +110,20 @@ private repository or this project's download. The updater executes package code
 as part of preflight and installs its service unit; do not use untrusted archives.
 The update command does not grant the web service permission to update itself.
 
-## Private GitHub workflow
+## GitHub workflow
 
-The repository is `jdogg2020/magi`, private until a public license is chosen.
-Source and the release workflow are maintained there.
+Source and the release workflow are maintained at `jdogg2020/magi`. Public
+visibility is enabled by the owner in repository settings. License selection
+remains pending; changing visibility does not add a license file.
 
 Work on branches and review changes before merging to `main`. The included
 workflow runs tests on Python 3.11 and 3.13, checks syntax and builds an archive.
-After tests pass on `main`, a new value in `src/magi/__init__.py` creates a private
+After tests pass on `main`, a new value in `src/magi/__init__.py` creates a
 GitHub preview release (for example `v0.4.0`) with the archive and checksum.
 Existing releases and tags are left unchanged; bump the version for each new
-release. Tag-triggered runs also require a matching source version. Private preview
+release. Tag-triggered runs also require a matching source version. Preview
 release publication is automatic; installing that release on the Pi is manual.
-Nothing in this workflow opens a public repository or deploys automatically.
+The workflow does not change repository visibility or deploy to the Pi automatically.
 
 To build locally from the repository root:
 
@@ -125,8 +134,8 @@ python3 scripts/build_release.py dist/magi-prototype.zip
 The builder includes an explicit set of source, documentation and test folders;
 it excludes local credentials, recordings, caches and git history. The release
 contains `magi/release.json` with version, compatibility and file checksums.
-Once GitHub is connected, download assets in the browser while signed in; a token
-is not required on the Pi when transferring the archive from your computer.
+After the repository is public, assets can be downloaded anonymously in the
+browser or with the public update command.
 
 GitHub CLI command references: https://cli.github.com/manual/gh_release_download
 and https://cli.github.com/manual/gh_release_create.

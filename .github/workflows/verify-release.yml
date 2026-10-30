@@ -43,9 +43,8 @@ jobs:
         run: |
           python3 -c 'import os,sys; sys.path.insert(0,"src"); from magi import __version__; ref=os.environ["GITHUB_REF_NAME"]; assert ref == "main" or ref == "v" + __version__'
           python3 scripts/build_release.py dist/magi-prototype.zip
-      - name: Publish a private preview for a new version
+      - name: Publish a preview for a new version
         run: |
-          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = true || { echo "Automatic prototype releases require a private repository."; exit 1; }
           tag="$(PYTHONPATH=src python3 -c 'from magi import __version__; print("v" + __version__)')"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag already exists; leaving its tag and assets unchanged. Bump the version for another release."

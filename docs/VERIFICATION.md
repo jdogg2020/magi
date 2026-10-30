@@ -1,3 +1,18 @@
+# Magi 0.4.2 public release downloader
+
+The GitHub update command now uses unauthenticated Python HTTPS requests, without
+GitHub CLI, credentials or tokens. It selects a requested tag or the newest
+published downloadable release (including previews), validates the SHA-256 file,
+and invokes the local updater only after verification. Downloads are bounded.
+Installer/bootstrap install the new Python helper and replace the old CLI wrapper.
+The release workflow no longer requires private repository visibility; it still
+requires verification before publishing, and installation on the Pi stays manual.
+
+Five new fixture tests pass: no Authorization header or gh dependency; explicit
+tag selection; checksum rejection before writing a package; size limits; and
+invalid-version rejection before making a network request. Actual anonymous
+GitHub downloading remains pending the owner changing repository visibility.
+
 # Magi 0.4.1 installation permission regression
 
 The Pi's original source was mode 0700/0600 and unreadable by the dedicated

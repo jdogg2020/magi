@@ -10,8 +10,11 @@ Thirteen updater tests pass, including private-source repair, idempotence,
 preservation of private config permissions, symlink rejection, and checking the
 installed import before candidate dependencies. Existing rollback/recovery checks
 also pass. Full GitHub verification runs on Python 3.11 and 3.13 before release.
-These are filesystem/simulated-service tests; repair on the user's Pi still needs
-to be exercised with the new updater bootstrap.
+GitHub also runs a disposable root-owned install probe: importing as an
+unprivileged account must fail before repair and succeed afterward, while its
+private config stays unreadable. This privilege switch is blocked in the local
+execution environment, so it is verified on the GitHub runner. The new bootstrap
+still needs to be exercised on the user's Pi.
 
 # Magi 0.4.0 update workflow
 

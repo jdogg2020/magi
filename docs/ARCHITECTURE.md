@@ -38,7 +38,7 @@ the main stream is unavailable, and that condition is reported in status.
 
 A JPEG ring samples already-decoded analysis frames at up to four FPS. Triggered
 samples are saved separately, then assembled into an H.264 MP4 using one encoder
-thread. No main-stream 4K decode is needed for browser review. Motion boxes annotate
+thread. This detection replay retains its sampled timing for overlays. Motion boxes annotate
 candidates, not identities. Preview timing is approximate and frame loss can shorten
 playback. Preview backlog is capped at four; an original can exist without a preview.
 Abrupt termination can lose a review copy. Original recovery is the durability goal.
@@ -128,3 +128,12 @@ ADS-B or satellite positions. See IDENTIFICATION.md for geometry conventions,
 provider setup, caching, uncertainty, credential handling and coverage semantics.
 Identification reports are separate from original event metadata; they never
 control deletion or recording.
+
+## Original-derived review assets (0.6)
+
+A separate `Media` worker reads finalized originals, selects native-resolution
+frames/crops, and renders color H.264 video up to 720p/15 FPS. It runs one
+low-priority FFmpeg job at a time with four admitted events, storage reservations,
+volume identity guards and retention protection shared across original assembly,
+analysis previews, identification and media jobs. HD playback does not reuse
+detection overlays because its time base differs. See [REVIEW-QUALITY.md](REVIEW-QUALITY.md).

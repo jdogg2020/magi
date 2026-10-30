@@ -146,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.headers_out(200, 'image/jpeg', len(data))
                 self.wfile.write(data)
         else:
-            match = re.fullmatch(r'/api/clips/([^/]+)/(original|preview|thumbnail|metadata|motion|identification)', path)
+            match = re.fullmatch(r'/api/clips/([^/]+)/(original|preview|thumbnail|metadata|motion|identification|video|frame|media)', path)
             if match:
                 try:
                     file = self.server.app.clip_path(*match.groups())
@@ -178,10 +178,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 status = 206
                 extra['Content-Range'] = f'bytes {start}-{end}/{size}'
-            mime = {'preview': 'video/mp4', 'original': 'video/x-matroska', 'thumbnail': 'image/jpeg', 'metadata': 'application/json', 'motion': 'application/x-ndjson', 'identification': 'application/json'}[kind]
+            mime = {'video': 'video/mp4', 'frame': 'image/jpeg', 'media': 'application/json', 'preview': 'video/mp4', 'original': 'video/x-matroska', 'thumbnail': 'image/jpeg', 'metadata': 'application/json', 'motion': 'application/x-ndjson', 'identification': 'application/json'}[kind]
             if kind == 'motion':
                 extra['Content-Encoding'] = 'gzip'
-            if kind in ('original', 'metadata', 'identification'):
+            if kind in ('original', 'metadata', 'identification', 'frame', 'media'):
                 extra['Content-Disposition'] = f'attachment; filename="{path.parent.name}-{path.name}"'
             length = end - start + 1
             self.headers_out(status, mime, length, extra)
@@ -225,7 +225,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, {'ok': True}, {'Set-Cookie': 'magi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})
             return
         try:
-            commands = {'/api/trigger': 'trigger', '/api/settings': 'settings', '/api/reconnect': 'reconnect', '/api/identify': 'identify'}
+            commands = {'/api/trigger': 'trigger', '/api/settings': 'settings', '/api/reconnect': 'reconnect', '/api/identify': 'identify', '/api/render': 'render'}
             if path not in commands:
                 self.reply(404, {'error': 'Not found.'})
                 return

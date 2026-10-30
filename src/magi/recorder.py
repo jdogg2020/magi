@@ -220,7 +220,7 @@ class Recorder:
         if track:
             samples = event['meta'].setdefault('track_samples', [])
             if len(samples) < 1200:
-                samples.append({'host_utc': utc(time.time()), **track})
+                samples.append({'host_utc': utc(track.get('sample_host_unix', time.time())), **track})
             event['meta']['detection_settings'] = self.cfg.detection
             if kind == 'motion' and event['meta']['trigger_type'] == 'manual':
                 event['meta']['trigger_type'] = 'manual_and_motion'

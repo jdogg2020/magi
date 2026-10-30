@@ -14,6 +14,7 @@ from .config import Config
 from .detection import Analysis
 from .health import metrics, cpu_counters
 from .identification import Identifier, defaults as identification_defaults
+from .media import Media
 from .previews import Previews
 from .recorder import Recorder
 from .storage import atomic_json
@@ -41,6 +42,7 @@ class Application:
         self.event_count = 0
         self.last_trigger_error = None
         self.identifier = Identifier(self.cfg)
+        self.media = Media(self.cfg)
         self._snapshot()
 
     def read(self):
@@ -104,10 +106,12 @@ class Application:
             raise ValueError('Check camera fields, numeric limits, recording duration and ignore-zone bounds. No settings were changed.') from None
         self.stop_capture()
         self.identifier.close()
+        self.media.close()
         atomic_json(self.path.with_suffix('.backup'), raw)
         atomic_json(self.path, new)
         self.cfg = candidate
         self.identifier = Identifier(self.cfg)
+        self.media = Media(self.cfg)
         self.last_error = None
         self.next_start = 0
         self._snapshot()
@@ -140,6 +144,11 @@ class Application:
                     self.stop_capture()
                     self.next_start = 0
                     task['result'] = {'reconnecting': True}
+                elif task['command'] == 'render':
+                    path = self.clip_path(task['value'].get('id', ''), 'metadata')
+                    if not self.queue_media(path.parent, json.loads(path.read_text()), force=True):
+                        raise ValueError('Review render is waiting for space or an available worker.')
+                    task['result'] = {'queued': True}
                 elif task['command'] == 'identify':
                     path = self.clip_path(task['value'].get('id', ''), 'metadata')
                     if not self.identifier.submit(path.parent, json.loads(path.read_text())):
@@ -148,7 +157,8 @@ class Application:
                 else:
                     raise ValueError('Unknown command.')
             except (OSError, ValueError):
-                task['error'] = 'Action unavailable. Check the camera configuration, SSD, or recording status.'
+                task['error'] = ('Review rendering needs free recording space and an available worker. Try again after current jobs finish.'
+                                 if task['command'] == 'render' else 'Action unavailable. Check the camera configuration, SSD, or recording status.')
             finally:
                 task['done'].set()
 
@@ -167,7 +177,7 @@ class Application:
                 self.stop_capture()
         if self.recorder:
             try:
-                self.recorder.extra_protected = self.previews.protected() | self.identifier.protected()
+                self.recorder.extra_protected = self.previews.protected() | self.identifier.protected() | self.media.protected()
                 self.recorder.tick()
                 if not self.recorder.active and self.previews.active:
                     self.previews.finish()
@@ -176,14 +186,14 @@ class Application:
                     if self.cfg.detection['enabled']:
                         for track in events[:4]:
                             try:
-                                self.trigger('motion', track)
+                                self.trigger('motion', {**track, 'sample_host_unix': timestamp + self.previews.wall_offset})
                                 self.last_trigger_error = None
                             except ValueError:
                                 self.last_trigger_error = 'Motion seen while main stream is not ready or event queue is busy.'
                 if self.recorder.state == 'storage_blocked':
                     self.previews.close()
                 else:
-                    self.previews.tick(self.recorder.volume)
+                    self.previews.tick(self.recorder.volume, self.recorder._protected())
                 self.frame_jpeg, self.frame_at = self.previews.latest, self.previews.latest_at
             except (OSError, ValueError):
                 LOG.warning('capture unavailable; checking storage and retrying')
@@ -201,6 +211,15 @@ class Application:
             self.next_status = now + 1
             self._snapshot()
 
+    def queue_media(self, directory, meta, force=False):
+        if not self.recorder or len(self.media.protected()) >= 4 or meta['id'] in self.media.protected():
+            return False
+        used, free = self.recorder.volume.usage()
+        reserve = self.media.budget(meta)[0] + self.media.reserved()
+        if used + reserve >= self.cfg.max_bytes or free - reserve < self.cfg.min_free:
+            return False
+        return self.media.submit(directory, meta, force)
+
     def list_clips(self):
         if not self.recorder:
             # Keep the dashboard usable before camera setup, but never read a
@@ -214,11 +233,19 @@ class Application:
         if not directory.is_dir():
             return []
         paths = sorted(directory.glob('*/event.json'), reverse=True)
-        for path in paths[:200]:
+        media_considered = False
+        for index, path in enumerate(paths[:200]):
             if not EVENT_ID.fullmatch(path.parent.name):
                 continue
             try:
                 meta = json.loads(path.read_text())
+                media_path = path.parent / 'media.json'
+                media = json.loads(media_path.read_text()) if media_path.is_file() else {}
+                if (not media_considered and index < 20 and meta['state'] in ('complete', 'interrupted')
+                        and not media.get('status') in ('ready', 'failed')
+                        and meta['id'] not in self.media.protected()):
+                    media_considered = True
+                    self.queue_media(path.parent, meta)
                 report_path = path.parent / 'identification.json'
                 report = json.loads(report_path.read_text()) if report_path.is_file() else {}
                 if not report and self.cfg.identification['enabled'] and meta['state'] in ('complete', 'interrupted'):
@@ -226,7 +253,12 @@ class Application:
                 clips.append({key: meta.get(key) for key in
                               ('id', 'state', 'trigger_type', 'trigger_utc', 'trigger_count',
                                'estimated_duration_seconds', 'interruption', 'pre_roll_complete', 'post_roll_complete')}
-                             | {'original': (path.parent / 'clip.mkv').is_file(),
+                             | {'hq_preview': (path.parent / 'preview-hq.mp4').is_file(),
+                                'best_frame': (path.parent / 'best-frame.jpg').is_file(),
+                                'media_status': 'queued' if meta['id'] in self.media.protected() else media.get('status', 'not_generated'),
+                                'media_detail': media.get('thumbnail', {}),
+                                'media_error': media.get('detail', ''),
+                                'original': (path.parent / 'clip.mkv').is_file(),
                                 'preview': (path.parent / 'preview.mp4').is_file(),
                                 'identification': report.get('status', 'pending' if self.cfg.identification['enabled'] else 'disabled'),
                                 'thumbnail': (path.parent / 'thumbnail.jpg').is_file(),
@@ -263,7 +295,7 @@ class Application:
             self.recorder.volume.check()
         elif self.cfg.require_mount and not os.path.ismount(self.cfg.mount):
             raise ValueError('Recording volume is not mounted.')
-        names = {'original': 'clip.mkv', 'preview': 'preview.mp4', 'thumbnail': 'thumbnail.jpg', 'metadata': 'event.json', 'motion': 'motion.jsonl.gz', 'identification': 'identification.json'}
+        names = {'original': 'clip.mkv', 'preview': 'preview.mp4', 'thumbnail': 'thumbnail.jpg', 'metadata': 'event.json', 'motion': 'motion.jsonl.gz', 'identification': 'identification.json', 'video': 'preview-hq.mp4', 'frame': 'best-frame.jpg', 'media': 'media.json'}
         if kind not in names:
             raise ValueError('Unknown file.')
         base = self.cfg.root / 'events'
@@ -276,13 +308,14 @@ class Application:
         if self.analysis:
             self.analysis.close()
         if self.recorder:
+            self.recorder.extra_protected = self.media.protected() | self.identifier.protected() | (self.previews.protected() if self.previews else set())
             try:
                 self.recorder.close()
             except OSError:
                 pass
         if self.previews:
             try:
-                self.previews.close(self.recorder.volume if self.recorder else None)
+                self.previews.close(self.recorder.volume if self.recorder else None, self.media.protected() | self.identifier.protected())
             except OSError:
                 self.previews.close()
         self.analysis = self.recorder = self.previews = None
@@ -290,5 +323,6 @@ class Application:
         self.frame_at = 0
 
     def close(self):
+        self.media.close()
         self.identifier.close()
         self.stop_capture()

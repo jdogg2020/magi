@@ -26,11 +26,11 @@ run the installer, open `http://PI-IP:8090`, sign in and configure the camera.
 - Reviewed local installer/uninstaller with dry runs, previous-code backups,
   config preservation and a dashboard health check.
 
-The record path does not re-encode. Browser review copies encode already-decoded
-**small analysis frames** with one thread; they never decode/re-encode the main
-4K recording. Motion boxes and changed-pixel masks are separate, toggleable annotations, not object classifications.
-Preview files are separate, approximate review aids; original files are retained
-with their metadata. Audio is not captured.
+The record path does not re-encode. A background worker builds sharper review
+assets from finalized originals: native-resolution selected frames, object crops
+and color H.264 video up to 720p at 15 FPS. The quick analysis replay is retained
+for toggleable pixel/box overlays. See [review quality](docs/REVIEW-QUALITY.md).
+Originals and derived assets remain separate; audio is not captured.
 
 ## New in 0.3
 
@@ -97,3 +97,10 @@ The active roadmap is [UAP-Finder feature parity](docs/UAP-FINDER-PARITY.md).
 Version 0.5.0 adds visual ignore zones, including coordinate entry, without
 altering original footage. Capture and analysis parity precede the network/mobile
 features; continuous 24/7 operation remains the default.
+
+## New in 0.6
+
+Original-derived color reviews, native-resolution frame selection and zoomed
+object thumbnails are generated in a bounded, low-priority background queue.
+Existing clips can be improved from the review dialog. See
+[docs/REVIEW-QUALITY.md](docs/REVIEW-QUALITY.md) for timing, selection and limits.

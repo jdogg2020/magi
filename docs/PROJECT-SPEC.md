@@ -14,8 +14,9 @@ The clean-room specification and these revisions govern implementation:
    snapshots, event review/download and Pi health information.
 4. Include storage quotas, retention, free-space protection, reconnect/restart
    recovery, and clear interruption metadata from the first usable prototype.
-5. Browser MP4 review copies use only already-decoded low-resolution analysis
-   frames. Originals and review copies remain separate.
+5. Keep the quick analysis replay for motion overlays; from 0.6, also decode
+   finalized originals in a bounded background worker for native-resolution
+   thumbnails and higher-quality color review video. Originals remain unchanged.
 6. Authenticate the dashboard even on localhost. LAN binding is explicit at
    installation; no port forwarding or account service is required.
 7. Run as a dedicated unprivileged user, install from reviewed local source,

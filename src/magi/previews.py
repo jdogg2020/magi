@@ -97,14 +97,14 @@ class Previews:
     def protected(self):
         return {job['id'] for job in self.jobs} | ({self.active['id']} if self.active else set())
 
-    def tick(self, volume):
+    def tick(self, volume, protected=()):
         for job in list(self.jobs):
             directory = job['dir']
             process = job['process']
             if process is None:
                 if any(other['process'] for other in self.jobs):
                     continue
-                if not directory.is_dir() or job['count'] < 2 or not volume.prune(self.protected(), reserve=8_000_000):
+                if not directory.is_dir() or job['count'] < 2 or not volume.prune(self.protected() | set(protected), reserve=8_000_000):
                     (directory / 'review.mjpeg').unlink(missing_ok=True)
                     self.jobs.remove(job)
                     continue
@@ -132,12 +132,12 @@ class Previews:
             (directory / 'review.mjpeg').unlink(missing_ok=True)
             self.jobs.remove(job)
 
-    def close(self, volume=None):
+    def close(self, volume=None, protected=()):
         self.finish()
         if volume:
             end = time.monotonic() + 4
             while self.jobs and time.monotonic() < end:
-                self.tick(volume)
+                self.tick(volume, protected)
                 time.sleep(.05)
         for job in self.jobs:
             stop_process(job['process'])

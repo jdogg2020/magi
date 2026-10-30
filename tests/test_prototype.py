@@ -201,7 +201,7 @@ class PrototypeTests(unittest.TestCase):
         while time.monotonic() < end:
             with self.request('/api/clips') as r:
                 clips = json.load(r)['clips']
-            saved = next((clip for clip in clips if clip['original'] and clip['preview']), None)
+            saved = next((clip for clip in clips if clip['original'] and clip['preview'] and clip.get('hq_preview') and clip.get('best_frame')), None)
             if saved:
                 break
             if self.failures:
@@ -216,7 +216,13 @@ class PrototypeTests(unittest.TestCase):
         with self.request(base + '/preview', headers={'Range': 'bytes=0-31'}) as r:
             self.assertEqual(r.status, 206)
             self.assertEqual(len(r.read()), 32)
-        for kind, filename in (('preview', 'preview.mp4'), ('original', 'original.mkv')):
+        with self.request(base + '/video', headers={'Range': 'bytes=0-31'}) as r:
+            self.assertEqual(r.status,206);self.assertEqual(r.headers['Content-Type'],'video/mp4')
+        with self.request(base + '/frame') as r:
+            self.assertEqual(r.headers['Content-Type'],'image/jpeg');self.assertTrue(r.read().startswith(b'\xff\xd8'))
+        with self.request(base + '/media') as r:
+            self.assertEqual(json.load(r)['status'],'ready')
+        for kind, filename in (('preview', 'preview.mp4'), ('video', 'hd.mp4'), ('original', 'original.mkv')):
             with self.request(base + '/' + kind) as r:
                 output = self.root / filename
                 output.write_bytes(r.read())
@@ -241,6 +247,8 @@ class PrototypeTests(unittest.TestCase):
         with self.request('/api/settings', {'recording': {'pre_roll_seconds': 1.5}, 'camera': {'password': ''}}, {'X-CSRF-Token': csrf}) as r:
             self.assertTrue(json.load(r)['saved'])
         self.assertEqual(json.loads(self.config.read_text())['camera']['password'], 'camera-secret-sentinel')
+        with self.request('/api/render', {'id':saved['id']}, {'X-CSRF-Token':csrf}) as response:
+            self.assertTrue(json.load(response)['queued'])
         with self.request('/api/logout', {}, {'X-CSRF-Token': csrf}) as r:
             self.assertTrue(json.load(r)['ok'])
         with self.assertRaises(urllib.error.HTTPError):

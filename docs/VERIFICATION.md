@@ -1,3 +1,24 @@
+# Magi 0.6.0 original-derived review media
+
+A real synthetic 3840×2160 HEVC clip produced a native-size selected JPEG, a
+smaller native-pixel color crop and a decoded/playable 1280×720 H.264/15 FPS review.
+The original's SHA-256 stayed unchanged. Focused tests also cover crop bounds,
+segment timing with gaps, using analysis sample time, changed-volume rejection,
+and conversion timeout cleanup. The authenticated motion-to-event integration
+checks the new HD byte-range route, full-frame JPEG, media metadata and render
+queue endpoint, while preserving the existing overlay replay and original routes.
+
+The actual dashboard JavaScript passed its DOM harness against a running synthetic
+service, waiting for HD generation and checking HD default selection, suppression
+of mismatched overlays, and detection replay toggles. Existing setup/save/mask
+checks also passed. This validates behavior, not browser visual layout.
+
+Full GitHub verification runs on Python 3.11/3.13 before release. No actual Pi
+render throughput, sustained capture headroom or real-object crop placement has
+been measured here. Frame selection is a bounded contrast/sharpness heuristic;
+matching main/substream field of view and approximate timing are recorded as
+assumptions. The original and detection replay remain fallback evidence.
+
 # Magi 0.5.0 ignore-zone parity milestone
 
 Six detector/config regression checks pass: old configs default to no zones,

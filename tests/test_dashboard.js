@@ -108,6 +108,14 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(elements['star-apply'].disabled,'A collinear/misidentified star fit must not be applied');
  assert(elements['star-status'].textContent.includes('Spread'),'Rejected fit should explain how to improve it');
  elements['star-clear'].onclick();assert.equal(elements['star-points'].children.length,0);
+ vm.runInContext("renderStatus({state:'buffering', health:{}, analysis:{state:'substream_probe_failed',width:320,height:180,fps:8,probe_error:'Camera did not answer in time.',retry_in_seconds:7}})",context);
+ assert.equal(elements['analysis-state'].textContent,'Motion detection paused');
+ assert(elements['analysis-diagnostic'].textContent.includes('in 7 seconds'));
+ assert(elements['analysis-diagnostic'].textContent.includes('Resolution unknown'));
+ assert(elements['analysis-diagnostic'].textContent.includes('Main stream recording continues'));
+ vm.runInContext("renderStatus({state:'buffering', health:{}, analysis:{state:'analyzing',width:640,height:360,fps:20}})",context);
+ assert(elements['analysis-diagnostic'].classList.contains('hidden'));
+ assert(elements['analysis-state'].textContent.includes('640×360 / 20 fps'));
  // Check setup navigation and save feedback without changing the disposable service config.
  vm.runInContext("renderStatus({state:'setup_required', health:{}, analysis:{}})",context);
  const setupLink=elements.notice.children.find(el=>el.tagName==='a');

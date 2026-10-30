@@ -1,6 +1,7 @@
 """Small-substream frame differences and bounded nearest-neighbor tracks."""
 from collections import deque
 import math
+import logging
 import json
 from fractions import Fraction
 import os
@@ -109,6 +110,8 @@ class Analysis:
         self.retry_at = 0
         self.backoff = 1
         self.state = 'starting'
+        self.probe_error = None
+        self.geometry_confirmed = False
         self.frames = 0
         self.dropped = 0
         self.reconnects = 0
@@ -122,17 +125,41 @@ class Analysis:
         probe_args += ['-select_streams', 'v:0', '-show_entries',
                       'stream=width,height,r_frame_rate', '-of', 'json', cfg.analysis_source]
         try:
-            result = subprocess.run(probe_args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            result = subprocess.run(probe_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     timeout=5, check=True)
             stream = json.loads(result.stdout)['streams'][0]
             width, height = int(stream['width']), int(stream['height'])
             fps = float(Fraction(stream['r_frame_rate']))
             if not (0 < width <= 1920 and 0 < height <= 1080 and 0 < fps <= 60):
                 raise ValueError('unsupported substream geometry')
-        except (OSError, ValueError, KeyError, IndexError, ZeroDivisionError, subprocess.SubprocessError):
+        except (OSError, ValueError, KeyError, IndexError, ZeroDivisionError, subprocess.SubprocessError) as error:
+            # Never publish raw FFmpeg output: it can contain camera credentials.
+            diagnostic = (getattr(error, 'stderr', None) or b'')
+            if isinstance(diagnostic, bytes):
+                diagnostic = diagnostic.decode('utf-8', errors='replace')
+            diagnostic = diagnostic.lower()
+            if isinstance(error, FileNotFoundError):
+                reason = 'Stream inspection tool is missing. Reinstall Magi dependencies.'
+            elif isinstance(error, subprocess.TimeoutExpired) or 'timed out' in diagnostic:
+                reason = 'Camera did not answer the substream check in time. Check camera power and network connectivity.'
+            elif '401' in diagnostic or '403' in diagnostic or 'unauthorized' in diagnostic:
+                reason = 'Camera refused substream access. Check the camera username, password and RTSP permissions in Settings.'
+            elif '404' in diagnostic or 'not found' in diagnostic:
+                reason = 'Camera could not find the substream. Check the substream path and that RTSP is enabled in camera settings.'
+            elif any(term in diagnostic for term in ('connection refused', 'no route', 'unreachable', 'resolve hostname')):
+                reason = 'Cannot reach the camera RTSP service. Check the camera address, RTSP port and network connection.'
+            elif isinstance(error, ValueError) and str(error) == 'unsupported substream geometry':
+                reason = 'Substream format is unsupported. Use a stream up to 1920×1080 and 60 fps.'
+            else:
+                reason = 'Could not read a valid substream video format. Check the substream path, camera RTSP settings and connection.'
+            self.probe_error = reason
+            self.geometry_confirmed = False
             self.state = 'substream_probe_failed'
             self.retry_at = time.monotonic() + 10
+            logging.getLogger(__name__).warning('Motion detection paused: %s Retrying in 10 seconds.', reason)
             return
+        self.probe_error = None
+        self.geometry_confirmed = True
         self.settings = {**cfg.detection, 'width': width, 'height': height, 'fps': fps}
         self.tracker = Tracker(self.settings)
         args = [cfg.ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '1']

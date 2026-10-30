@@ -406,9 +406,11 @@ class Application:
                                     'frames': self.analysis.frames if self.analysis else 0,
                                     'dropped_frames': self.analysis.dropped if self.analysis else 0,
                                     'suppressed_frames': self.analysis.tracker.suppressed_frames if self.analysis else 0,
-                                    'width': self.analysis.settings['width'] if self.analysis else None,
-                                    'height': self.analysis.settings['height'] if self.analysis else None,
-                                    'fps': self.analysis.settings['fps'] if self.analysis else None},
+                                    'probe_error': self.analysis.probe_error if self.analysis else None,
+                                    'retry_in_seconds': max(0, math.ceil(self.analysis.retry_at - time.monotonic())) if self.analysis and not self.analysis.process else None,
+                                    'width': self.analysis.settings['width'] if self.analysis and self.analysis.geometry_confirmed else None,
+                                    'height': self.analysis.settings['height'] if self.analysis and self.analysis.geometry_confirmed else None,
+                                    'fps': self.analysis.settings['fps'] if self.analysis and self.analysis.geometry_confirmed else None},
                        'substream': {'state': self.substream.state if self.substream else 'idle'},
                        'frame_age_seconds': round(time.monotonic() - self.frame_at, 1) if self.frame_at else None})
         with self.lock:

@@ -40,7 +40,12 @@ function renderStatus(status) {
   const buffering = status.state === 'buffering';
   $('connection').textContent = buffering ? '● Recording' : status.state.replaceAll('_', ' ');
   $('connection').classList.toggle('warning', !buffering);
-  $('analysis-state').textContent = `${status.analysis?.state || 'idle'}${status.analysis?.width ? ` · ${status.analysis.width}×${status.analysis.height} / ${number(status.analysis.fps, ' fps')}` : ''}`;
+  const analysis = status.analysis || {}, probeFailed = analysis.state === 'substream_probe_failed';
+  const analysisNames = {starting:'Checking substream', connecting:'Connecting to substream', analyzing:'Detecting motion', reconnecting:'Reconnecting to substream', idle:'Detection idle'};
+  $('analysis-state').textContent = probeFailed ? 'Motion detection paused' : `${analysisNames[analysis.state] || (analysis.state || 'idle').replaceAll('_', ' ')}${analysis.width ? ` · ${analysis.width}×${analysis.height} / ${number(analysis.fps, ' fps')}` : ''}`;
+  $('analysis-state').classList.toggle('warning', probeFailed);
+  $('analysis-diagnostic').textContent = probeFailed ? `${analysis.probe_error || 'Could not read the camera substream. Check the camera connection and substream settings.'} Resolution unknown. Retrying automatically${analysis.retry_in_seconds != null ? ` in ${analysis.retry_in_seconds} seconds` : ''}. ${buffering ? 'Main stream recording continues.' : 'See camera recording status below.'}` : '';
+  $('analysis-diagnostic').classList.toggle('hidden', !probeFailed);
   $('camera-status').textContent = buffering ? 'Main stream buffering continuously' : `Camera: ${status.state.replaceAll('_', ' ')}`;
   $('trigger').disabled = !buffering;
   $('session-events').textContent = status.event_count_since_start || 0;

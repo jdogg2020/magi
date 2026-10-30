@@ -11,6 +11,8 @@ from pathlib import Path
 def atomic_json(path: Path, value):
     temporary = path.with_suffix(".tmp")
     with temporary.open("w") as out:
+        # Privacy must not depend on the launching shell or process umask.
+        os.fchmod(out.fileno(), 0o600)
         json.dump(value, out, indent=2, allow_nan=False)
         out.flush()
         os.fsync(out.fileno())

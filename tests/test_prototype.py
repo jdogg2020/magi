@@ -266,6 +266,8 @@ class PrototypeTests(unittest.TestCase):
         with self.request('/api/settings') as response:
             self.assertEqual(json.load(response)['detection']['ignore_zones'],zones)
         self.assertEqual(Config.load(self.config).detection['ignore_zones'],zones)
+        self.assertEqual(self.config.stat().st_mode & 0o777,0o600)
+        self.assertEqual(self.config.with_suffix('.backup').stat().st_mode & 0o777,0o600)
         before=self.config.read_bytes()
         with self.assertRaises(urllib.error.HTTPError) as error:
             self.request('/api/settings',{'detection':{'ignore_zones':[{'x':2,'y':0,'width':1,'height':1}]}},{'X-CSRF-Token':csrf})

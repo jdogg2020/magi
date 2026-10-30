@@ -23,6 +23,37 @@ REQUIRED = {'src/magi/__init__.py', 'src/magi/__main__.py', 'scripts/install.sh'
             'systemd/magi.service', 'pyproject.toml'}
 
 
+CODE_DIRECTORIES = ('src', 'scripts', 'docs', 'systemd', 'tests', '.github')
+CODE_FILES = ('README.md', 'START-HERE.md', 'config.example.json', 'pyproject.toml',
+              'release.json', 'requirements-dev.lock', 'requirements-identification.lock', '.gitignore')
+
+
+def repair_code_permissions(root):
+    """Normalize only known application paths, never settings or recording data."""
+    root = Path(root)
+    nodes = [root]
+    for name in CODE_DIRECTORIES:
+        directory = root / name
+        if directory.exists() or directory.is_symlink():
+            nodes.append(directory)
+            if not directory.is_symlink():
+                nodes.extend(directory.rglob('*'))
+    nodes.extend(root / name for name in CODE_FILES if (root / name).exists() or (root / name).is_symlink())
+    # Validate the entire path list before changing any mode.
+    if any(path.is_symlink() for path in nodes):
+        raise ValueError('application code contains a symlink; install a complete trusted release')
+    if not (root / 'src/magi/__init__.py').is_file():
+        raise ValueError('installed application source is missing; rerun the installer from a complete release')
+    repaired = 0
+    for path in nodes:
+        desired = 0o755 if path.is_dir() else 0o644
+        if stat.S_IMODE(path.stat().st_mode) != desired:
+            path.chmod(desired)
+            repaired += 1
+    LOG.info('Application permissions checked: %s paths repaired; settings and recordings unchanged.', repaired)
+    return repaired
+
+
 def sync_directory(path):
     descriptor = os.open(path, os.O_DIRECTORY)
     try:
@@ -105,7 +136,20 @@ class Updater:
             raise RuntimeError(f'{args[0]} failed (exit {result.returncode})')
         return result.stdout
 
+    def read_installed_version(self):
+        LOG.info('Checking installed source permissions and version…')
+        repair_code_permissions(self.live)
+        try:
+            return self.command('runuser', '-u', 'magi', '--', 'env', 'PYTHONDONTWRITEBYTECODE=1',
+                f'PYTHONPATH={self.live / "src"}', '/usr/bin/python3', '-c',
+                'from magi import __version__; print(__version__)').strip()
+        except RuntimeError:
+            raise RuntimeError('The magi service account cannot import the installed source at '
+                               f'{self.live / "src"}; check application ownership and parent directory access. '
+                               'Recording was not stopped.') from None
+
     def preflight(self, candidate):
+        self.read_installed_version()
         LOG.info("Checking dependencies and existing config as the magi service account…")
         # Validate configuration and required imports as the actual service user.
         code = ("import sys,numpy,PIL; from magi.config import Config; "
@@ -199,9 +243,7 @@ class Updater:
             if path.is_dir():
                 sync_directory(path)
         sync_directory(candidate)
-        old_version = self.command('runuser', '-u', 'magi', '--', 'env',
-            f'PYTHONPATH={self.live / "src"}', '/usr/bin/python3', '-c',
-            'from magi import __version__; print(__version__)').strip()
+        old_version = self.read_installed_version()
         backup = self.releases / ('previous-' + uuid.uuid4().hex)
         backup.mkdir(mode=0o755)
         shutil.copyfile(self.unit, backup / 'magi.service')
@@ -236,12 +278,13 @@ def main():
     parser.add_argument('package', nargs='?', type=Path)
     parser.add_argument('--rollback', action='store_true')
     parser.add_argument('--recover', action='store_true')
+    parser.add_argument('--repair-permissions', action='store_true', help='repair installed application permissions without restarting')
     parser.add_argument('--check', action='store_true', help='validate and preflight without stopping recording')
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('run with sudo')
-    if sum((args.package is not None, args.rollback, args.recover)) != 1:
-        parser.error('choose a release zip, --rollback, or --recover')
+    if sum((args.package is not None, args.rollback, args.recover, args.repair_permissions)) != 1:
+        parser.error('choose a release zip, --rollback, --recover, or --repair-permissions')
     if args.check and args.package is None:
         parser.error('--check requires a release zip')
     os.umask(0o077)
@@ -276,6 +319,10 @@ def main():
                 return 0
             if updater.journal.exists():
                 raise RuntimeError('unfinished update exists; run magi-update --recover first')
+            if args.repair_permissions:
+                repair_code_permissions(updater.live)
+                LOG.info('Application permission repair complete. Recording was not stopped.')
+                return 0
             if args.rollback:
                 version = updater.stage_previous(staging)
             else:

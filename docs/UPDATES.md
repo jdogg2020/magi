@@ -11,15 +11,16 @@ Download the new `magi-prototype.zip` to `~/Downloads`. Extract it into a new
 folder, keeping the zip available for the updater:
 
 ```bash
-mkdir -p ~/Downloads/magi-update-0.4.0
-python3 -m zipfile -e ~/Downloads/magi-prototype.zip ~/Downloads/magi-update-0.4.0
-cd ~/Downloads/magi-update-0.4.0/magi
+mkdir -p ~/Downloads/magi-update-0.4.1
+python3 -m zipfile -e ~/Downloads/magi-prototype.zip ~/Downloads/magi-update-0.4.1
+cd ~/Downloads/magi-update-0.4.1/magi
 sudo bash scripts/install-updater.sh
 sudo magi-update ~/Downloads/magi-prototype.zip --check
 sudo magi-update ~/Downloads/magi-prototype.zip
 ```
 
-The bootstrap only installs the update command and does not restart recording.
+The bootstrap repairs legacy application-code permissions, verifies an import as
+the service account, and installs the update command without restarting recording.
 Fresh installations install this command automatically. After the update, reload
 the dashboard (Ctrl+Shift+R if necessary) to load the new JavaScript and styles.
 
@@ -48,12 +49,18 @@ GitHub credentials to the recording service. Browser download/file transfer rema
 available if you prefer not to authenticate GitHub on the Pi. Fetching the release
 requires a published private release; a draft or a source-code zip is not sufficient.
 
-The first command validates the package, imports dependencies and validates the
+The first command validates the package, repairs legacy installed-source permissions
+and verifies the installed version, imports dependencies and validates the
 existing config as the actual service account, and checks the systemd unit,
 without stopping recording. Missing dependencies stop the update at this stage;
 install any documented new OS packages separately. This updater handles schema-1
 configuration only and rejects packages that require a newer schema/updater.
 Future migrations will need their own explicit, tested backup/restore process.
+
+Permission repair normalizes only known application directories/files to 0755/0644;
+it does not change private config files or recordings. Symlinks in application code
+are rejected. Fresh installation uses the same repair and verifies an import as
+the actual service account before enabling the service.
 
 The actual update obtains an exclusive update lock, stages code, saves the old
 code/unit, stops Magi, switches code/unit, and restarts. It requires three

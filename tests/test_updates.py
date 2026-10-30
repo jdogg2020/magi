@@ -30,6 +30,8 @@ class FakeUpdater(module.Updater):
     def __init__(self, root, fail=False, interrupt=False):
         super().__init__(root/'live', root/'state', root/'releases', root/'magi.service')
         self.state.mkdir(); self.releases.mkdir(); self.live.mkdir()
+        (self.live/'src/magi').mkdir(parents=True)
+        (self.live/'src/magi/__init__.py').write_text('__version__ = \"1\"')
         (self.live/'version').write_text('1'); self.unit.write_text('old unit')
         self.actions = []; self.fail = fail; self.interrupt = interrupt
     def preflight(self, candidate):
@@ -50,6 +52,37 @@ class FakeUpdater(module.Updater):
 
 
 class UpdateTests(unittest.TestCase):
+    def test_private_installed_source_is_repaired_without_touching_secrets(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app=Path(folder)/'app';source=app/'src/magi';source.mkdir(parents=True)
+            init=source/'__init__.py';init.write_text('__version__ = "old"');init.chmod(0o600)
+            (app/'src').chmod(0o700);source.chmod(0o700);app.chmod(0o700)
+            private=app/'config.json';private.write_text('private');private.chmod(0o600)
+            self.assertEqual(module.repair_code_permissions(app),4)
+            self.assertEqual(init.stat().st_mode&0o777,0o644)
+            self.assertEqual(source.stat().st_mode&0o777,0o755)
+            self.assertEqual(private.stat().st_mode&0o777,0o600)
+            self.assertEqual(module.repair_code_permissions(app),0)
+
+    def test_permission_repair_rejects_symlinks_without_touching_target(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app=Path(folder)/'app';source=app/'src/magi';source.mkdir(parents=True)
+            (source/'__init__.py').write_text('pass')
+            private=Path(folder)/'secret';private.write_text('private');private.chmod(0o600)
+            (source/'alias').symlink_to(private)
+            with self.assertRaisesRegex(ValueError,'symlink'):module.repair_code_permissions(app)
+            self.assertEqual(private.stat().st_mode&0o777,0o600)
+
+    def test_check_repairs_and_imports_current_version_before_candidate_checks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);updater=FakeUpdater(root);(updater.live/'src').chmod(0o700)
+            calls=[]
+            with patch.object(updater,'command',side_effect=lambda *args: calls.append(args) or '1'):
+                module.Updater.preflight(updater,self.stage(root))
+            self.assertIn('from magi import __version__',calls[0][-1])
+            self.assertEqual((updater.live/'src').stat().st_mode&0o777,0o755)
+            self.assertEqual(updater.actions,[])
+
     def test_release_validates_inventory_and_extracts_readable_code(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder); package=root/'release.zip'; release(package)
@@ -69,6 +102,8 @@ class UpdateTests(unittest.TestCase):
 
     def stage(self,root):
         stage=root/'stage';(stage/'systemd').mkdir(parents=True)
+        (stage/'src/magi').mkdir(parents=True)
+        (stage/'src/magi/__init__.py').write_text('__version__ = \"2\"')
         (stage/'systemd/magi.service').write_text('new unit');(stage/'version').write_text('2')
         return stage
 

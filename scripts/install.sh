@@ -124,8 +124,8 @@ cp -R "$source_dir/src" "$source_dir/docs" "$source_dir/scripts" /opt/magi/
 cp "$source_dir/README.md" "$source_dir/START-HERE.md" "$source_dir/config.example.json" /opt/magi/
 # Source extraction may leave private directories/files (installer umask is 077).
 # Application code is public-readable; secrets live separately in /etc/magi.
-find /opt/magi -type d -exec chmod 0755 {} +
-find /opt/magi -type f -exec chmod 0644 {} +
+/usr/bin/python3 "$source_dir/scripts/update.py" --repair-permissions
+run_step 30 "Verify installed source is readable by the service account" runuser -u magi -- env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/opt/magi/src /usr/bin/python3 -c 'from magi import __version__; print("Installed Magi", __version__)'
 fresh_config=false
 if [[ ! -e /etc/magi/config.json ]]; then
   install -m 0600 -o magi -g magi "$source_dir/config.example.json" /etc/magi/config.json

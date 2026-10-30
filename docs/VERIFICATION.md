@@ -1,3 +1,18 @@
+# Magi 0.4.1 installation permission regression
+
+The Pi's original source was mode 0700/0600 and unreadable by the dedicated
+service user. The installer, updater bootstrap and preflight now share explicit
+application-only permission repair. Installer/bootstrap also verify an import as
+the service account. Both --check and update verify the installed version before
+stopping recording; bootstrap no longer prints a copyable fictitious ZIP path.
+
+Thirteen updater tests pass, including private-source repair, idempotence,
+preservation of private config permissions, symlink rejection, and checking the
+installed import before candidate dependencies. Existing rollback/recovery checks
+also pass. Full GitHub verification runs on Python 3.11 and 3.13 before release.
+These are filesystem/simulated-service tests; repair on the user's Pi still needs
+to be exercised with the new updater bootstrap.
+
 # Magi 0.4.0 update workflow
 
 Full suite: **55 passed, one skipped** (56 tests in 56.552 seconds). The skipped

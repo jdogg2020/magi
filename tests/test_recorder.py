@@ -253,7 +253,16 @@ class RecorderTests(unittest.TestCase):
                 self.assertNotIn("never-print-this", response.decode())
                 self.assertEqual(status["mode"], "continuous_24_7")
             finally:
-                stop_process(process)
+                # The application drains clip/review jobs; the FFmpeg helper's
+                # three-second timeout is too short for a whole service shutdown.
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=3)
+                        self.fail("CLI exceeded its 20-second service shutdown budget: " + log.read_text())
         self.assertEqual(process.returncode, 0)
         self.assertFalse(self.cfg.socket.exists())
         self.assertNotIn("never-print-this", log.read_text())

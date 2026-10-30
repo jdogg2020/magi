@@ -1,0 +1,4 @@
+# Exact Python library versions used for the x86_64 prototype verification.
+# The Pi installer uses OS-managed packages, not this development lockfile.
+numpy==2.3.5
+Pillow==12.3.0

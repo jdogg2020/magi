@@ -1,0 +1,5 @@
+# Exact optional astronomy versions verified with historical OMM fixtures.
+# Production installation uses OS-managed python3-skyfield and its dependencies.
+skyfield==1.54
+sgp4==2.25
+jplephem==2.23

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Run as the ordinary Pi user; GitHub authentication never runs under sudo.
+set -euo pipefail
+if [[ "$EUID" -eq 0 ]]; then echo "Run as your ordinary Pi user, without sudo." >&2; exit 1; fi
+if [[ "$#" -lt 1 || "$#" -gt 2 || ! "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ || ( "$#" -eq 2 && "$2" != --check ) ]]; then
+  echo "Usage: magi-update-github vVERSION [--check]" >&2; exit 2
+fi
+command -v gh >/dev/null || { echo "Install GitHub CLI and run gh auth login first." >&2; exit 1; }
+umask 077
+download_dir="$(mktemp -d)"
+trap 'rm -rf -- "$download_dir"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+echo "Downloading selected release $1 from private repository jdogg2020/magi…"
+gh release download "$1" --repo jdogg2020/magi --pattern magi-prototype.zip --pattern magi-prototype.zip.sha256 --dir "$download_dir"
+python3 - "$download_dir" <<'PY'
+import hashlib,pathlib,re,sys
+root=pathlib.Path(sys.argv[1]);line=(root/'magi-prototype.zip.sha256').read_text()
+match=re.fullmatch(r'([a-f0-9]{64})  magi-prototype\.zip\n?',line)
+if not match or hashlib.sha256((root/'magi-prototype.zip').read_bytes()).hexdigest()!=match[1]:
+ raise SystemExit('Release checksum failed; recording was not stopped.')
+print('Download checksum verified.')
+PY
+if [[ "${2:-}" == --check ]]; then
+  sudo /usr/local/bin/magi-update "$download_dir/magi-prototype.zip" --check
+else
+  sudo /usr/local/bin/magi-update "$download_dir/magi-prototype.zip"
+fi

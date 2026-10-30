@@ -1,0 +1,47 @@
+name: Verify and package
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '${{ matrix.python }}'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: python -m pip install -r requirements-dev.lock -r requirements-identification.lock
+      - run: python -m unittest discover -s tests -v
+        env:
+          PYTHONPATH: src
+      - run: node --check src/magi/web/app.js
+      - run: bash -n scripts/install.sh scripts/install-updater.sh scripts/uninstall.sh
+      - run: python scripts/build_release.py dist/magi-prototype.zip
+  draft-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check tag version and build
+        run: |
+          python3 -c 'import os,sys; sys.path.insert(0,"src"); from magi import __version__; assert os.environ["GITHUB_REF_NAME"] == "v" + __version__'
+          python3 scripts/build_release.py dist/magi-prototype.zip
+      - name: Create draft release for review
+        run: gh release create "$GITHUB_REF_NAME" dist/magi-prototype.zip dist/magi-prototype.zip.sha256 --verify-tag --draft --generate-notes
+        env:
+          GH_TOKEN: '${{ github.token }}'

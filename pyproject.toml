@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools==75.8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "magi-capture"
+version = "0.4.0"
+description = "Local-first, continuously buffered sky-camera recording"
+requires-python = ">=3.11"
+# License is intentionally pending the owner's decision before publication.
+dependencies = ["numpy>=1.24,<3", "Pillow>=9.4,<13"]
+
+[project.optional-dependencies]
+identification = ["skyfield==1.54", "sgp4==2.25", "jplephem==2.23"]
+
+[project.scripts]
+magi = "magi.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+magi = ["web/*.html", "web/*.css", "web/*.js"]

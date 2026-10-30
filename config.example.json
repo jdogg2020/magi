@@ -1,0 +1,63 @@
+{
+  "camera": {
+    "host": "192.168.86.242",
+    "port": 554,
+    "username": "",
+    "password": "",
+    "mainstream_path": "/h264Preview_01_main",
+    "substream_path": "/h264Preview_01_sub"
+  },
+  "storage": {
+    "mount": "/mnt/magi-ssd",
+    "directory": "/mnt/magi-ssd/magi",
+    "require_mount": false,
+    "max_bytes": 10000000000,
+    "min_free_bytes": 2000000000,
+    "retention_days": 14
+  },
+  "recording": {
+    "segment_seconds": 2,
+    "pre_roll_seconds": 5,
+    "post_roll_seconds": 5,
+    "max_event_seconds": 120,
+    "stall_seconds": 30
+  },
+  "control_socket": "/run/magi/control.sock",
+  "ffmpeg": "ffmpeg",
+  "ffprobe": "ffprobe",
+  "detection": {
+    "enabled": true,
+    "width": 320,
+    "height": 180,
+    "fps": 8,
+    "threshold": 18,
+    "min_pixels": 2,
+    "min_seconds": 0.6,
+    "min_travel": 3
+  },
+  "web": {
+    "host": "127.0.0.1",
+    "port": 8090,
+    "username": "admin",
+    "password_hash": ""
+  },
+  "identification": {
+    "enabled": false,
+    "latitude": null,
+    "longitude": null,
+    "elevation_m": 0,
+    "azimuth_deg": null,
+    "elevation_deg": null,
+    "roll_deg": 0,
+    "horizontal_fov_deg": 93.2,
+    "vertical_fov_deg": 48.2,
+    "calibrated": false,
+    "tolerance_deg": 2,
+    "aircraft_feed_url": "",
+    "satellites": false,
+    "satellite_group": "visual",
+    "aircraft_provider": "local_adsb",
+    "opensky_client_id": "",
+    "opensky_client_secret": ""
+  }
+}

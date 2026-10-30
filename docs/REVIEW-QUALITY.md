@@ -1,4 +1,4 @@
-# Native substream previews and full-resolution thumbnails (0.7.0)
+# Native substream previews and full-resolution thumbnails (0.7.1)
 
 Magi uses the camera's substream at its native resolution and frame rate for
 motion detection. It decodes grayscale pixels for comparison, without spatial
@@ -28,6 +28,12 @@ independent keyframe cuts; the videos are not guaranteed exposure-synchronized.
 The shared storage cap, volume guard and retention protections cover both rings,
 both event assemblies, thumbnail jobs and the analysis replay. The two compressed
 rings use additional storage/network bandwidth but no video encoder.
+
+Click an event thumbnail to open its selected image first; video does not autoplay.
+**Play clip from beginning** starts the selected video at zero. **View image**
+returns to the object crop and **Full frame** displays the complete selected
+camera-resolution frame inline. The full-resolution frame link also opens this
+image viewer instead of forcing a download.
 
 Choose **Camera substream** for the recorded color preview. Choose **Detection
 replay (pixel highlights)** for the separate grayscale sampled replay, up to

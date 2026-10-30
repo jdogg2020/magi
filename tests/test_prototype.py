@@ -223,6 +223,7 @@ class PrototypeTests(unittest.TestCase):
             self.assertEqual(r.status,206);self.assertEqual(r.headers['Content-Type'],'video/mp4')
         with self.request(base + '/frame') as r:
             self.assertEqual(r.headers['Content-Type'],'image/jpeg');self.assertTrue(r.read().startswith(b'\xff\xd8'))
+            self.assertIsNone(r.headers.get('Content-Disposition'),'Full-resolution frames must be viewable inline')
         with self.request(base + '/media') as r:
             self.assertEqual(json.load(r)['status'],'ready')
         for kind, filename in (('preview', 'preview.mp4'), ('video', 'substream.mp4'), ('original', 'original.mkv')):

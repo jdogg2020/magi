@@ -73,19 +73,19 @@ function eventCard(event) {
   const image = document.createElement('div'); image.className = 'event-image';
   const base = `/api/clips/${encodeURIComponent(event.id)}`;
   if (event.thumbnail) { const thumb = document.createElement('img'); thumb.src = base + '/thumbnail'; thumb.alt = event.best_frame ? 'Native-resolution crop of the selected event frame' : 'Detection thumbnail for this event'; thumb.loading = 'lazy'; image.append(thumb); }
-  if (event.preview || event.substream_preview) { const play = document.createElement('button'); play.textContent = '▶'; play.setAttribute('aria-label', 'Play event preview'); play.onclick = () => openReview(event); image.append(play); }
+  if (event.thumbnail || event.best_frame || event.preview || event.substream_preview) { const view = document.createElement('button'); view.className = 'event-open'; view.textContent = 'View image'; view.setAttribute('aria-label', 'Open event image'); view.onclick = () => openReview(event); image.append(view); }
   const info = document.createElement('div'); info.className = 'event-info';
   const type = document.createElement('span'); type.className = 'type'; type.textContent = (event.trigger_type || 'event').replaceAll('_', ' ');
   const title = document.createElement('h3'); title.textContent = new Date(event.trigger_utc).toLocaleString();
   const detail = document.createElement('p'); detail.textContent = `${event.state}${event.estimated_duration_seconds ? ` · ${event.estimated_duration_seconds.toFixed(1)} sec` : ''}${event.interruption ? ' · interrupted' : ''}${event.substream_preview ? ' · substream video' : event.preview ? ' · detection replay' : ' · preview pending or unavailable'}${event.best_frame ? ' · native crop' : ''}`;
   const links = document.createElement('div'); links.className = 'event-links';
-  for (const [label, kind] of [['Original ↓', 'original'], ['Full-res frame ↓', 'frame'], ['Object crop ↗', 'thumbnail'], ['Review details ↓', 'media'], ['Metadata ↓', 'metadata']]) { if (kind === 'original' && !event.original || kind === 'frame' && !event.best_frame || kind === 'thumbnail' && !event.best_frame || kind === 'media' && !event.best_frame) continue; const link = document.createElement('a'); link.href = base + '/' + kind; link.textContent = label; if (kind === 'thumbnail') { link.target = '_blank'; link.rel = 'noopener'; } links.append(link); }
+  for (const [label, kind] of [['Original ↓', 'original'], ['Full-res frame ↗', 'frame'], ['Object crop ↗', 'thumbnail'], ['Review details ↓', 'media'], ['Metadata ↓', 'metadata']]) { if (kind === 'original' && !event.original || kind === 'frame' && !event.best_frame || kind === 'thumbnail' && !event.best_frame || kind === 'media' && !event.best_frame) continue; const link = document.createElement('a'); link.href = base + '/' + kind; link.textContent = label; if (kind === 'thumbnail' || kind === 'frame') { link.onclick = click => { click.preventDefault(); openReview(event, kind); }; } links.append(link); }
   const identification = document.createElement('p'); identification.textContent = `Reference check: ${(event.identification || 'disabled').replaceAll('_', ' ')}`; info.append(type, title, detail, identification, links); card.append(image, info); return card;
 }
 function renderEvents(events) {
   if (reviewEvent && $('review').open) {
     const updated = events.find(event => event.id === reviewEvent.id);
-    if (updated) { reviewEvent = updated; updateReviewAvailability(updated); }
+    if (updated) { reviewEvent = updated; updateReviewAvailability(updated); if (reviewMode === 'image') showReviewImage(reviewImageKind); }
   }
   const signature = JSON.stringify(events); if (signature === clipSignature) return; clipSignature = signature;
   $('event-badge').textContent = events.length;
@@ -137,7 +137,7 @@ $('settings-form').onsubmit = async event => { event.preventDefault(); const sub
 $('trigger').onclick = async () => { connectionStartedAt = 0; $('trigger').disabled = true; try { await api('/api/trigger', {}); notice('Event started. It will appear after post-roll and clip assembly.'); setTimeout(refresh, 1500); } catch(error) { notice(error.message); } };
 $('reconnect').onclick = async () => { try { await api('/api/reconnect', {}); $('settings-result').textContent = 'Reconnecting…'; } catch(error) { $('settings-result').textContent = error.message; } };
 $('refresh-events').onclick = refresh;
-$('review-close').onclick = () => $('review').close(); $('review').addEventListener('close', () => { $('review-video').pause(); $('review-video').removeAttribute('src'); $('review-video').load(); reviewFrames = []; reviewMeta = null; reviewEvent = null; drawMotion(); });
+$('review-close').onclick = () => $('review').close(); $('review').addEventListener('close', () => { $('review-video').pause(); $('review-video').removeAttribute('src'); $('review-video').load(); reviewFrames = []; reviewMeta = null; reviewEvent = null; reviewMode = 'image'; $('review-still').removeAttribute('src'); drawMotion(); });
 function drawZones() {
   const canvas = $('zone-canvas'), context = canvas.getContext('2d');
   context.clearRect(0, 0, canvas.width, canvas.height);
@@ -216,16 +216,16 @@ setInterval(refresh, 2000); setInterval(refreshFrame, 1000);
 signedIn().then(refreshFrame).catch(loggedOut);
 
 let reviewFrames = [], reviewMeta = null, reviewEvent = null;
-let reviewGeneration = 0;
-async function openReview(event) {
+let reviewGeneration = 0, reviewMode = 'image', reviewImageKind = 'thumbnail';
+async function openReview(event, imageKind = 'thumbnail') {
   const generation = ++reviewGeneration; reviewEvent = event; reviewFrames = []; reviewMeta = null;
   $('review-title').textContent = new Date(event.trigger_utc).toLocaleString();
   $('motion-info').textContent = event.motion ? 'Loading motion data…' : 'Motion data unavailable for this older event.';
   $('identification-detail').textContent = ''; $('identification-status').textContent = 'Loading reference check…';
   updateReviewAvailability(event);
   $('review-quality').value = event.substream_preview ? 'substream' : 'analysis';
-  selectReviewVideo();
-  $('review').showModal(); drawMotion(); $('review-video').play().catch(() => {});
+  showReviewImage(imageKind);
+  $('review').showModal(); drawMotion();
   loadIdentification(event.id);
   if(event.motion) {
     try {
@@ -242,6 +242,7 @@ async function openReview(event) {
 function drawMotion() {
   const canvas = $('motion-overlay'); const context = canvas.getContext('2d');
   context.clearRect(0,0,canvas.width,canvas.height);
+  if(reviewMode !== 'video') { $('motion-info').textContent = 'Selected event image · Play clip starts at the beginning.'; return; }
   if($('review-quality').value !== 'analysis') { $('motion-info').textContent = 'Camera substream · choose Detection replay for pixel highlights.'; return; }
   if(!reviewMeta || !reviewFrames.length) return;
   canvas.width = reviewMeta.width; canvas.height = reviewMeta.height;
@@ -274,19 +275,46 @@ $('identify-again').onclick = async () => {
 
 function updateReviewAvailability(event) {
   $('quality-substream').disabled = !event.substream_preview; $('quality-analysis').disabled = !event.preview;
+  $('review-play').disabled = !(event.substream_preview || event.preview);
+  $('review-full-frame').disabled = !event.best_frame;
   $('render-preview').disabled = !event.original || event.media_status === 'queued';
   const video = event.substream_preview ? 'Camera substream recording ready.' : 'Substream recording pending or unavailable; older events may only have detection replay.';
   const thumbnail = event.best_frame && event.media_status !== 'failed' ? 'Full-resolution thumbnail ready.' : event.media_status === 'failed' ? `Thumbnail unavailable: ${event.media_error || 'selection failed'}. You can retry.` : event.media_status === 'queued' ? 'Selecting a full-resolution thumbnail…' : 'Full-resolution thumbnail has not been generated yet.';
   $('render-status').textContent = `${video} ${thumbnail}`;
 }
-function selectReviewVideo() {
+function showReviewImage(kind = 'thumbnail') {
   if (!reviewEvent) return;
-  const analysis = $('review-quality').value === 'analysis';
-  $('show-pixels').disabled = !analysis; $('show-boxes').disabled = !analysis;
-  $('review-video').src = `/api/clips/${encodeURIComponent(reviewEvent.id)}/${analysis ? 'preview' : 'video'}`;
+  reviewMode = 'image'; reviewImageKind = kind;
+  const video = $('review-video'); video.pause(); video.removeAttribute('src'); video.load();
+  video.classList.add('hidden'); $('motion-overlay').classList.add('hidden');
+  const available = kind === 'frame' ? reviewEvent.best_frame : reviewEvent.thumbnail;
+  const still = $('review-still'); still.classList.toggle('hidden', !available);
+  if (available) {
+    const src = `/api/clips/${encodeURIComponent(reviewEvent.id)}/${kind === 'frame' ? 'frame' : 'thumbnail'}?selected=${reviewEvent.best_frame ? 1 : 0}`;
+    if (still.getAttribute('src') !== src) still.src = src;
+    still.alt = kind === 'frame' ? 'Selected event frame at full camera resolution' : reviewEvent.best_frame ? 'Full-resolution object crop from the selected event frame' : 'Temporary detection image; full-resolution selection is pending';
+  } else still.removeAttribute('src');
+  $('review-image-status').classList.toggle('hidden', available);
+  $('review-image-status').textContent = 'The selected image is not available yet. You can play the clip while it is prepared.';
+  $('show-pixels').disabled = true; $('show-boxes').disabled = true;
   drawMotion();
 }
-$('review-quality').onchange = () => { selectReviewVideo(); $('review-video').play().catch(() => {}); };
+function selectReviewVideo() {
+  if (!reviewEvent) return;
+  reviewMode = 'video';
+  $('review-still').classList.add('hidden'); $('review-image-status').classList.add('hidden');
+  $('review-video').classList.remove('hidden'); $('motion-overlay').classList.remove('hidden');
+  const analysis = $('review-quality').value === 'analysis';
+  $('show-pixels').disabled = !analysis; $('show-boxes').disabled = !analysis;
+  const video = $('review-video');
+  video.src = `/api/clips/${encodeURIComponent(reviewEvent.id)}/${analysis ? 'preview' : 'video'}`;
+  video.load(); video.currentTime = 0;
+  drawMotion();
+}
+$('review-play').onclick = () => { selectReviewVideo(); $('review-video').play().catch(() => {}); };
+$('review-photo').onclick = () => showReviewImage();
+$('review-full-frame').onclick = () => showReviewImage('frame');
+$('review-quality').onchange = () => { if (reviewMode === 'video') { selectReviewVideo(); $('review-video').play().catch(() => {}); } };
 $('render-preview').onclick = async () => {
   if (!reviewEvent) return;
   $('render-preview').disabled = true;

@@ -181,7 +181,7 @@ class Handler(BaseHTTPRequestHandler):
             mime = {'video': 'video/mp4', 'frame': 'image/jpeg', 'media': 'application/json', 'preview': 'video/mp4', 'original': 'video/x-matroska', 'thumbnail': 'image/jpeg', 'metadata': 'application/json', 'motion': 'application/x-ndjson', 'identification': 'application/json'}[kind]
             if kind == 'motion':
                 extra['Content-Encoding'] = 'gzip'
-            if kind in ('original', 'metadata', 'identification', 'frame', 'media'):
+            if kind in ('original', 'metadata', 'identification', 'media'):
                 extra['Content-Disposition'] = f'attachment; filename="{path.parent.name}-{path.name}"'
             length = end - start + 1
             self.headers_out(status, mime, length, extra)

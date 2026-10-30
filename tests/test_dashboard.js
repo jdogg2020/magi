@@ -11,13 +11,14 @@ class Element {
   replaceChildren(...children) { this.children=[...children]; }
   addEventListener(name, callback) { this.listeners[name]=callback; }
   setAttribute(name,value) { this[name]=value; }
+  getAttribute(name) { return this[name] ?? null; }
   removeAttribute(name) { delete this[name]; }
   showModal(){this.open=true;}
   close(){this.open=false;this.listeners.close?.();}
   getContext(){return {clearRect:()=>{this.drawn=false;},createImageData:(w,h)=>({data:new Uint8ClampedArray(w*h*4)}),putImageData:()=>{this.drawn=true;},strokeRect(){},fillRect(){}};}
   getBoundingClientRect(){return {left:0,top:0,width:320,height:180};}
   setPointerCapture(){}
-  play(){return Promise.resolve();}
+  play(){this.playCalls=(this.playCalls||0)+1;return Promise.resolve();}
   pause(){}
   load(){}
 }
@@ -51,16 +52,39 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  for(let i=0;i<100;i++){await vm.runInContext('refreshFrame()',context);if(elements['camera-frame'].src)break;await new Promise(resolve=>setTimeout(resolve,100));}
  assert(elements['camera-frame'].src?.startsWith('blob:'),'Live image should load');
  assert.equal(elements['detection-mode'].textContent,'Tracking');
- for(let i=0;i<100;i++){await vm.runInContext('refresh()',context);if(elements['all-events'].children.some(card=>card.children[1]?.children[2]?.textContent.includes('substream video')))break;await new Promise(resolve=>setTimeout(resolve,150));}assert(elements['all-events'].children.some(el=>el.className==='event-card'),'Events should render');
- const card=elements['all-events'].children.find(el=>el.children[1]?.children[2]?.textContent.includes('substream video'));
- assert(card,'At least one event should finish its substream recording');
- const play=card.children[0].children.find(el=>el.tagName==='button');
- assert(play,'Saved event should have a playable preview');await play.onclick();
+ for(let i=0;i<100;i++){await vm.runInContext('refresh()',context);if(elements['recent-events'].children.some(card=>{const text=card.children[1]?.children[2]?.textContent||'';return text.includes('substream video')&&text.includes('native crop');}))break;await new Promise(resolve=>setTimeout(resolve,150));}assert(elements['all-events'].children.some(el=>el.className==='event-card'),'Events should render');
+ const card=elements['recent-events'].children.find(el=>{const text=el.children[1]?.children[2]?.textContent||'';return text.includes('substream video')&&text.includes('native crop');});
+ assert(card,'A recent event should have its native thumbnail and substream recording');
+ const view=card.children[0].children.find(el=>el.tagName==='button');
+ assert(view,'Saved event should open its image');
+ elements['review-video'].currentTime=17;
+ await view.onclick();
+ assert(!elements['review-still'].classList.contains('hidden'),'Opening an event must show its image first');
+ assert(elements['review-still'].src.includes('/thumbnail'),'Image should be the native-resolution thumbnail');
+ assert(elements['review-video'].classList.contains('hidden'),'Video should stay hidden until Play');
+ assert(!elements['review-video'].playCalls,'Opening the image must not autoplay');
+ elements['review-play'].onclick();
+ assert.equal(elements['review-video'].currentTime,0,'Play must start at the beginning');
+ assert(!elements['review-video'].classList.contains('hidden'));
+ assert(elements['review-still'].classList.contains('hidden'));
  if(vm.runInContext('reviewEvent.substream_preview',context)){assert.equal(elements['review-quality'].value,'substream');assert(!elements['motion-overlay'].drawn,'Substream video must not show misaligned detection overlays');}
  elements['review-quality'].value='analysis';elements['review-quality'].onchange();
  assert(elements['motion-overlay'].drawn,'Changed pixel overlay should draw');elements['show-pixels'].checked=false;elements['show-pixels'].onchange();assert(!elements['motion-overlay'].drawn,'Highlights should turn off');elements['show-pixels'].checked=true;elements['show-pixels'].onchange();assert(elements['motion-overlay'].drawn,'Highlights should turn back on');
  assert(elements.review.open,'Review dialog should open');assert(elements['review-video'].src.endsWith('/preview'));
+ elements['review-photo'].onclick();
+ assert(!elements['review-still'].classList.contains('hidden'),'View image should return to the still');
+ const calls=elements['review-video'].playCalls;
+ elements['review-quality'].onchange();
+ assert.equal(elements['review-video'].playCalls,calls,'Changing video choice while viewing the image must not autoplay');
+ if(vm.runInContext('reviewEvent.best_frame',context)) {
+   elements['review-full-frame'].onclick();
+   assert(elements['review-still'].src.includes('/frame?'),'Full frame should open inline');
+ }
+ elements['review-play'].onclick();assert.equal(elements['review-video'].currentTime,0);
  elements['review-close'].onclick();assert(!elements.review.open);
+ await view.onclick();
+ assert(!elements['review-still'].classList.contains('hidden'),'Reopening an event must start with its image again');
+ elements['review-close'].onclick();
  // Check setup navigation and save feedback without changing the disposable service config.
  vm.runInContext("renderStatus({state:'setup_required', health:{}, analysis:{}})",context);
  const setupLink=elements.notice.children.find(el=>el.tagName==='a');
@@ -92,5 +116,5 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert.equal(elements['settings-result'].textContent,'Invalid camera settings');
  assert(!submit.disabled);context.fetch=originalFetch;
  await elements.logout.onclick();assert(!elements.login.classList.contains('hidden'));
- console.log('Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, substream selection and detection overlay mode, sign-out.');
+ console.log('Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, image-first review, playback from zero, full-frame viewing, substream selection and detection overlay mode, sign-out.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

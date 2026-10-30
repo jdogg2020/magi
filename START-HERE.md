@@ -130,7 +130,9 @@ post-roll and clip assembly to finish. Open **Events** to play the small browser
 preview, download the full-quality original, and inspect the event metadata.
 Then move an object across the view to test automatic detection.
 
-When ready, the review opens the camera's recorded color substream, without re-encoding.
+Click an event thumbnail to view the selected image first. **Play clip from beginning**
+starts the camera's recorded color substream at zero, without re-encoding.
+**View image** returns to the crop; **Full frame** opens the complete selected frame.
 Event thumbnails use native-resolution object crops. Choose **Detection replay**
 for motion overlays, then
 toggle changed-pixel highlights and motion boxes. **The original file preserves the camera's compressed video without

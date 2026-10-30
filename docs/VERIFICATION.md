@@ -1,3 +1,13 @@
+# Magi 0.7.1 image-first event review
+
+Event thumbnails open an inline native-resolution still without autoplay. Play
+starts the selected substream/detection video at zero. The dashboard harness
+checks still-first opening, repeated play/reopen, returning to the image,
+changing quality without autoplay, full-frame viewing and detection overlays.
+The authenticated HTTP test checks that full-resolution JPEGs no longer carry
+an attachment header. Recording/detection behavior is unchanged from 0.7.0;
+the tentative decoder/probe rewrite remains an unpublished draft.
+
 # Magi 0.7.0 native substream preview
 
 The full local suite passed 80 tests (one Unix-socket restriction skip).

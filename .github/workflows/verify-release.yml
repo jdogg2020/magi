@@ -27,8 +27,8 @@ jobs:
       - run: node --check src/magi/web/app.js
       - run: bash -n scripts/install.sh scripts/install-updater.sh scripts/uninstall.sh
       - run: python scripts/build_release.py dist/magi-prototype.zip
-  draft-release:
-    if: startsWith(github.ref, 'refs/tags/v')
+  preview-release:
+    if: github.event_name == 'push'
     needs: verify
     runs-on: ubuntu-24.04
     permissions:
@@ -37,11 +37,18 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - name: Check tag version and build
+      - name: Build selected version
         run: |
-          python3 -c 'import os,sys; sys.path.insert(0,"src"); from magi import __version__; assert os.environ["GITHUB_REF_NAME"] == "v" + __version__'
+          python3 -c 'import os,sys; sys.path.insert(0,"src"); from magi import __version__; ref=os.environ["GITHUB_REF_NAME"]; assert ref == "main" or ref == "v" + __version__'
           python3 scripts/build_release.py dist/magi-prototype.zip
-      - name: Create draft release for review
-        run: gh release create "$GITHUB_REF_NAME" dist/magi-prototype.zip dist/magi-prototype.zip.sha256 --verify-tag --draft --generate-notes
+      - name: Publish a private preview for a new version
+        run: |
+          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = true || { echo "Automatic prototype releases require a private repository."; exit 1; }
+          tag="$(PYTHONPATH=src python3 -c 'from magi import __version__; print("v" + __version__)')"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; leaving its tag and assets unchanged. Bump the version for another release."
+          else
+            gh release create "$tag" dist/magi-prototype.zip dist/magi-prototype.zip.sha256 --target "$GITHUB_SHA" --prerelease --generate-notes
+          fi
         env:
           GH_TOKEN: '${{ github.token }}'

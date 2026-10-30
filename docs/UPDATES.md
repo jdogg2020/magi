@@ -97,17 +97,17 @@ The update command does not grant the web service permission to update itself.
 
 ## Private GitHub workflow
 
-The intended repository is `jdogg2020/magi`, private until a public license is
-chosen. The connector cannot create repositories, so create an empty private repo
-first. Do not initialize a README, license or gitignore; this source supplies its
-own documentation. Once it exists, the prepared source can be committed there.
+The repository is `jdogg2020/magi`, private until a public license is chosen.
+Source and the release workflow are maintained there.
 
 Work on branches and review changes before merging to `main`. The included
 workflow runs tests on Python 3.11 and 3.13, checks syntax and builds an archive.
-A version tag such as `v0.4.0` must match `src/magi/__init__.py`; after tests pass,
-the workflow creates a draft GitHub release with the archive and checksum. Review
-and publish that private release before downloading it to the Pi. Nothing in this
-workflow opens a public repository or deploys automatically.
+After tests pass on `main`, a new value in `src/magi/__init__.py` creates a private
+GitHub preview release (for example `v0.4.0`) with the archive and checksum.
+Existing releases and tags are left unchanged; bump the version for each new
+release. Tag-triggered runs also require a matching source version. Private preview
+release publication is automatic; installing that release on the Pi is manual.
+Nothing in this workflow opens a public repository or deploys automatically.
 
 To build locally from the repository root:
 

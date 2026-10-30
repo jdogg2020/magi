@@ -115,6 +115,14 @@ These paths are editable; verify them against your camera configuration. RTSP mu
 be enabled on the camera. Save the settings. The dashboard should change from
 setup to connecting, then recording, and show a small camera preview.
 
+## Ignore unwanted areas
+
+In Settings, use **Ignore zones** to load a camera snapshot and drag rectangles
+over trees, roof edges or timestamp overlays. You can also enter rectangle
+coordinates as percentages. Remove individual rectangles or clear all, then
+**Save & view camera** to apply. Zones affect motion detection only; original
+recordings retain the full picture. Review masks whenever you re-aim the camera.
+
 ## 5. Check a recording
 
 Wait 10–15 seconds for the buffer to fill. Click **Save an event**, then allow the

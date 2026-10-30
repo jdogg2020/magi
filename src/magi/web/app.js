@@ -1,6 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let connectionStartedAt = 0;
+let ignoreZones = [], zoneStart = null, zoneDraft = null, zoneFrameURL = null, zoneFrameReady = false;
 let csrf = '', settingsLoaded = false, busy = false, frameURL = null, clipSignature = '';
 const bytes = n => n == null ? '—' : n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${(n / 1e6).toFixed(0)} MB`;
 const number = (n, suffix = '') => n == null ? '—' : `${n}${suffix}`;
@@ -23,7 +24,7 @@ async function api(path, body) {
   if (!response.ok) throw new Error(value.error || 'Request failed.');
   return value;
 }
-function loggedOut() { csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
+function loggedOut() { if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
 function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); }
 document.querySelectorAll('.nav').forEach(el => el.addEventListener('click', () => tab(el.dataset.tab)));
 $('open-settings').onclick = () => tab('settings');
@@ -98,6 +99,8 @@ async function fillSettings() {
   $('max_gb').value = s.storage.max_bytes / 1e9; $('free_gb').value = s.storage.min_free_bytes / 1e9; $('retention_days').value = s.storage.retention_days;
   for (const key of ['threshold', 'min_pixels', 'min_seconds', 'min_travel']) $(key).value = s.detection[key];
   $('enabled').checked = s.detection.enabled;
+  ignoreZones = (s.detection.ignore_zones || []).map(zone => ({...zone}));
+  renderZoneList(); drawZones(); loadZoneImage();
   const id = s.identification || {};
   for (const key of ['latitude','longitude','elevation_m','azimuth_deg','elevation_deg','roll_deg','horizontal_fov_deg','vertical_fov_deg','tolerance_deg','aircraft_feed_url','satellite_group','aircraft_provider']) $('id-'+key).value = id[key] ?? '';
   for (const key of ['enabled','calibrated','satellites']) $('id-'+key).checked = !!id[key];
@@ -117,7 +120,7 @@ async function refreshFrame() {
 }
 $('settings-form').onsubmit = async event => { event.preventDefault(); const submit = event.submitter; submit.disabled = true; $('settings-result').textContent = 'Saving…'; const camera = {}; for (const key of ['host', 'username', 'mainstream_path', 'substream_path']) camera[key] = $(key).value.trim(); camera.port = Number($('port').value); camera.password = $('camera-password').value;
   const recording = {}; for (const key of ['pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds']) recording[key] = Number($(key).value);
-  const detection = {enabled: $('enabled').checked}; for (const key of ['threshold', 'min_pixels', 'min_seconds', 'min_travel']) detection[key] = Number($(key).value);
+  const detection = {enabled: $('enabled').checked, ignore_zones: ignoreZones.map(zone => ({...zone}))}; for (const key of ['threshold', 'min_pixels', 'min_seconds', 'min_travel']) detection[key] = Number($(key).value);
   const identification = {};
   for(const key of ['latitude','longitude','elevation_m','azimuth_deg','elevation_deg','roll_deg','horizontal_fov_deg','vertical_fov_deg','tolerance_deg']) identification[key] = $('id-'+key).value === '' ? null : Number($('id-'+key).value);
   for(const key of ['enabled','calibrated','satellites']) identification[key] = $('id-'+key).checked;
@@ -131,6 +134,80 @@ $('trigger').onclick = async () => { connectionStartedAt = 0; $('trigger').disab
 $('reconnect').onclick = async () => { try { await api('/api/reconnect', {}); $('settings-result').textContent = 'Reconnecting…'; } catch(error) { $('settings-result').textContent = error.message; } };
 $('refresh-events').onclick = refresh;
 $('review-close').onclick = () => $('review').close(); $('review').addEventListener('close', () => { $('review-video').pause(); $('review-video').removeAttribute('src'); $('review-video').load(); reviewFrames = []; reviewMeta = null; reviewEvent = null; drawMotion(); });
+function drawZones() {
+  const canvas = $('zone-canvas'), context = canvas.getContext('2d');
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  for (const [index, zone] of [...ignoreZones, ...(zoneDraft ? [zoneDraft] : [])].entries()) {
+    context.fillStyle = 'rgba(255,174,76,.28)'; context.strokeStyle = '#ffbf72'; context.lineWidth = 2;
+    context.fillRect(zone.x * canvas.width, zone.y * canvas.height, zone.width * canvas.width, zone.height * canvas.height);
+    context.strokeRect(zone.x * canvas.width, zone.y * canvas.height, zone.width * canvas.width, zone.height * canvas.height);
+  }
+}
+function renderZoneList() {
+  const list = $('zone-list'); list.replaceChildren();
+  ignoreZones.forEach((zone, index) => {
+    const row = document.createElement('div'); row.className = 'zone-row';
+    const label = document.createElement('span');
+    label.textContent = `Zone ${index + 1}: left ${(zone.x * 100).toFixed(1)}%, top ${(zone.y * 100).toFixed(1)}%, ${(zone.width * 100).toFixed(1)}% × ${(zone.height * 100).toFixed(1)}%`;
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'quiet'; remove.textContent = 'Remove';
+    remove.setAttribute('aria-label', `Remove ignore zone ${index + 1}`);
+    remove.onclick = () => { ignoreZones.splice(index, 1); renderZoneList(); drawZones(); $('zone-status').textContent = 'Zone removed. Save settings to apply.'; };
+    row.append(label, remove); list.append(row);
+  });
+}
+function addZone(zone) {
+  if (ignoreZones.length >= 32) { $('zone-status').textContent = 'You can save up to 32 zones.'; return false; }
+  if (!Object.values(zone).every(Number.isFinite) || zone.x < 0 || zone.y < 0 || zone.width <= 0 || zone.height <= 0 || zone.x + zone.width > 1 || zone.y + zone.height > 1) {
+    $('zone-status').textContent = 'The rectangle must have a positive size and fit inside the image.'; return false;
+  }
+  ignoreZones.push(zone); renderZoneList(); drawZones();
+  $('zone-status').textContent = `${ignoreZones.length} ignore zone(s). Save settings to apply.`; return true;
+}
+async function loadZoneImage() {
+  try {
+    const response = await fetch('/api/frame.jpg');
+    if (!response.ok) throw new Error('No camera image');
+    const url = URL.createObjectURL(await response.blob());
+    $('zone-frame').src = url;
+    if (zoneFrameURL) URL.revokeObjectURL(zoneFrameURL);
+    zoneFrameURL = url;
+  } catch { $('zone-status').textContent = 'No camera image yet. Connect the camera first, or enter rectangle coordinates below.'; }
+}
+$('zone-frame').onload = () => {
+  const canvas = $('zone-canvas'), image = $('zone-frame');
+  canvas.width = image.naturalWidth || 320; canvas.height = image.naturalHeight || 180;
+  zoneFrameReady = true; drawZones();
+  $('zone-status').textContent = 'Drag to exclude an area, or enter rectangle coordinates below. Save settings to apply.';
+};
+$('zone-refresh').onclick = loadZoneImage;
+$('zone-add').onclick = () => addZone(Object.fromEntries(['x', 'y', 'width', 'height'].map(key => [key, Number($('zone-' + key).value) / 100])));
+$('zone-clear').onclick = () => { ignoreZones = []; zoneDraft = null; zoneStart = null; renderZoneList(); drawZones(); $('zone-status').textContent = 'All zones cleared. Save settings to apply.'; };
+function zonePoint(event) {
+  const bounds = $('zone-canvas').getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return null;
+  return {x: Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width)), y: Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height))};
+}
+function zoneRectangle(start, end) {
+  const x = Math.min(start.x, end.x), y = Math.min(start.y, end.y);
+  return {x, y, width: Math.min(Math.abs(start.x - end.x), 1 - x), height: Math.min(Math.abs(start.y - end.y), 1 - y)};
+}
+$('zone-canvas').onpointerdown = event => {
+  if (!zoneFrameReady || (event.button !== undefined && event.button !== 0)) return;
+  event.preventDefault(); zoneStart = zonePoint(event); zoneDraft = null;
+  if (zoneStart) $('zone-canvas').setPointerCapture(event.pointerId);
+};
+$('zone-canvas').onpointermove = event => {
+  if (!zoneStart) return; const point = zonePoint(event); if (!point) return;
+  zoneDraft = zoneRectangle(zoneStart, point); drawZones();
+};
+$('zone-canvas').onpointerup = event => {
+  if (!zoneStart) return; const point = zonePoint(event);
+  const zone = point ? zoneRectangle(zoneStart, point) : null;
+  zoneStart = null; zoneDraft = null;
+  if (zone && zone.width >= .005 && zone.height >= .005) addZone(zone);
+  drawZones();
+};
+$('zone-canvas').onpointercancel = () => { zoneStart = null; zoneDraft = null; drawZones(); };
 setInterval(refresh, 2000); setInterval(refreshFrame, 1000);
 signedIn().then(refreshFrame).catch(loggedOut);
 

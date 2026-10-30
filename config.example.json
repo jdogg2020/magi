@@ -33,7 +33,8 @@
     "threshold": 18,
     "min_pixels": 2,
     "min_seconds": 0.6,
-    "min_travel": 3
+    "min_travel": 3,
+    "ignore_zones": []
   },
   "web": {
     "host": "127.0.0.1",

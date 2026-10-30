@@ -48,8 +48,8 @@ They are disabled until configured and never delete original recordings.
 ## Dependencies and development
 
 Production installation uses OS-managed `python3`, `python3-numpy`, `python3-pil`
-and `ffmpeg` from the Pi's configured package repositories. No pip installation,
-network-response execution or self-updater is used. Python 3.11+ is required.
+and `ffmpeg` from the Pi's configured package repositories. Runtime dependencies are installed through OS packages, without pip. Application releases are installed separately
+through the manual update command described in `docs/UPDATES.md`. Python 3.11+ is required.
 `pyproject.toml` declares compatible library ranges for optional source packaging;
 `requirements-dev.lock` records the exact Python library versions tested here.
 The build tool is pinned separately. OS dependency versions deliberately follow
@@ -90,3 +90,10 @@ See [architecture](docs/ARCHITECTURE.md), [scope](docs/PROJECT-SPEC.md),
 See [docs/UPDATES.md](docs/UPDATES.md) for versioned release packages, the one-time
 Pi updater bootstrap, preflight checks, automatic startup rollback and manual
 recovery. Updates are operator-controlled and preserve settings and footage.
+
+## Feature parity target
+
+The active roadmap is [UAP-Finder feature parity](docs/UAP-FINDER-PARITY.md).
+Version 0.5.0 adds visual ignore zones, including coordinate entry, without
+altering original footage. Capture and analysis parity precede the network/mobile
+features; continuous 24/7 operation remains the default.

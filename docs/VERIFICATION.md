@@ -1,3 +1,24 @@
+# Magi 0.5.0 ignore-zone parity milestone
+
+Six detector/config regression checks pass: old configs default to no zones,
+invalid/bounded zones are rejected, masked motion cannot trigger while outside
+motion still can, zones scale with resolution, exposure rejection uses the
+unmasked area, and fully masked images are safe. Raw changed pixels and input
+frames remain intact. An authenticated API test covers save/reload and atomic
+rejection of invalid geometry.
+
+The actual dashboard JavaScript passed its DOM harness against a synthetic HTTP
+service, including pointer drawing, removal, coordinate entry, clearing and save
+payloads, alongside existing login, live image and event review checks. JavaScript
+syntax and HTML ID checks pass. Browser rendering, touch hardware and real-sky
+mask placement still need validation on the Pi.
+
+The full suite runs in GitHub on Python 3.11 and 3.13 before release. Local suite
+runs exclude the installer signal tests when the execution host intercepts their
+Ctrl+C simulation; those tests remain enabled in GitHub. See the parity roadmap
+for documented upstream features and remaining gaps; 0.5.0 is a first delivery,
+not a claim of overall detection or platform parity.
+
 # Magi 0.4.2 public release downloader
 
 The GitHub update command now uses unauthenticated Python HTTPS requests, without

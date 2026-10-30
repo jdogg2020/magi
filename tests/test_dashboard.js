@@ -14,7 +14,9 @@ class Element {
   removeAttribute(name) { delete this[name]; }
   showModal(){this.open=true;}
   close(){this.open=false;this.listeners.close?.();}
-  getContext(){return {clearRect:()=>{this.drawn=false;},createImageData:(w,h)=>({data:new Uint8ClampedArray(w*h*4)}),putImageData:()=>{this.drawn=true;},strokeRect(){}};}
+  getContext(){return {clearRect:()=>{this.drawn=false;},createImageData:(w,h)=>({data:new Uint8ClampedArray(w*h*4)}),putImageData:()=>{this.drawn=true;},strokeRect(){},fillRect(){}};}
+  getBoundingClientRect(){return {left:0,top:0,width:320,height:180};}
+  setPointerCapture(){}
   play(){return Promise.resolve();}
   pause(){}
   load(){}
@@ -60,15 +62,24 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  const setupLink=elements.notice.children.find(el=>el.tagName==='a');
  assert(setupLink,'Setup message should link to Settings');
  setupLink.onclick({preventDefault(){}});assert(!elements.settings.classList.contains('hidden'));
+ elements['zone-frame'].onload();
+ const pointer=(x,y)=>({clientX:x,clientY:y,pointerId:1,button:0,preventDefault(){}});
+ elements['zone-canvas'].onpointerdown(pointer(32,18));elements['zone-canvas'].onpointermove(pointer(160,90));elements['zone-canvas'].onpointerup(pointer(160,90));
+ assert.equal(vm.runInContext('ignoreZones.length',context),1,'Drawing should add an ignore rectangle');
+ assert.equal(vm.runInContext('ignoreZones[0].x',context),.1);
+ elements['zone-list'].children[0].children[1].onclick();assert.equal(vm.runInContext('ignoreZones.length',context),0);
+ elements['zone-x'].value='20';elements['zone-y'].value='30';elements['zone-width'].value='10';elements['zone-height'].value='20';elements['zone-add'].onclick();
+ assert.equal(vm.runInContext('ignoreZones.length',context),1,'Keyboard coordinates should add a zone');
+ let savedPayload;
  const originalFetch=context.fetch;
- context.fetch=async(url,options)=>url==='/api/settings' && options?.method==='POST'
-   ? {ok:true,status:200,json:async()=>({ok:true})} : originalFetch(url,options);
+ context.fetch=async(url,options)=>{if(url==='/api/settings' && options?.method==='POST'){savedPayload=JSON.parse(options.body);return {ok:true,status:200,json:async()=>({ok:true})};}return originalFetch(url,options);};
  const submit=new Element('button');
  await elements['settings-form'].onsubmit({preventDefault(){},submitter:submit});
  assert(!elements.overview.classList.contains('hidden'),'Successful save should open camera overview');
  assert(elements.settings.classList.contains('hidden'));
  assert(/Recording is active|Connecting to your camera/.test(elements.notice.textContent),'Overview should show connection outcome');
- assert(!submit.disabled);
+ assert(!submit.disabled);assert.equal(savedPayload.detection.ignore_zones.length,1,'Saved settings should include zones');
+ elements['zone-clear'].onclick();assert.equal(vm.runInContext('ignoreZones.length',context),0);
  vm.runInContext("tab('settings')",context);
  context.fetch=async(url,options)=>url==='/api/settings' && options?.method==='POST'
    ? {ok:false,status:400,json:async()=>({error:'Invalid camera settings'})} : originalFetch(url,options);
@@ -77,5 +88,5 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert.equal(elements['settings-result'].textContent,'Invalid camera settings');
  assert(!submit.disabled);context.fetch=originalFetch;
  await elements.logout.onclick();assert(!elements.login.classList.contains('hidden'));
- console.log('Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, sign-out.');
+ console.log('Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore-zone drawing/removal/keyboard/save, sign-out.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

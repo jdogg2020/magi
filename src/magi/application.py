@@ -83,7 +83,7 @@ class Application:
             'camera': {'host', 'port', 'username', 'password', 'mainstream_path', 'substream_path'},
             'recording': {'pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds'},
             'storage': {'max_bytes', 'min_free_bytes', 'retention_days'},
-            'detection': {'enabled', 'threshold', 'min_pixels', 'max_pixels', 'min_hits', 'min_seconds', 'min_travel'},
+            'detection': {'enabled', 'threshold', 'min_pixels', 'max_pixels', 'min_hits', 'min_seconds', 'min_travel', 'ignore_zones'},
             'identification': set(identification_defaults())
         }
         try:
@@ -101,7 +101,7 @@ class Application:
             if candidate.root != self.cfg.root or candidate.mount != self.cfg.mount:
                 raise ValueError()
         except (ValueError, TypeError, KeyError, OSError):
-            raise ValueError('Check camera fields, numeric limits and recording duration. No settings were changed.') from None
+            raise ValueError('Check camera fields, numeric limits, recording duration and ignore-zone bounds. No settings were changed.') from None
         self.stop_capture()
         self.identifier.close()
         atomic_json(self.path.with_suffix('.backup'), raw)

@@ -258,6 +258,19 @@ class PrototypeTests(unittest.TestCase):
             self.request('/api/clips/..%2F..%2Fetc%2Fpasswd/original')
         self.assertEqual(error.exception.code, 404)
 
+    def test_ignore_zones_persist_through_settings_and_invalid_zones_are_atomic(self):
+        csrf=self.login()
+        zones=[{'x':0,'y':.75,'width':1,'height':.25}]
+        with self.request('/api/settings', {'detection':{'ignore_zones':zones}}, {'X-CSRF-Token':csrf}) as response:
+            self.assertTrue(json.load(response)['saved'])
+        with self.request('/api/settings') as response:
+            self.assertEqual(json.load(response)['detection']['ignore_zones'],zones)
+        self.assertEqual(Config.load(self.config).detection['ignore_zones'],zones)
+        before=self.config.read_bytes()
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('/api/settings',{'detection':{'ignore_zones':[{'x':2,'y':0,'width':1,'height':1}]}},{'X-CSRF-Token':csrf})
+        self.assertEqual(error.exception.code,409);self.assertEqual(self.config.read_bytes(),before)
+
     def test_invalid_settings_do_not_replace_working_config(self):
         csrf = self.login()
         before = self.config.read_bytes()

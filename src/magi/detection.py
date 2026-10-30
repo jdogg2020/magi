@@ -19,19 +19,30 @@ class Tracker:
         self.suppressed_frames = 0
         self.last_mask = None
         self.mask_suppressed = False
+        self.active_pixels = None
 
     def update(self, frame, now):
         current = np.asarray(frame, dtype=np.uint8)
         self.last_mask = np.zeros(current.shape, dtype=bool)
         self.mask_suppressed = False
+        if self.active_pixels is None or self.active_pixels.shape != current.shape:
+            height, width = current.shape
+            xs, ys = (np.arange(width) + .5) / width, (np.arange(height) + .5) / height
+            self.active_pixels = np.ones(current.shape, dtype=bool)
+            for zone in self.s.get('ignore_zones', []):
+                columns = (xs >= zone['x']) & (xs < zone['x'] + zone['width'])
+                rows = (ys >= zone['y']) & (ys < zone['y'] + zone['height'])
+                self.active_pixels[np.ix_(rows, columns)] = False
         if self.previous is None:
             self.previous = current.copy()
             return [], []
         delta = np.abs(current.astype(np.int16) - self.previous.astype(np.int16))
         self.previous = current.copy()
         mask = delta >= self.s['threshold']
-        self.last_mask = mask
-        if np.count_nonzero(mask) > current.size * self.s['max_changed_fraction']:
+        # Keep raw changed pixels for review. Only detection uses the exclusion mask.
+        self.last_mask = mask.copy()
+        mask &= self.active_pixels
+        if np.count_nonzero(mask) > np.count_nonzero(self.active_pixels) * self.s['max_changed_fraction']:
             self.tracks.clear()
             self.suppressed_frames += 1
             self.mask_suppressed = True

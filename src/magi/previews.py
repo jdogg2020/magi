@@ -74,6 +74,8 @@ class Previews:
                                'height': self.cfg.detection['height'], 'fps': self.fps,
                                'encoding': 'base64_packbits_big_row_major',
                                'threshold': self.cfg.detection['threshold'],
+                               'ignore_zones': self.cfg.detection.get('ignore_zones', []),
+                               'mask_includes_ignored_pixels': True,
                                'meaning': 'absolute difference from preceding analyzed frame; noise is included',
                                'timing': 'indexed to sampled review frames; not calibrated camera exposure time'}) + '\n')
         self.active = {'id': event_id, 'dir': directory, 'handle': handle, 'motion': motion, 'count': 0}

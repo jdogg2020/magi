@@ -98,7 +98,7 @@ class Config:
         detection = {'enabled': True, 'width': 320, 'height': 180, 'fps': 8,
                      'threshold': 18, 'min_pixels': 2, 'max_pixels': 500,
                      'min_hits': 4, 'min_seconds': 0.6, 'min_travel': 3,
-                     'max_jump': 35, 'max_gap_seconds': 0.6, 'max_changed_fraction': 0.08}
+                     'max_jump': 35, 'max_gap_seconds': 0.6, 'max_changed_fraction': 0.08, 'ignore_zones': []}
         detection.update(data.get('detection', {}))
         bounds = {'width': (160, 640), 'height': (90, 360), 'fps': (2, 15),
                   'threshold': (2, 100), 'min_pixels': (1, 200), 'max_pixels': (2, 5000),
@@ -115,6 +115,21 @@ class Config:
             detection[key] = int(detection[key])
         if detection['width'] % 2 or detection['height'] % 2 or detection['min_pixels'] > detection['max_pixels'] or not isinstance(detection['enabled'], bool):
             raise ValueError('invalid detection geometry')
+        zones = detection['ignore_zones']
+        if not isinstance(zones, list) or len(zones) > 32:
+            raise ValueError('at most 32 ignore zones are supported')
+        normalized = []
+        for zone in zones:
+            if not isinstance(zone, dict) or set(zone) != {'x', 'y', 'width', 'height'}:
+                raise ValueError('invalid ignore zone')
+            if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+                   for v in zone.values()):
+                raise ValueError('invalid ignore zone coordinate')
+            x, y, width, height = (float(zone[k]) for k in ('x', 'y', 'width', 'height'))
+            if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > 1 or y + height > 1:
+                raise ValueError('ignore zone must fit within the image')
+            normalized.append({'x': x, 'y': y, 'width': width, 'height': height})
+        detection['ignore_zones'] = normalized
         web = {'host': '127.0.0.1', 'port': 8090, 'username': 'admin', 'password_hash': ''}
         web.update(data.get('web', {}))
         if web['host'] not in ('127.0.0.1', '0.0.0.0') or not 1 <= int(web['port']) <= 65535 or not isinstance(web['username'], str) or not web['username']:

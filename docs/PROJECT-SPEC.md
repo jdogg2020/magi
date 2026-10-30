@@ -21,9 +21,12 @@ The clean-room specification and these revisions govern implementation:
 7. Run as a dedicated unprivileged user, install from reviewed local source,
    preserve config and recordings across upgrades, and retain rollback code.
 8. Optional approximate camera geometry plus aircraft/satellite candidate matching
-   are included in 0.3. Automatic calibration, lens distortion fitting, ignore
-   zones, multiple cameras, wider classification and sharing remain later work.
+   are included in 0.3. Visual ignore zones are included in 0.5. Automatic calibration, lens distortion
+   fitting, multiple cameras, wider classification and sharing remain later work.
 
 Long-term vision: a 24/7 autonomous solar/battery/cellular observation station
 with overlapping cameras on the Smith Center land. Internet outages must not
 prevent local observation. Actual power and multi-camera load need measurement.
+
+Current development priority: [UAP-Finder parity](UAP-FINDER-PARITY.md), starting
+with local capture/detection and calibrated analysis.

@@ -226,10 +226,11 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, {'ok': True}, {'Set-Cookie': 'magi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})
             return
         try:
-            commands = {'/api/trigger': 'trigger', '/api/settings': 'settings', '/api/reconnect': 'reconnect', '/api/identify': 'identify', '/api/render': 'render'}
+            commands = {'/api/trigger': 'trigger', '/api/settings': 'settings', '/api/reconnect': 'reconnect', '/api/identify': 'identify', '/api/render': 'render', '/api/calibration/load': 'calibration_load', '/api/calibration/solve': 'calibration_solve', '/api/calibration/apply': 'calibration_apply'}
             if path not in commands:
                 self.reply(404, {'error': 'Not found.'})
                 return
             self.reply(200, self.server.app.request(commands[path], body))
-        except ValueError:
-            self.reply(409, {'error': 'Action unavailable. Check camera fields, recording limits, storage and service status.'})
+        except ValueError as error:
+            message = str(error) if path.startswith('/api/calibration/') else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
+            self.reply(409, {'error': message})

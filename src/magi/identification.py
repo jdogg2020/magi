@@ -387,6 +387,16 @@ class Identifier:
         if not configured(s):
             result['status'] = 'calibration_required'
             return result
+        calibration = meta.get('camera_calibration')
+        if isinstance(calibration, dict) and calibration.get('schema') == 1:
+            geometry = calibration.get('geometry', {})
+            if any(geometry.get(key) != s.get(key) for key in ('latitude','longitude','elevation_m','azimuth_deg','elevation_deg','roll_deg','horizontal_fov_deg','vertical_fov_deg')):
+                result['status'] = 'event_calibration_differs_from_current'
+                result['limitations'].append('Recorded star calibration differs from current geometry; this event was not reinterpreted with another pointing.')
+                return result
+            result['star_calibration'] = {'source_event': calibration.get('source_event'),
+                'image_timestamp_unix': calibration.get('image_timestamp_unix'),
+                'applied_unix': calibration.get('applied_unix'), 'fit': calibration.get('fit')}
         result['geometry'] = {key: s[key] for key in ('latitude', 'longitude', 'elevation_m', 'azimuth_deg',
                               'elevation_deg', 'roll_deg', 'horizontal_fov_deg', 'vertical_fov_deg', 'tolerance_deg')}
         groups = group_tracks(meta)

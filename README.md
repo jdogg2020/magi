@@ -33,6 +33,14 @@ stream-copy, without video transcoding. The quick analysis replay is retained
 for toggleable pixel/box overlays. See [review quality](docs/REVIEW-QUALITY.md).
 Originals and derived assets remain separate; audio is not captured.
 
+## Star calibration
+
+Settings now includes assisted star calibration from a saved full-resolution image.
+Mark at least six named stars to fit true-north pointing, roll and field of view,
+review residuals, then apply. No sensors or cloud upload are required. This first
+version uses a pinhole model and requires operator star identification, a known
+location and correct time. See [star calibration](docs/STAR-CALIBRATION.md).
+
 ## New in 0.3
 
 - Changed-pixel masks saved with review-frame timing; toggle highlights and boxes

@@ -1,3 +1,20 @@
+# Magi 0.9.0 assisted star calibration
+
+Synthetic regression tests recover pointing, roll and both fields of view,
+including zenith/wraparound geometry. Wrong identities, clusters/collinear
+layouts, insufficient points, duplicate stars, malformed tokens, changed images,
+expired sessions and failed re-fit reuse are rejected. Tests cover no-change
+preview, atomic application, reload validity, capture provenance, different
+historical calibration gating, native horizon-axis conversion through Skyfield
+and bundled catalogue values. The authenticated HTTP integration exercises
+frame loading and invalid-fit rejection.
+
+The dashboard DOM harness exercises saved-frame selection, local star catalogue
+loading, point entry, zoom, clearing and rejection of a collinear fit, alongside
+the existing login/review/settings tests. It does not validate browser layout or
+actual night-sky image accuracy. No physical camera, distortion, atmospheric,
+proper-motion or Pi performance validation is claimed. See STAR-CALIBRATION.md.
+
 # Magi 0.8.0 recorded-track visibility
 
 The dashboard DOM harness passes image-first viewing, selected-image markers,

@@ -1,0 +1,1697 @@
+{
+  "source": "IAU Catalog of Star Names (WGSN), 2022-04-04 text snapshot",
+  "url": "https://www.iau.org/public/themes/naming_stars/",
+  "mirror": "https://raw.githubusercontent.com/mirandadam/iau-starnames/master/catalog_data/IAU-CSN.txt",
+  "source_sha256": "84fac0c90f1b19abc491c2793469e0caa7b003ad1bc93a790ca41147010d0eb0",
+  "license": "Creative Commons Attribution, as stated in source header",
+  "epoch": "J2000; proper motion not applied",
+  "stars": [
+    {
+      "id": "Sirius",
+      "name": "Sirius",
+      "magnitude": -1.45,
+      "ra_deg": 101.287155,
+      "dec_deg": -16.716116
+    },
+    {
+      "id": "Canopus",
+      "name": "Canopus",
+      "magnitude": -0.62,
+      "ra_deg": 95.987958,
+      "dec_deg": -52.695661
+    },
+    {
+      "id": "Arcturus",
+      "name": "Arcturus",
+      "magnitude": -0.05,
+      "ra_deg": 213.9153,
+      "dec_deg": 19.182409
+    },
+    {
+      "id": "Rigil Kentaurus",
+      "name": "Rigil Kentaurus",
+      "magnitude": -0.01,
+      "ra_deg": 219.902066,
+      "dec_deg": -60.833975
+    },
+    {
+      "id": "Vega",
+      "name": "Vega",
+      "magnitude": 0.03,
+      "ra_deg": 279.234735,
+      "dec_deg": 38.783689
+    },
+    {
+      "id": "Capella",
+      "name": "Capella",
+      "magnitude": 0.08,
+      "ra_deg": 79.172328,
+      "dec_deg": 45.997991
+    },
+    {
+      "id": "Rigel",
+      "name": "Rigel",
+      "magnitude": 0.18,
+      "ra_deg": 78.634467,
+      "dec_deg": -8.201638
+    },
+    {
+      "id": "Procyon",
+      "name": "Procyon",
+      "magnitude": 0.4,
+      "ra_deg": 114.825493,
+      "dec_deg": 5.224993
+    },
+    {
+      "id": "Achernar",
+      "name": "Achernar",
+      "magnitude": 0.45,
+      "ra_deg": 24.428523,
+      "dec_deg": -57.236753
+    },
+    {
+      "id": "Betelgeuse",
+      "name": "Betelgeuse",
+      "magnitude": 0.45,
+      "ra_deg": 88.792939,
+      "dec_deg": 7.407064
+    },
+    {
+      "id": "Hadar",
+      "name": "Hadar",
+      "magnitude": 0.61,
+      "ra_deg": 210.955856,
+      "dec_deg": -60.373035
+    },
+    {
+      "id": "Altair",
+      "name": "Altair",
+      "magnitude": 0.76,
+      "ra_deg": 297.695827,
+      "dec_deg": 8.868321
+    },
+    {
+      "id": "Aldebaran",
+      "name": "Aldebaran",
+      "magnitude": 0.87,
+      "ra_deg": 68.980163,
+      "dec_deg": 16.509302
+    },
+    {
+      "id": "Spica",
+      "name": "Spica",
+      "magnitude": 0.98,
+      "ra_deg": 201.298247,
+      "dec_deg": -11.161319
+    },
+    {
+      "id": "Antares",
+      "name": "Antares",
+      "magnitude": 1.06,
+      "ra_deg": 247.351915,
+      "dec_deg": -26.432003
+    },
+    {
+      "id": "Pollux",
+      "name": "Pollux",
+      "magnitude": 1.16,
+      "ra_deg": 116.328958,
+      "dec_deg": 28.026199
+    },
+    {
+      "id": "Fomalhaut",
+      "name": "Fomalhaut",
+      "magnitude": 1.17,
+      "ra_deg": 344.412693,
+      "dec_deg": -29.622237
+    },
+    {
+      "id": "Deneb",
+      "name": "Deneb",
+      "magnitude": 1.25,
+      "ra_deg": 310.35798,
+      "dec_deg": 45.280339
+    },
+    {
+      "id": "Mimosa",
+      "name": "Mimosa",
+      "magnitude": 1.25,
+      "ra_deg": 191.930263,
+      "dec_deg": -59.688764
+    },
+    {
+      "id": "Acrux",
+      "name": "Acrux",
+      "magnitude": 1.33,
+      "ra_deg": 186.649563,
+      "dec_deg": -63.099093
+    },
+    {
+      "id": "Toliman",
+      "name": "Toliman",
+      "magnitude": 1.35,
+      "ra_deg": 219.896096,
+      "dec_deg": -60.837528
+    },
+    {
+      "id": "Regulus",
+      "name": "Regulus",
+      "magnitude": 1.36,
+      "ra_deg": 152.092962,
+      "dec_deg": 11.967209
+    },
+    {
+      "id": "Adhara",
+      "name": "Adhara",
+      "magnitude": 1.5,
+      "ra_deg": 104.656453,
+      "dec_deg": -28.972086
+    },
+    {
+      "id": "Gacrux",
+      "name": "Gacrux",
+      "magnitude": 1.59,
+      "ra_deg": 187.791498,
+      "dec_deg": -57.113213
+    },
+    {
+      "id": "Bellatrix",
+      "name": "Bellatrix",
+      "magnitude": 1.64,
+      "ra_deg": 81.282764,
+      "dec_deg": 6.349703
+    },
+    {
+      "id": "Elnath",
+      "name": "Elnath",
+      "magnitude": 1.65,
+      "ra_deg": 81.572971,
+      "dec_deg": 28.607452
+    },
+    {
+      "id": "Miaplacidus",
+      "name": "Miaplacidus",
+      "magnitude": 1.67,
+      "ra_deg": 138.299906,
+      "dec_deg": -69.717208
+    },
+    {
+      "id": "Alnilam",
+      "name": "Alnilam",
+      "magnitude": 1.69,
+      "ra_deg": 84.053389,
+      "dec_deg": -1.201919
+    },
+    {
+      "id": "Alnair",
+      "name": "Alnair",
+      "magnitude": 1.73,
+      "ra_deg": 332.05827,
+      "dec_deg": -46.960974
+    },
+    {
+      "id": "Alnitak",
+      "name": "Alnitak",
+      "magnitude": 1.74,
+      "ra_deg": 85.189694,
+      "dec_deg": -1.942574
+    },
+    {
+      "id": "Alioth",
+      "name": "Alioth",
+      "magnitude": 1.76,
+      "ra_deg": 193.50729,
+      "dec_deg": 55.959823
+    },
+    {
+      "id": "Kaus Australis",
+      "name": "Kaus Australis",
+      "magnitude": 1.79,
+      "ra_deg": 276.042993,
+      "dec_deg": -34.384616
+    },
+    {
+      "id": "Mirfak",
+      "name": "Mirfak",
+      "magnitude": 1.79,
+      "ra_deg": 51.080709,
+      "dec_deg": 49.861179
+    },
+    {
+      "id": "Dubhe",
+      "name": "Dubhe",
+      "magnitude": 1.81,
+      "ra_deg": 165.931965,
+      "dec_deg": 61.751035
+    },
+    {
+      "id": "Wezen",
+      "name": "Wezen",
+      "magnitude": 1.83,
+      "ra_deg": 107.09785,
+      "dec_deg": -26.3932
+    },
+    {
+      "id": "Alkaid",
+      "name": "Alkaid",
+      "magnitude": 1.85,
+      "ra_deg": 206.885157,
+      "dec_deg": 49.313267
+    },
+    {
+      "id": "Avior",
+      "name": "Avior",
+      "magnitude": 1.86,
+      "ra_deg": 125.62848,
+      "dec_deg": -59.509484
+    },
+    {
+      "id": "Sargas",
+      "name": "Sargas",
+      "magnitude": 1.86,
+      "ra_deg": 264.329711,
+      "dec_deg": -42.997824
+    },
+    {
+      "id": "Menkalinan",
+      "name": "Menkalinan",
+      "magnitude": 1.9,
+      "ra_deg": 89.882179,
+      "dec_deg": 44.947433
+    },
+    {
+      "id": "Atria",
+      "name": "Atria",
+      "magnitude": 1.91,
+      "ra_deg": 252.166229,
+      "dec_deg": -69.027712
+    },
+    {
+      "id": "Alhena",
+      "name": "Alhena",
+      "magnitude": 1.93,
+      "ra_deg": 99.42796,
+      "dec_deg": 16.39928
+    },
+    {
+      "id": "Peacock",
+      "name": "Peacock",
+      "magnitude": 1.94,
+      "ra_deg": 306.411904,
+      "dec_deg": -56.73509
+    },
+    {
+      "id": "Castor",
+      "name": "Castor",
+      "magnitude": 1.98,
+      "ra_deg": 113.649428,
+      "dec_deg": 31.888276
+    },
+    {
+      "id": "Mirzam",
+      "name": "Mirzam",
+      "magnitude": 1.98,
+      "ra_deg": 95.674939,
+      "dec_deg": -17.955919
+    },
+    {
+      "id": "Alphard",
+      "name": "Alphard",
+      "magnitude": 1.99,
+      "ra_deg": 141.896847,
+      "dec_deg": -8.658602
+    },
+    {
+      "id": "Alsephina",
+      "name": "Alsephina",
+      "magnitude": 1.99,
+      "ra_deg": 131.175944,
+      "dec_deg": -54.708819
+    },
+    {
+      "id": "Hamal",
+      "name": "Hamal",
+      "magnitude": 2.01,
+      "ra_deg": 31.793357,
+      "dec_deg": 23.462418
+    },
+    {
+      "id": "Diphda",
+      "name": "Diphda",
+      "magnitude": 2.04,
+      "ra_deg": 10.897379,
+      "dec_deg": -17.986606
+    },
+    {
+      "id": "Nunki",
+      "name": "Nunki",
+      "magnitude": 2.05,
+      "ra_deg": 283.81636,
+      "dec_deg": -26.296724
+    },
+    {
+      "id": "Menkent",
+      "name": "Menkent",
+      "magnitude": 2.06,
+      "ra_deg": 211.670617,
+      "dec_deg": -36.369958
+    },
+    {
+      "id": "Alpheratz",
+      "name": "Alpheratz",
+      "magnitude": 2.07,
+      "ra_deg": 2.096916,
+      "dec_deg": 29.090431
+    },
+    {
+      "id": "Kochab",
+      "name": "Kochab",
+      "magnitude": 2.07,
+      "ra_deg": 222.676357,
+      "dec_deg": 74.155504
+    },
+    {
+      "id": "Mirach",
+      "name": "Mirach",
+      "magnitude": 2.07,
+      "ra_deg": 17.433013,
+      "dec_deg": 35.620557
+    },
+    {
+      "id": "Saiph",
+      "name": "Saiph",
+      "magnitude": 2.07,
+      "ra_deg": 86.93912,
+      "dec_deg": -9.669605
+    },
+    {
+      "id": "Rasalhague",
+      "name": "Rasalhague",
+      "magnitude": 2.08,
+      "ra_deg": 263.733627,
+      "dec_deg": 12.560035
+    },
+    {
+      "id": "Shaula",
+      "name": "Shaula",
+      "magnitude": 2.08,
+      "ra_deg": 263.402167,
+      "dec_deg": -37.103824
+    },
+    {
+      "id": "Algol",
+      "name": "Algol",
+      "magnitude": 2.09,
+      "ra_deg": 47.042215,
+      "dec_deg": 40.955648
+    },
+    {
+      "id": "Almach",
+      "name": "Almach",
+      "magnitude": 2.1,
+      "ra_deg": 30.974804,
+      "dec_deg": 42.329725
+    },
+    {
+      "id": "Tiaki",
+      "name": "Tiaki",
+      "magnitude": 2.12,
+      "ra_deg": 340.666876,
+      "dec_deg": -46.884576
+    },
+    {
+      "id": "Polaris",
+      "name": "Polaris",
+      "magnitude": 2.13,
+      "ra_deg": 37.954561,
+      "dec_deg": 89.264109
+    },
+    {
+      "id": "Denebola",
+      "name": "Denebola",
+      "magnitude": 2.14,
+      "ra_deg": 177.26491,
+      "dec_deg": 14.572058
+    },
+    {
+      "id": "Aspidiske",
+      "name": "Aspidiske",
+      "magnitude": 2.21,
+      "ra_deg": 139.272529,
+      "dec_deg": -59.275232
+    },
+    {
+      "id": "Naos",
+      "name": "Naos",
+      "magnitude": 2.21,
+      "ra_deg": 120.896031,
+      "dec_deg": -40.003148
+    },
+    {
+      "id": "Alphecca",
+      "name": "Alphecca",
+      "magnitude": 2.22,
+      "ra_deg": 233.67195,
+      "dec_deg": 26.714693
+    },
+    {
+      "id": "Mizar",
+      "name": "Mizar",
+      "magnitude": 2.23,
+      "ra_deg": 200.981429,
+      "dec_deg": 54.925362
+    },
+    {
+      "id": "Sadr",
+      "name": "Sadr",
+      "magnitude": 2.23,
+      "ra_deg": 305.557091,
+      "dec_deg": 40.256679
+    },
+    {
+      "id": "Suhail",
+      "name": "Suhail",
+      "magnitude": 2.23,
+      "ra_deg": 136.998993,
+      "dec_deg": -43.432589
+    },
+    {
+      "id": "Eltanin",
+      "name": "Eltanin",
+      "magnitude": 2.24,
+      "ra_deg": 269.151541,
+      "dec_deg": 51.488896
+    },
+    {
+      "id": "Schedar",
+      "name": "Schedar",
+      "magnitude": 2.24,
+      "ra_deg": 10.126838,
+      "dec_deg": 56.537331
+    },
+    {
+      "id": "Mintaka",
+      "name": "Mintaka",
+      "magnitude": 2.25,
+      "ra_deg": 83.001667,
+      "dec_deg": -0.299095
+    },
+    {
+      "id": "Caph",
+      "name": "Caph",
+      "magnitude": 2.28,
+      "ra_deg": 2.294522,
+      "dec_deg": 59.149781
+    },
+    {
+      "id": "Dschubba",
+      "name": "Dschubba",
+      "magnitude": 2.29,
+      "ra_deg": 240.083359,
+      "dec_deg": -22.62171
+    },
+    {
+      "id": "Larawag",
+      "name": "Larawag",
+      "magnitude": 2.29,
+      "ra_deg": 252.540878,
+      "dec_deg": -34.293232
+    },
+    {
+      "id": "Merak",
+      "name": "Merak",
+      "magnitude": 2.34,
+      "ra_deg": 165.460319,
+      "dec_deg": 56.382426
+    },
+    {
+      "id": "Izar",
+      "name": "Izar",
+      "magnitude": 2.35,
+      "ra_deg": 221.246763,
+      "dec_deg": 27.074207
+    },
+    {
+      "id": "Enif",
+      "name": "Enif",
+      "magnitude": 2.38,
+      "ra_deg": 326.046484,
+      "dec_deg": 9.875009
+    },
+    {
+      "id": "Ankaa",
+      "name": "Ankaa",
+      "magnitude": 2.4,
+      "ra_deg": 6.570939,
+      "dec_deg": -42.306084
+    },
+    {
+      "id": "Phecda",
+      "name": "Phecda",
+      "magnitude": 2.41,
+      "ra_deg": 178.457679,
+      "dec_deg": 53.694758
+    },
+    {
+      "id": "Sabik",
+      "name": "Sabik",
+      "magnitude": 2.43,
+      "ra_deg": 257.594529,
+      "dec_deg": -15.724907
+    },
+    {
+      "id": "Scheat",
+      "name": "Scheat",
+      "magnitude": 2.44,
+      "ra_deg": 345.943572,
+      "dec_deg": 28.082785
+    },
+    {
+      "id": "Alderamin",
+      "name": "Alderamin",
+      "magnitude": 2.45,
+      "ra_deg": 319.644885,
+      "dec_deg": 62.585574
+    },
+    {
+      "id": "Aludra",
+      "name": "Aludra",
+      "magnitude": 2.45,
+      "ra_deg": 111.02376,
+      "dec_deg": -29.303106
+    },
+    {
+      "id": "Markeb",
+      "name": "Markeb",
+      "magnitude": 2.47,
+      "ra_deg": 140.528407,
+      "dec_deg": -55.010667
+    },
+    {
+      "id": "Aljanah",
+      "name": "Aljanah",
+      "magnitude": 2.48,
+      "ra_deg": 311.552843,
+      "dec_deg": 33.970257
+    },
+    {
+      "id": "Markab",
+      "name": "Markab",
+      "magnitude": 2.49,
+      "ra_deg": 346.190223,
+      "dec_deg": 15.205267
+    },
+    {
+      "id": "Menkar",
+      "name": "Menkar",
+      "magnitude": 2.54,
+      "ra_deg": 45.569885,
+      "dec_deg": 4.089737
+    },
+    {
+      "id": "Acrab",
+      "name": "Acrab",
+      "magnitude": 2.56,
+      "ra_deg": 241.3593,
+      "dec_deg": -19.805453
+    },
+    {
+      "id": "Zosma",
+      "name": "Zosma",
+      "magnitude": 2.56,
+      "ra_deg": 168.527089,
+      "dec_deg": 20.523718
+    },
+    {
+      "id": "Arneb",
+      "name": "Arneb",
+      "magnitude": 2.58,
+      "ra_deg": 83.182567,
+      "dec_deg": -17.822289
+    },
+    {
+      "id": "Gienah",
+      "name": "Gienah",
+      "magnitude": 2.58,
+      "ra_deg": 183.951543,
+      "dec_deg": -17.541929
+    },
+    {
+      "id": "Ascella",
+      "name": "Ascella",
+      "magnitude": 2.6,
+      "ra_deg": 285.653043,
+      "dec_deg": -29.880063
+    },
+    {
+      "id": "Algieba",
+      "name": "Algieba",
+      "magnitude": 2.61,
+      "ra_deg": 154.993144,
+      "dec_deg": 19.841489
+    },
+    {
+      "id": "Zubeneschamali",
+      "name": "Zubeneschamali",
+      "magnitude": 2.61,
+      "ra_deg": 229.251724,
+      "dec_deg": -9.382914
+    },
+    {
+      "id": "Unukalhai",
+      "name": "Unukalhai",
+      "magnitude": 2.63,
+      "ra_deg": 236.066976,
+      "dec_deg": 6.425629
+    },
+    {
+      "id": "Kraz",
+      "name": "Kraz",
+      "magnitude": 2.65,
+      "ra_deg": 188.59681,
+      "dec_deg": -23.396759
+    },
+    {
+      "id": "Mahasim",
+      "name": "Mahasim",
+      "magnitude": 2.65,
+      "ra_deg": 89.930292,
+      "dec_deg": 37.212585
+    },
+    {
+      "id": "Phact",
+      "name": "Phact",
+      "magnitude": 2.65,
+      "ra_deg": 84.912254,
+      "dec_deg": -34.07411
+    },
+    {
+      "id": "Ruchbah",
+      "name": "Ruchbah",
+      "magnitude": 2.66,
+      "ra_deg": 21.453964,
+      "dec_deg": 60.235284
+    },
+    {
+      "id": "Muphrid",
+      "name": "Muphrid",
+      "magnitude": 2.68,
+      "ra_deg": 208.671161,
+      "dec_deg": 18.397717
+    },
+    {
+      "id": "Hassaleh",
+      "name": "Hassaleh",
+      "magnitude": 2.69,
+      "ra_deg": 74.248421,
+      "dec_deg": 33.1661
+    },
+    {
+      "id": "Lesath",
+      "name": "Lesath",
+      "magnitude": 2.7,
+      "ra_deg": 262.690979,
+      "dec_deg": -37.295813
+    },
+    {
+      "id": "Sheratan",
+      "name": "Sheratan",
+      "magnitude": 2.7,
+      "ra_deg": 28.660046,
+      "dec_deg": 20.808031
+    },
+    {
+      "id": "Kaus Media",
+      "name": "Kaus Media",
+      "magnitude": 2.72,
+      "ra_deg": 275.248508,
+      "dec_deg": -29.828104
+    },
+    {
+      "id": "Tarazed",
+      "name": "Tarazed",
+      "magnitude": 2.72,
+      "ra_deg": 296.564915,
+      "dec_deg": 10.613262
+    },
+    {
+      "id": "Athebyne",
+      "name": "Athebyne",
+      "magnitude": 2.73,
+      "ra_deg": 245.997858,
+      "dec_deg": 61.514214
+    },
+    {
+      "id": "Yed Prior",
+      "name": "Yed Prior",
+      "magnitude": 2.73,
+      "ra_deg": 243.586411,
+      "dec_deg": -3.694323
+    },
+    {
+      "id": "Imai",
+      "name": "Imai",
+      "magnitude": 2.75,
+      "ra_deg": 183.78632,
+      "dec_deg": -58.748927
+    },
+    {
+      "id": "Zubenelgenubi",
+      "name": "Zubenelgenubi",
+      "magnitude": 2.75,
+      "ra_deg": 222.719638,
+      "dec_deg": -16.041777
+    },
+    {
+      "id": "Cebalrai",
+      "name": "Cebalrai",
+      "magnitude": 2.76,
+      "ra_deg": 265.868136,
+      "dec_deg": 4.5673
+    },
+    {
+      "id": "Cursa",
+      "name": "Cursa",
+      "magnitude": 2.78,
+      "ra_deg": 76.96244,
+      "dec_deg": -5.086446
+    },
+    {
+      "id": "Kornephoros",
+      "name": "Kornephoros",
+      "magnitude": 2.78,
+      "ra_deg": 247.554998,
+      "dec_deg": 21.489611
+    },
+    {
+      "id": "Rastaban",
+      "name": "Rastaban",
+      "magnitude": 2.79,
+      "ra_deg": 262.608174,
+      "dec_deg": 52.301389
+    },
+    {
+      "id": "Hatysa",
+      "name": "Hatysa",
+      "magnitude": 2.8,
+      "ra_deg": 83.858258,
+      "dec_deg": -5.909901
+    },
+    {
+      "id": "Kaus Borealis",
+      "name": "Kaus Borealis",
+      "magnitude": 2.82,
+      "ra_deg": 276.992668,
+      "dec_deg": -25.421701
+    },
+    {
+      "id": "Paikauhale",
+      "name": "Paikauhale",
+      "magnitude": 2.82,
+      "ra_deg": 248.970637,
+      "dec_deg": -28.216017
+    },
+    {
+      "id": "Algenib",
+      "name": "Algenib",
+      "magnitude": 2.83,
+      "ra_deg": 3.308963,
+      "dec_deg": 15.183594
+    },
+    {
+      "id": "Nihal",
+      "name": "Nihal",
+      "magnitude": 2.83,
+      "ra_deg": 82.061346,
+      "dec_deg": -20.759441
+    },
+    {
+      "id": "Tureis",
+      "name": "Tureis",
+      "magnitude": 2.83,
+      "ra_deg": 121.886037,
+      "dec_deg": -24.304324
+    },
+    {
+      "id": "Alcyone",
+      "name": "Alcyone",
+      "magnitude": 2.85,
+      "ra_deg": 56.871152,
+      "dec_deg": 24.105136
+    },
+    {
+      "id": "Deneb Algedi",
+      "name": "Deneb Algedi",
+      "magnitude": 2.85,
+      "ra_deg": 326.760184,
+      "dec_deg": -16.127287
+    },
+    {
+      "id": "Vindemiatrix",
+      "name": "Vindemiatrix",
+      "magnitude": 2.85,
+      "ra_deg": 195.544157,
+      "dec_deg": 10.959149
+    },
+    {
+      "id": "Tejat",
+      "name": "Tejat",
+      "magnitude": 2.87,
+      "ra_deg": 95.740112,
+      "dec_deg": 22.513583
+    },
+    {
+      "id": "Acamar",
+      "name": "Acamar",
+      "magnitude": 2.88,
+      "ra_deg": 44.565311,
+      "dec_deg": -40.304672
+    },
+    {
+      "id": "Albaldah",
+      "name": "Albaldah",
+      "magnitude": 2.88,
+      "ra_deg": 287.440971,
+      "dec_deg": -21.023615
+    },
+    {
+      "id": "Cor Caroli",
+      "name": "Cor Caroli",
+      "magnitude": 2.89,
+      "ra_deg": 194.006943,
+      "dec_deg": 38.318376
+    },
+    {
+      "id": "Fang",
+      "name": "Fang",
+      "magnitude": 2.89,
+      "ra_deg": 239.712972,
+      "dec_deg": -26.114108
+    },
+    {
+      "id": "Gomeisa",
+      "name": "Gomeisa",
+      "magnitude": 2.89,
+      "ra_deg": 111.787674,
+      "dec_deg": 8.289316
+    },
+    {
+      "id": "Alniyat",
+      "name": "Alniyat",
+      "magnitude": 2.9,
+      "ra_deg": 245.297149,
+      "dec_deg": -25.592792
+    },
+    {
+      "id": "Fawaris",
+      "name": "Fawaris",
+      "magnitude": 2.9,
+      "ra_deg": 296.243658,
+      "dec_deg": 45.13081
+    },
+    {
+      "id": "Sadalsuud",
+      "name": "Sadalsuud",
+      "magnitude": 2.9,
+      "ra_deg": 322.889715,
+      "dec_deg": -5.571176
+    },
+    {
+      "id": "Matar",
+      "name": "Matar",
+      "magnitude": 2.93,
+      "ra_deg": 340.750579,
+      "dec_deg": 30.221244
+    },
+    {
+      "id": "Algorab",
+      "name": "Algorab",
+      "magnitude": 2.94,
+      "ra_deg": 187.466063,
+      "dec_deg": -16.515431
+    },
+    {
+      "id": "Sadalmelik",
+      "name": "Sadalmelik",
+      "magnitude": 2.95,
+      "ra_deg": 331.445983,
+      "dec_deg": -0.319849
+    },
+    {
+      "id": "Tianguan",
+      "name": "Tianguan",
+      "magnitude": 2.97,
+      "ra_deg": 84.411189,
+      "dec_deg": 21.142544
+    },
+    {
+      "id": "Zaurak",
+      "name": "Zaurak",
+      "magnitude": 2.97,
+      "ra_deg": 59.50736,
+      "dec_deg": -13.508516
+    },
+    {
+      "id": "Alnasl",
+      "name": "Alnasl",
+      "magnitude": 2.98,
+      "ra_deg": 271.452025,
+      "dec_deg": -30.4241
+    },
+    {
+      "id": "Okab",
+      "name": "Okab",
+      "magnitude": 2.99,
+      "ra_deg": 286.352533,
+      "dec_deg": 13.863477
+    },
+    {
+      "id": "Aldhanab",
+      "name": "Aldhanab",
+      "magnitude": 3.0,
+      "ra_deg": 328.482192,
+      "dec_deg": -37.364855
+    },
+    {
+      "id": "Pherkad",
+      "name": "Pherkad",
+      "magnitude": 3.0,
+      "ra_deg": 230.18215,
+      "dec_deg": 71.834017
+    },
+    {
+      "id": "Xamidimura",
+      "name": "Xamidimura",
+      "magnitude": 3.0,
+      "ra_deg": 252.96763,
+      "dec_deg": -38.04738
+    },
+    {
+      "id": "Furud",
+      "name": "Furud",
+      "magnitude": 3.02,
+      "ra_deg": 95.0783,
+      "dec_deg": -30.063367
+    },
+    {
+      "id": "Almaaz",
+      "name": "Almaaz",
+      "magnitude": 3.03,
+      "ra_deg": 75.492219,
+      "dec_deg": 43.823307
+    },
+    {
+      "id": "Seginus",
+      "name": "Seginus",
+      "magnitude": 3.04,
+      "ra_deg": 218.019466,
+      "dec_deg": 38.308251
+    },
+    {
+      "id": "Dabih",
+      "name": "Dabih",
+      "magnitude": 3.05,
+      "ra_deg": 305.252803,
+      "dec_deg": -14.781405
+    },
+    {
+      "id": "Mebsuta",
+      "name": "Mebsuta",
+      "magnitude": 3.06,
+      "ra_deg": 100.983026,
+      "dec_deg": 25.131127
+    },
+    {
+      "id": "Tania Australis",
+      "name": "Tania Australis",
+      "magnitude": 3.06,
+      "ra_deg": 155.58225,
+      "dec_deg": 41.499519
+    },
+    {
+      "id": "Altais",
+      "name": "Altais",
+      "magnitude": 3.07,
+      "ra_deg": 288.13875,
+      "dec_deg": 67.661541
+    },
+    {
+      "id": "Sarin",
+      "name": "Sarin",
+      "magnitude": 3.12,
+      "ra_deg": 258.757963,
+      "dec_deg": 24.839204
+    },
+    {
+      "id": "Talitha",
+      "name": "Talitha",
+      "magnitude": 3.12,
+      "ra_deg": 134.80189,
+      "dec_deg": 48.041826
+    },
+    {
+      "id": "Wazn",
+      "name": "Wazn",
+      "magnitude": 3.12,
+      "ra_deg": 87.739968,
+      "dec_deg": -35.76831
+    },
+    {
+      "id": "Aldhibah",
+      "name": "Aldhibah",
+      "magnitude": 3.17,
+      "ra_deg": 257.19665,
+      "dec_deg": 65.714684
+    },
+    {
+      "id": "Haedus",
+      "name": "Haedus",
+      "magnitude": 3.18,
+      "ra_deg": 76.628722,
+      "dec_deg": 41.234476
+    },
+    {
+      "id": "Fuyue",
+      "name": "Fuyue",
+      "magnitude": 3.19,
+      "ra_deg": 267.464503,
+      "dec_deg": -37.043305
+    },
+    {
+      "id": "Tabit",
+      "name": "Tabit",
+      "magnitude": 3.19,
+      "ra_deg": 72.460045,
+      "dec_deg": 6.961275
+    },
+    {
+      "id": "Errai",
+      "name": "Errai",
+      "magnitude": 3.21,
+      "ra_deg": 354.836655,
+      "dec_deg": 77.632313
+    },
+    {
+      "id": "Alfirk",
+      "name": "Alfirk",
+      "magnitude": 3.23,
+      "ra_deg": 322.164987,
+      "dec_deg": 70.560715
+    },
+    {
+      "id": "Yed Posterior",
+      "name": "Yed Posterior",
+      "magnitude": 3.23,
+      "ra_deg": 244.580374,
+      "dec_deg": -4.69251
+    },
+    {
+      "id": "Brachium",
+      "name": "Brachium",
+      "magnitude": 3.25,
+      "ra_deg": 226.017567,
+      "dec_deg": -25.281961
+    },
+    {
+      "id": "Sulafat",
+      "name": "Sulafat",
+      "magnitude": 3.25,
+      "ra_deg": 284.735928,
+      "dec_deg": 32.689557
+    },
+    {
+      "id": "Skat",
+      "name": "Skat",
+      "magnitude": 3.27,
+      "ra_deg": 343.662556,
+      "dec_deg": -15.820827
+    },
+    {
+      "id": "Edasich",
+      "name": "Edasich",
+      "magnitude": 3.29,
+      "ra_deg": 231.232396,
+      "dec_deg": 58.966063
+    },
+    {
+      "id": "Megrez",
+      "name": "Megrez",
+      "magnitude": 3.32,
+      "ra_deg": 183.856503,
+      "dec_deg": 57.032615
+    },
+    {
+      "id": "Propus",
+      "name": "Propus",
+      "magnitude": 3.32,
+      "ra_deg": 93.719405,
+      "dec_deg": 22.506794
+    },
+    {
+      "id": "Chertan",
+      "name": "Chertan",
+      "magnitude": 3.33,
+      "ra_deg": 168.560019,
+      "dec_deg": 15.429571
+    },
+    {
+      "id": "Alzirr",
+      "name": "Alzirr",
+      "magnitude": 3.35,
+      "ra_deg": 101.322351,
+      "dec_deg": 12.895592
+    },
+    {
+      "id": "Muscida",
+      "name": "Muscida",
+      "magnitude": 3.35,
+      "ra_deg": 127.566128,
+      "dec_deg": 60.71817
+    },
+    {
+      "id": "Segin",
+      "name": "Segin",
+      "magnitude": 3.35,
+      "ra_deg": 28.598857,
+      "dec_deg": 63.670101
+    },
+    {
+      "id": "Albireo",
+      "name": "Albireo",
+      "magnitude": 3.37,
+      "ra_deg": 292.680351,
+      "dec_deg": 27.959692
+    },
+    {
+      "id": "Rasalgethi",
+      "name": "Rasalgethi",
+      "magnitude": 3.37,
+      "ra_deg": 258.66191,
+      "dec_deg": 14.390333
+    },
+    {
+      "id": "Heze",
+      "name": "Heze",
+      "magnitude": 3.38,
+      "ra_deg": 203.6733,
+      "dec_deg": -0.59582
+    },
+    {
+      "id": "Meissa",
+      "name": "Meissa",
+      "magnitude": 3.39,
+      "ra_deg": 83.784486,
+      "dec_deg": 9.934156
+    },
+    {
+      "id": "Minelauva",
+      "name": "Minelauva",
+      "magnitude": 3.39,
+      "ra_deg": 193.900869,
+      "dec_deg": 3.39747
+    },
+    {
+      "id": "Homam",
+      "name": "Homam",
+      "magnitude": 3.41,
+      "ra_deg": 340.365503,
+      "dec_deg": 10.831363
+    },
+    {
+      "id": "Mothallah",
+      "name": "Mothallah",
+      "magnitude": 3.42,
+      "ra_deg": 28.27045,
+      "dec_deg": 29.578826
+    },
+    {
+      "id": "Adhafera",
+      "name": "Adhafera",
+      "magnitude": 3.43,
+      "ra_deg": 154.172567,
+      "dec_deg": 23.417312
+    },
+    {
+      "id": "Porrima",
+      "name": "Porrima",
+      "magnitude": 3.44,
+      "ra_deg": 190.415181,
+      "dec_deg": -1.449373
+    },
+    {
+      "id": "Azmidi",
+      "name": "Azmidi",
+      "magnitude": 3.45,
+      "ra_deg": 117.323563,
+      "dec_deg": -24.859786
+    },
+    {
+      "id": "Tania Borealis",
+      "name": "Tania Borealis",
+      "magnitude": 3.45,
+      "ra_deg": 154.274095,
+      "dec_deg": 42.914356
+    },
+    {
+      "id": "Achird",
+      "name": "Achird",
+      "magnitude": 3.46,
+      "ra_deg": 12.276213,
+      "dec_deg": 57.815187
+    },
+    {
+      "id": "Alula Borealis",
+      "name": "Alula Borealis",
+      "magnitude": 3.49,
+      "ra_deg": 169.619737,
+      "dec_deg": 33.094305
+    },
+    {
+      "id": "Ashlesha",
+      "name": "Ashlesha",
+      "magnitude": 3.49,
+      "ra_deg": 131.693794,
+      "dec_deg": 6.418809
+    },
+    {
+      "id": "Nekkar",
+      "name": "Nekkar",
+      "magnitude": 3.49,
+      "ra_deg": 225.48651,
+      "dec_deg": 40.390567
+    },
+    {
+      "id": "Nganurganity",
+      "name": "Nganurganity",
+      "magnitude": 3.49,
+      "ra_deg": 105.429782,
+      "dec_deg": -27.93483
+    },
+    {
+      "id": "Sadalbari",
+      "name": "Sadalbari",
+      "magnitude": 3.51,
+      "ra_deg": 342.500809,
+      "dec_deg": 24.601577
+    },
+    {
+      "id": "Biham",
+      "name": "Biham",
+      "magnitude": 3.52,
+      "ra_deg": 332.549939,
+      "dec_deg": 6.197863
+    },
+    {
+      "id": "Subra",
+      "name": "Subra",
+      "magnitude": 3.52,
+      "ra_deg": 145.28764,
+      "dec_deg": 9.892308
+    },
+    {
+      "id": "Wasat",
+      "name": "Wasat",
+      "magnitude": 3.52,
+      "ra_deg": 110.030749,
+      "dec_deg": 21.982316
+    },
+    {
+      "id": "Ain",
+      "name": "Ain",
+      "magnitude": 3.53,
+      "ra_deg": 67.154163,
+      "dec_deg": 19.180435
+    },
+    {
+      "id": "Rana",
+      "name": "Rana",
+      "magnitude": 3.53,
+      "ra_deg": 55.812086,
+      "dec_deg": -9.763392
+    },
+    {
+      "id": "Tarf",
+      "name": "Tarf",
+      "magnitude": 3.53,
+      "ra_deg": 124.128838,
+      "dec_deg": 9.185544
+    },
+    {
+      "id": "Kaffaljidhma",
+      "name": "Kaffaljidhma",
+      "magnitude": 3.56,
+      "ra_deg": 40.825163,
+      "dec_deg": 3.235816
+    },
+    {
+      "id": "Pipirima",
+      "name": "Pipirima",
+      "magnitude": 3.56,
+      "ra_deg": 253.083939,
+      "dec_deg": -38.017535
+    },
+    {
+      "id": "Algedi",
+      "name": "Algedi",
+      "magnitude": 3.58,
+      "ra_deg": 304.513566,
+      "dec_deg": -12.544852
+    },
+    {
+      "id": "Ginan",
+      "name": "Ginan",
+      "magnitude": 3.59,
+      "ra_deg": 185.340039,
+      "dec_deg": -60.401147
+    },
+    {
+      "id": "Nembus",
+      "name": "Nembus",
+      "magnitude": 3.59,
+      "ra_deg": 24.498154,
+      "dec_deg": 48.628214
+    },
+    {
+      "id": "Zavijava",
+      "name": "Zavijava",
+      "magnitude": 3.59,
+      "ra_deg": 177.673826,
+      "dec_deg": 1.764717
+    },
+    {
+      "id": "Sheliak",
+      "name": "Sheliak",
+      "magnitude": 3.6,
+      "ra_deg": 282.519978,
+      "dec_deg": 33.362668
+    },
+    {
+      "id": "Bharani",
+      "name": "Bharani",
+      "magnitude": 3.61,
+      "ra_deg": 42.495972,
+      "dec_deg": 27.260507
+    },
+    {
+      "id": "Atlas",
+      "name": "Atlas",
+      "magnitude": 3.62,
+      "ra_deg": 57.290597,
+      "dec_deg": 24.053415
+    },
+    {
+      "id": "Rotanev",
+      "name": "Rotanev",
+      "magnitude": 3.64,
+      "ra_deg": 309.387235,
+      "dec_deg": 14.595115
+    },
+    {
+      "id": "Prima Hyadum",
+      "name": "Prima Hyadum",
+      "magnitude": 3.65,
+      "ra_deg": 64.948349,
+      "dec_deg": 15.627643
+    },
+    {
+      "id": "Thuban",
+      "name": "Thuban",
+      "magnitude": 3.67,
+      "ra_deg": 211.097291,
+      "dec_deg": 64.375851
+    },
+    {
+      "id": "Fulu",
+      "name": "Fulu",
+      "magnitude": 3.69,
+      "ra_deg": 9.242851,
+      "dec_deg": 53.896908
+    },
+    {
+      "id": "Nashira",
+      "name": "Nashira",
+      "magnitude": 3.69,
+      "ra_deg": 325.022735,
+      "dec_deg": -16.662308
+    },
+    {
+      "id": "Saclateni",
+      "name": "Saclateni",
+      "magnitude": 3.69,
+      "ra_deg": 75.619531,
+      "dec_deg": 41.075839
+    },
+    {
+      "id": "Taiyangshou",
+      "name": "Taiyangshou",
+      "magnitude": 3.69,
+      "ra_deg": 176.512559,
+      "dec_deg": 47.779406
+    },
+    {
+      "id": "Alshain",
+      "name": "Alshain",
+      "magnitude": 3.71,
+      "ra_deg": 298.828304,
+      "dec_deg": 6.406763
+    },
+    {
+      "id": "Electra",
+      "name": "Electra",
+      "magnitude": 3.72,
+      "ra_deg": 56.218904,
+      "dec_deg": 24.113336
+    },
+    {
+      "id": "Chamukuy",
+      "name": "Chamukuy",
+      "magnitude": 3.73,
+      "ra_deg": 67.165586,
+      "dec_deg": 15.870882
+    },
+    {
+      "id": "Grumium",
+      "name": "Grumium",
+      "magnitude": 3.73,
+      "ra_deg": 268.382207,
+      "dec_deg": 56.872646
+    },
+    {
+      "id": "Ran",
+      "name": "Ran",
+      "magnitude": 3.73,
+      "ra_deg": 53.232687,
+      "dec_deg": -9.458259
+    },
+    {
+      "id": "Baten Kaitos",
+      "name": "Baten Kaitos",
+      "magnitude": 3.74,
+      "ra_deg": 27.865137,
+      "dec_deg": -10.335044
+    },
+    {
+      "id": "Miram",
+      "name": "Miram",
+      "magnitude": 3.77,
+      "ra_deg": 42.674207,
+      "dec_deg": 55.895497
+    },
+    {
+      "id": "Albali",
+      "name": "Albali",
+      "magnitude": 3.78,
+      "ra_deg": 311.918969,
+      "dec_deg": -9.495775
+    },
+    {
+      "id": "Secunda Hyadum",
+      "name": "Secunda Hyadum",
+      "magnitude": 3.78,
+      "ra_deg": 65.733719,
+      "dec_deg": 17.542514
+    },
+    {
+      "id": "Misam",
+      "name": "Misam",
+      "magnitude": 3.79,
+      "ra_deg": 47.374048,
+      "dec_deg": 44.857541
+    },
+    {
+      "id": "Praecipua",
+      "name": "Praecipua",
+      "magnitude": 3.79,
+      "ra_deg": 163.327937,
+      "dec_deg": 34.214872
+    },
+    {
+      "id": "Theemin",
+      "name": "Theemin",
+      "magnitude": 3.81,
+      "ra_deg": 68.88766,
+      "dec_deg": -30.562341
+    },
+    {
+      "id": "Alrescha",
+      "name": "Alrescha",
+      "magnitude": 3.82,
+      "ra_deg": 30.511772,
+      "dec_deg": 2.763735
+    },
+    {
+      "id": "Giausar",
+      "name": "Giausar",
+      "magnitude": 3.82,
+      "ra_deg": 172.85092,
+      "dec_deg": 69.331075
+    },
+    {
+      "id": "Marfik",
+      "name": "Marfik",
+      "magnitude": 3.82,
+      "ra_deg": 247.728453,
+      "dec_deg": 1.983888
+    },
+    {
+      "id": "Alpherg",
+      "name": "Alpherg",
+      "magnitude": 3.83,
+      "ra_deg": 22.870873,
+      "dec_deg": 15.345823
+    },
+    {
+      "id": "Atik",
+      "name": "Atik",
+      "magnitude": 3.84,
+      "ra_deg": 56.07972,
+      "dec_deg": 32.28824
+    },
+    {
+      "id": "Polis",
+      "name": "Polis",
+      "magnitude": 3.84,
+      "ra_deg": 273.44087,
+      "dec_deg": -21.058832
+    },
+    {
+      "id": "Dalim",
+      "name": "Dalim",
+      "magnitude": 3.86,
+      "ra_deg": 48.018864,
+      "dec_deg": -28.98762
+    },
+    {
+      "id": "Sadachbia",
+      "name": "Sadachbia",
+      "magnitude": 3.86,
+      "ra_deg": 335.414064,
+      "dec_deg": -1.387334
+    },
+    {
+      "id": "Sualocin",
+      "name": "Sualocin",
+      "magnitude": 3.86,
+      "ra_deg": 309.90953,
+      "dec_deg": 15.912073
+    },
+    {
+      "id": "Iklil",
+      "name": "Iklil",
+      "magnitude": 3.87,
+      "ra_deg": 239.221151,
+      "dec_deg": -29.214073
+    },
+    {
+      "id": "Maia",
+      "name": "Maia",
+      "magnitude": 3.87,
+      "ra_deg": 56.456695,
+      "dec_deg": 24.367751
+    },
+    {
+      "id": "Rasalas",
+      "name": "Rasalas",
+      "magnitude": 3.88,
+      "ra_deg": 148.190903,
+      "dec_deg": 26.006953
+    },
+    {
+      "id": "Azha",
+      "name": "Azha",
+      "magnitude": 3.89,
+      "ra_deg": 44.106873,
+      "dec_deg": -8.898145
+    },
+    {
+      "id": "Nusakan",
+      "name": "Nusakan",
+      "magnitude": 3.9,
+      "ra_deg": 231.957211,
+      "dec_deg": 29.105699
+    },
+    {
+      "id": "Ukdah",
+      "name": "Ukdah",
+      "magnitude": 3.9,
+      "ra_deg": 144.964008,
+      "dec_deg": -1.14281
+    },
+    {
+      "id": "Zubenelhakrabi",
+      "name": "Zubenelhakrabi",
+      "magnitude": 3.91,
+      "ra_deg": 233.881578,
+      "dec_deg": -14.789536
+    },
+    {
+      "id": "Kitalpha",
+      "name": "Kitalpha",
+      "magnitude": 3.92,
+      "ra_deg": 318.955949,
+      "dec_deg": 5.247865
+    },
+    {
+      "id": "Asellus Australis",
+      "name": "Asellus Australis",
+      "magnitude": 3.94,
+      "ra_deg": 131.171248,
+      "dec_deg": 18.154309
+    },
+    {
+      "id": "Arkab Prior",
+      "name": "Arkab Prior",
+      "magnitude": 3.96,
+      "ra_deg": 290.659551,
+      "dec_deg": -44.458959
+    },
+    {
+      "id": "Rukbat",
+      "name": "Rukbat",
+      "magnitude": 3.96,
+      "ra_deg": 290.97157,
+      "dec_deg": -40.61594
+    },
+    {
+      "id": "Beemim",
+      "name": "Beemim",
+      "magnitude": 3.97,
+      "ra_deg": 66.009239,
+      "dec_deg": -34.016848
+    },
+    {
+      "id": "Menkib",
+      "name": "Menkib",
+      "magnitude": 3.98,
+      "ra_deg": 59.741253,
+      "dec_deg": 35.791032
+    },
+    {
+      "id": "Alcor",
+      "name": "Alcor",
+      "magnitude": 3.99,
+      "ra_deg": 201.306403,
+      "dec_deg": 54.987954
+    }
+  ]
+}

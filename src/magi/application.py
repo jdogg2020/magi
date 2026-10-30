@@ -1,7 +1,10 @@
 """Single owner for recorder state; HTTP mutations use a bounded work queue."""
 import copy
+import hashlib
+import secrets
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import queue
@@ -11,6 +14,7 @@ import time
 
 from . import __version__
 from .config import Config
+from .calibration import CalibrationError, GEOMETRY_KEYS, active_report, source_fingerprint, frame_time, visible_stars, solve_geometry
 from .detection import Analysis
 from .health import metrics, cpu_counters
 from .identification import Identifier, defaults as identification_defaults
@@ -27,6 +31,8 @@ class Application:
     def __init__(self, path):
         self.path = Path(path)
         self.cfg = Config.load(path)
+        self.calibration_session = None
+        self.calibration_report = active_report(json.loads(self.path.read_text()), self.cfg)
         self.recorder = self.substream = self.analysis = self.previews = None
         self.queue = queue.Queue(maxsize=16)
         self.lock = threading.RLock()
@@ -74,10 +80,10 @@ class Application:
                 'storage': {key: raw.get('storage', {}).get(key) for key in
                             ('max_bytes', 'min_free_bytes', 'retention_days')},
                 'detection': self.cfg.detection,
-                'identification': {**{k: v for k, v in self.cfg.identification.items() if k not in ('opensky_client_secret', 'opensky_client_id')},
+                'star_calibration': self.calibration_report, 'identification': {**{k: v for k, v in self.cfg.identification.items() if k not in ('opensky_client_secret', 'opensky_client_id')},
                                    'has_opensky_credentials': bool(self.cfg.identification.get('opensky_client_secret'))}}
 
-    def update_settings(self, changes):
+    def update_settings(self, changes, calibration=None):
         if not isinstance(changes, dict):
             raise ValueError('Invalid settings.')
         raw = json.loads(self.path.read_text())
@@ -99,6 +105,8 @@ class Application:
                     if ((section == 'camera' and key == 'password') or (section == 'identification' and key in ('opensky_client_id', 'opensky_client_secret'))) and value == '':
                         continue
                     new.setdefault(section, {})[key] = value
+            if calibration is not None:
+                new['calibration'] = calibration
             candidate = Config.from_dict(new)
             # Root, mount and executable paths cannot be edited via HTTP.
             if candidate.root != self.cfg.root or candidate.mount != self.cfg.mount:
@@ -111,6 +119,8 @@ class Application:
         atomic_json(self.path.with_suffix('.backup'), raw)
         atomic_json(self.path, new)
         self.cfg = candidate
+        self.calibration_session = None
+        self.calibration_report = active_report(new, self.cfg)
         self.identifier = Identifier(self.cfg)
         self.media = Media(self.cfg)
         self.last_error = None
@@ -130,6 +140,9 @@ class Application:
             except ValueError:
                 # A missing substream must never prevent saving the original.
                 LOG.warning('substream preview unavailable for event %s', result['event_id'])
+        if self.calibration_report and self.recorder.active:
+            self.recorder.active['meta']['camera_calibration'] = self.calibration_report
+            self.recorder._save(self.recorder.active)
         if not result['merged']:
             self.event_count += 1
             self.previews.begin(result['event_id'], time.monotonic())
@@ -153,6 +166,8 @@ class Application:
                     self.stop_capture()
                     self.next_start = 0
                     task['result'] = {'reconnecting': True}
+                elif task['command'].startswith('calibration_'):
+                    task['result'] = self.calibrate(task['command'], task['value'])
                 elif task['command'] == 'render':
                     path = self.clip_path(task['value'].get('id', ''), 'metadata')
                     if not self.queue_media(path.parent, json.loads(path.read_text()), force=True):
@@ -165,9 +180,15 @@ class Application:
                     task['result'] = {'queued': True}
                 else:
                     raise ValueError('Unknown command.')
-            except (OSError, ValueError):
-                task['error'] = ('Review rendering needs free recording space and an available worker. Try again after current jobs finish.'
-                                 if task['command'] == 'render' else 'Action unavailable. Check the camera configuration, SSD, or recording status.')
+            except (OSError, ValueError) as error:
+                if isinstance(error, CalibrationError):
+                    task['error'] = str(error)
+                elif task['command'].startswith('calibration_'):
+                    task['error'] = 'Star calibration unavailable. Check the selected event, location and astronomy packages.'
+                elif task['command'] == 'render':
+                    task['error'] = 'Review rendering needs free recording space and an available worker. Try again after current jobs finish.'
+                else:
+                    task['error'] = 'Action unavailable. Check the camera configuration, SSD, or recording status.'
             finally:
                 task['done'].set()
 
@@ -188,7 +209,7 @@ class Application:
         if self.recorder:
             try:
                 self.recorder.extra_protected = self.substream.extra_protected = set()
-                protected = self.previews.protected() | self.identifier.protected() | self.media.protected()
+                protected = self.previews.protected() | self.identifier.protected() | self.media.protected() | self.calibration_protected()
                 self.recorder.extra_protected = protected | set(self.substream._protected())
                 self.substream.extra_protected = protected | set(self.recorder._protected())
                 self.recorder.tick()
@@ -224,6 +245,91 @@ class Application:
         if now >= self.next_status:
             self.next_status = now + 1
             self._snapshot()
+
+    def calibration_protected(self):
+        protected = {self.calibration_report['source_event']} if self.calibration_report else set()
+        session = self.calibration_session
+        if session and time.monotonic()-session['created'] <= 1800:
+            protected.add(session['id'])
+        else:
+            self.calibration_session = None
+        return protected
+
+    def calibrate(self, command, data):
+        if command == 'calibration_load':
+            self.calibration_session = None
+            if not self.recorder:
+                raise CalibrationError('Recording storage must be ready before loading a calibration frame.')
+            if not isinstance(data.get('id'), str):
+                raise CalibrationError('Choose a saved full-resolution event frame.')
+            path = self.clip_path(data['id'], 'frame')
+            latitude, longitude, elevation = (data.get(k) for k in ('latitude','longitude','elevation_m'))
+            for value, low, high in ((latitude,-90,90),(longitude,-180,180),(elevation,-500,9000)):
+                if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not low<=value<=high:
+                    raise CalibrationError('Enter the camera location: latitude, longitude and elevation in meters.')
+            meta = json.loads(path.with_name('event.json').read_text())
+            media = json.loads(path.with_name('media.json').read_text())
+            if meta.get('id') != data['id'] or meta.get('state') not in ('complete','interrupted'):
+                raise CalibrationError('Choose a completed event frame with matching metadata.')
+            stamp = frame_time(meta, media)
+            if not 1577836800 <= stamp <= 4102444800:
+                raise CalibrationError('The image timestamp must be between 2020 and 2100. Check the Pi clock.')
+            stars = visible_stars(stamp, latitude, longitude, elevation)
+            thumbnail = media['thumbnail']
+            if any(isinstance(thumbnail.get(k),bool) or not isinstance(thumbnail.get(k),int) or not 0<thumbnail[k]<=7680 for k in ('native_width','native_height')) or thumbnail['native_width']*thumbnail['native_height']>33177600:
+                raise CalibrationError('Selected frame has invalid native dimensions. Improve its thumbnail first.')
+            self.calibration_session = {'token': secrets.token_urlsafe(24), 'id': meta['id'],
+                'created': time.monotonic(), 'timestamp': stamp,
+                'image_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                'source_fingerprint': source_fingerprint(self.cfg), 'stars': stars,
+                'volume_identity': self.recorder.volume.identity, 'volume_token': self.recorder.volume.token,
+                'width': thumbnail['native_width'], 'height': thumbnail['native_height'],
+                'location': {'latitude':latitude, 'longitude':longitude, 'elevation_m':elevation}}
+            session = self.calibration_session
+            return {'token':session['token'], 'id':meta['id'], 'timestamp':stamp,
+                'width':session['width'], 'height':session['height'],
+                'stars':[{k:v for k,v in star.items() if k!='direction'} for star in stars]}
+        session = self.calibration_session
+        token = data.get('token')
+        if not isinstance(token,str) or not token.isascii() or len(token)>128:
+            raise CalibrationError('Invalid calibration session. Load the frame again.')
+        if not session or time.monotonic()-session['created']>1800 or not secrets.compare_digest(token,session['token']):
+            raise CalibrationError('Calibration session expired or changed. Load the frame again.')
+        if source_fingerprint(self.cfg) != session['source_fingerprint']:
+            raise CalibrationError('Camera configuration changed. Load the frame again.')
+        if not self.recorder or self.recorder.volume.identity != session['volume_identity'] or self.recorder.volume.token != session['volume_token']:
+            raise CalibrationError('Recording volume changed. Load the calibration frame again.')
+        self.recorder.volume.check()
+        path = self.clip_path(session['id'], 'frame')
+        if hashlib.sha256(path.read_bytes()).hexdigest() != session['image_sha256']:
+            raise CalibrationError('The selected frame changed. Load it again before solving.')
+        if command == 'calibration_solve':
+            session.pop('result', None);session.pop('matches', None)
+            matches = data.get('matches')
+            if not isinstance(matches,list) or not 6<=len(matches)<=20:
+                raise CalibrationError('Select 6–20 named stars, spread across the image.')
+            catalog = {star['id']:star for star in session['stars']}
+            ids = []; points = []; rays = []
+            for match in matches:
+                if not isinstance(match,dict) or not isinstance(match.get('star_id'),str) or match['star_id'] not in catalog:
+                    raise CalibrationError('Choose a named star from the visible-star list for each point.')
+                star_id = match['star_id'];x=match.get('x');y=match.get('y')
+                if star_id in ids or any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or not 0<=v<=1 for v in (x,y)):
+                    raise CalibrationError('Star names must be unique and points must be inside the image.')
+                ids.append(star_id);points.append([x,y]);rays.append(catalog[star_id]['direction'])
+            result = solve_geometry(points,rays)
+            session['result'] = result;session['matches'] = matches
+            return result
+        if command == 'calibration_apply' and session.get('result'):
+            result = session['result']
+            geometry = {**session['location'], **result['geometry']}
+            report = {'schema':1,'method':'operator_identified_stars','source_event':session['id'],
+                'source_fingerprint':session['source_fingerprint'], 'image_sha256':session['image_sha256'],
+                'image_timestamp_unix':session['timestamp'], 'applied_unix':time.time(),
+                'geometry':geometry,'matches':session['matches'],'fit':result,
+                'catalog':'IAU WGSN J2000 named stars, 2022-04-04 snapshot'}
+            return self.update_settings({'identification':{**geometry,'calibrated':True}},calibration=report)
+        raise CalibrationError('Solve and inspect a valid star fit before applying it.')
 
     def queue_media(self, directory, meta, force=False):
         if not self.recorder or len(self.media.protected()) >= 4 or meta['id'] in self.media.protected():
@@ -295,7 +401,7 @@ class Application:
             clips = []
         status.update({'error': self.last_error, 'trigger_note': self.last_trigger_error,
                        'uptime_seconds': round(time.monotonic() - self.started, 1),
-                       'health': self.health, 'event_count_since_start': self.event_count,
+                       'health': self.health, 'star_calibration': self.calibration_report, 'event_count_since_start': self.event_count,
                        'analysis': {'state': self.analysis.state if self.analysis else 'idle',
                                     'frames': self.analysis.frames if self.analysis else 0,
                                     'dropped_frames': self.analysis.dropped if self.analysis else 0,
@@ -326,7 +432,7 @@ class Application:
 
     def stop_capture(self):
         if self.substream:
-            self.substream.extra_protected = self.media.protected() | self.identifier.protected() | (set(self.recorder._protected()) if self.recorder else set()) | (self.previews.protected() if self.previews else set())
+            self.substream.extra_protected = self.media.protected() | self.identifier.protected() | self.calibration_protected() | (set(self.recorder._protected()) if self.recorder else set()) | (self.previews.protected() if self.previews else set())
             try:
                 self.substream.close()
             except OSError:
@@ -334,14 +440,14 @@ class Application:
         if self.analysis:
             self.analysis.close()
         if self.recorder:
-            self.recorder.extra_protected = self.media.protected() | self.identifier.protected() | (set(self.substream._protected()) if self.substream else set()) | (self.previews.protected() if self.previews else set())
+            self.recorder.extra_protected = self.media.protected() | self.identifier.protected() | self.calibration_protected() | (set(self.substream._protected()) if self.substream else set()) | (self.previews.protected() if self.previews else set())
             try:
                 self.recorder.close()
             except OSError:
                 pass
         if self.previews:
             try:
-                self.previews.close(self.recorder.volume if self.recorder else None, self.media.protected() | self.identifier.protected() | (set(self.substream._protected()) if self.substream else set()))
+                self.previews.close(self.recorder.volume if self.recorder else None, self.media.protected() | self.identifier.protected() | self.calibration_protected() | (set(self.substream._protected()) if self.substream else set()))
             except OSError:
                 self.previews.close()
         self.analysis = self.recorder = self.substream = self.previews = None

@@ -107,6 +107,8 @@ async function fillSettings() {
   renderZoneList(); drawZones(); loadZoneImage();
   const id = s.identification || {};
   for (const key of ['latitude','longitude','elevation_m','azimuth_deg','elevation_deg','roll_deg','horizontal_fov_deg','vertical_fov_deg','tolerance_deg','aircraft_feed_url','satellite_group','aircraft_provider']) $('id-'+key).value = id[key] ?? '';
+  for (const [field,key] of [['star-latitude','latitude'],['star-longitude','longitude'],['star-elevation','elevation_m']]) $(field).value=id[key] ?? '';
+  if(s.star_calibration) $('star-status').textContent=`Saved star calibration · ${s.star_calibration.matches.length} stars · RMS ${s.star_calibration.fit.rms_deg.toFixed(3)}° · source event retained · recalibrate after moving the camera.`;
   for (const key of ['enabled','calibrated','satellites']) $('id-'+key).checked = !!id[key];
   $('id-opensky_client_id').placeholder = id.has_opensky_credentials ? 'Saved — leave blank to keep' : 'Your OpenSky API client ID';
   settingsLoaded = true;
@@ -440,4 +442,87 @@ $('render-preview').onclick = async () => {
   $('render-preview').disabled = true;
   try { await api('/api/render', {id: reviewEvent.id}); $('render-status').textContent = 'Queued. The full-resolution thumbnail will update when frame selection finishes.'; }
   catch (error) { $('render-status').textContent = error.message; $('render-preview').disabled = false; }
+};
+let starSession=null, starPoints=[], starSolution=null, starGeneration=0;
+function invalidateStarFit() {starGeneration++;starSolution=null;$('star-apply').disabled=true;$('star-fit').textContent='';}
+function renderStarPoints() {
+  const list=$('star-points');list.replaceChildren();
+  starPoints.forEach((point,index)=>{
+    const row=document.createElement('div');row.className='star-point';
+    const text=document.createElement('span');text.textContent=`${index+1}. ${point.star_id} · ${(point.x*100).toFixed(2)}%, ${(point.y*100).toFixed(2)}%`;
+    const remove=document.createElement('button');remove.type='button';remove.className='quiet';remove.textContent='Remove';
+    remove.onclick=()=>{starPoints.splice(index,1);invalidateStarFit();renderStarPoints();};row.append(text,remove);list.append(row);
+  });
+  drawStarPoints();
+}
+function drawStarPoints() {
+  const canvas=$('star-canvas'),ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(!starSession)return;
+  canvas.width=starSession.width;canvas.height=starSession.height;
+  const scale=Math.max(1,canvas.width/1000);
+  starPoints.forEach((point,index)=>{const x=point.x*canvas.width,y=point.y*canvas.height;
+    ctx.strokeStyle='#06101b';ctx.lineWidth=5*scale;ctx.strokeRect(x-7*scale,y-7*scale,14*scale,14*scale);
+    ctx.strokeStyle='#76e3a9';ctx.lineWidth=2*scale;ctx.strokeRect(x-7*scale,y-7*scale,14*scale,14*scale);
+    ctx.font=`${14*scale}px sans-serif`;ctx.fillStyle='#76e3a9';ctx.fillText(`${index+1} ${point.star_id}`,x+10*scale,y-10*scale);
+    const expected=starSolution?.projected_matches?.[index];
+    if(expected) {ctx.strokeStyle='#f7c75e';ctx.lineWidth=2*scale;ctx.strokeRect(expected[0]*canvas.width-4*scale,expected[1]*canvas.height-4*scale,8*scale,8*scale);}
+  });
+}
+async function refreshStarFrames() {
+  const result=await api('/api/clips'),select=$('star-event');select.replaceChildren();
+  for(const event of result.clips.filter(event=>event.best_frame)) {
+    const option=document.createElement('option');option.value=event.id;option.textContent=new Date(event.trigger_utc).toLocaleString();select.append(option);
+  }
+  if(select.children.length)select.value=select.children[0].value;
+  $('star-status').textContent=select.children.length?'Choose a clear-night frame, then Load star frame.':'No full-resolution frames yet. Save an event and wait for its thumbnail selection.';
+}
+$('star-refresh').onclick=()=>refreshStarFrames().catch(error=>{$('star-status').textContent=error.message;});
+$('star-load').onclick=async()=>{
+  starSession=null;starPoints=[];invalidateStarFit();const generation=starGeneration;$('star-editor').classList.add('hidden');
+  const location={latitude:$('star-latitude').value===''?null:Number($('star-latitude').value),longitude:$('star-longitude').value===''?null:Number($('star-longitude').value),elevation_m:$('star-elevation').value===''?null:Number($('star-elevation').value)};
+  $('star-load').disabled=true;$('star-status').textContent='Computing visible named stars for the saved image time…';
+  try {
+    const result=await api('/api/calibration/load',{id:$('star-event').value,...location});
+    if(generation!==starGeneration)return;
+    starSession=result;$('star-name').replaceChildren();
+    for(const star of result.stars) {const option=document.createElement('option');option.value=star.id;option.textContent=`${star.name} · mag ${star.magnitude.toFixed(1)} · az ${star.azimuth_deg.toFixed(0)}° / alt ${star.altitude_deg.toFixed(0)}°`;$('star-name').append(option);}
+    if(result.stars.length)$('star-name').value=result.stars[0].id;
+    $('star-frame').src=`/api/clips/${encodeURIComponent(result.id)}/frame?calibration=${encodeURIComponent(result.token)}`;
+    $('star-status').textContent=`Frozen frame: ${new Date(result.timestamp*1000).toLocaleString()} · ${result.width}×${result.height}. Choose a known star, then click its center. Select at least six across the image.`;
+    $('star-editor').classList.remove('hidden');renderStarPoints();
+  } catch(error){$('star-status').textContent=error.message;}
+  finally{$('star-load').disabled=false;}
+};
+function addStarPoint(x,y) {
+  if(!starSession||!Number.isFinite(x)||!Number.isFinite(y)||x<0||x>1||y<0||y>1)return;
+  const name=$('star-name').value;
+  if(!starSession.stars.some(star=>star.id===name))return;
+  if(starPoints.length>=20||starPoints.some(point=>point.star_id===name)){$('star-status').textContent='Use each star once, up to 20. Remove a point to correct it.';return;}
+  starPoints.push({star_id:name,x,y});invalidateStarFit();renderStarPoints();
+  const next=starSession.stars.find(star=>!starPoints.some(point=>point.star_id===star.id));if(next)$('star-name').value=next.id;
+}
+$('star-canvas').onclick=event=>{const rect=$('star-canvas').getBoundingClientRect();addStarPoint((event.clientX-rect.left)/rect.width,(event.clientY-rect.top)/rect.height);};
+$('star-add').onclick=()=>{if($('star-x').value!==''&&$('star-y').value!=='')addStarPoint(Number($('star-x').value)/100,Number($('star-y').value)/100);};
+$('star-zoom').onchange=()=>{$('star-surface').style.width=`${Number($('star-zoom').value)*100}%`;};
+$('star-clear').onclick=()=>{starPoints=[];invalidateStarFit();renderStarPoints();};
+$('star-frame').addEventListener('load',drawStarPoints);
+$('star-frame').addEventListener('error',()=>{$('star-status').textContent='The frozen frame could not be loaded. Choose the frame and load again.';invalidateStarFit();});
+$('star-solve').onclick=async()=>{
+  if(!starSession)return;
+  invalidateStarFit();const generation=starGeneration,token=starSession.token;$('star-solve').disabled=true;$('star-status').textContent='Fitting stars and validating each with a held-out check…';
+  try {
+    const solution=await api('/api/calibration/solve',{token,matches:starPoints});
+    if(generation!==starGeneration||starSession?.token!==token)return;
+    starSolution=solution;
+    const g=solution.geometry;
+    $('star-fit').textContent=`True-north azimuth: ${g.azimuth_deg.toFixed(3)}°\nElevation: ${g.elevation_deg.toFixed(3)}°\nRoll: ${g.roll_deg.toFixed(3)}°\nField of view: ${g.horizontal_fov_deg.toFixed(3)}° × ${g.vertical_fov_deg.toFixed(3)}°\nStar RMS: ${solution.rms_deg.toFixed(3)}° · max: ${solution.max_error_deg.toFixed(3)}° · held-out max: ${solution.held_out_max_deg.toFixed(3)}°\n${solution.model}\n${solution.assumptions.join('\n')}`;
+    renderStarPoints();$('star-status').textContent='Fit passed. Green squares are your clicks; amber squares are fitted positions. Review the values, then Apply calibration.';$('star-apply').disabled=false;
+  }catch(error){$('star-status').textContent=error.message;}
+  finally{$('star-solve').disabled=false;}
+};
+$('star-apply').onclick=async()=>{
+  if(!starSession||!starSolution)return;
+  $('star-apply').disabled=true;
+  try{await api('/api/calibration/apply',{token:starSession.token});starSession=null;starSolution=null;$('star-editor').classList.add('hidden');await fillSettings();$('star-status').textContent='Star calibration saved. Recording is reconnecting; new events will include its provenance.';}
+  catch(error){$('star-status').textContent=error.message;}
 };

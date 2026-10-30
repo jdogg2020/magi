@@ -247,6 +247,20 @@ class PrototypeTests(unittest.TestCase):
             self.assertEqual((meta['detection_settings']['width'],meta['detection_settings']['height']),(160,90))
             self.assertEqual(meta['detection_settings']['fps'],8)
             self.assertEqual(meta['recording'], 'video_only_stream_copy')
+        try:
+            import skyfield
+        except ImportError:
+            pass
+        else:
+            with self.request('/api/calibration/load', {'id':saved['id'],'latitude':40,'longitude':-98,'elevation_m':500}, {'X-CSRF-Token':csrf}) as r:
+                calibration=json.load(r)
+                self.assertTrue(calibration['stars'])
+                self.assertEqual(calibration['width'],160)
+            with self.assertRaises(urllib.error.HTTPError) as failure:
+                self.request('/api/calibration/solve', {'token':calibration['token'],'matches':[]}, {'X-CSRF-Token':csrf})
+            self.assertEqual(failure.exception.code,409)
+            self.assertIn('6',json.loads(failure.exception.read())['error'])
+            self.assertFalse(self.app.cfg.identification['calibrated'])
         with self.request('/api/identify', {'id': saved['id']}, {'X-CSRF-Token': csrf}) as r:
             self.assertTrue(json.load(r)['queued'])
         report = self.app.cfg.root / 'events' / saved['id'] / 'identification.json'

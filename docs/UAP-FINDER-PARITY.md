@@ -35,7 +35,7 @@ comparison when the reference documentation changes.
 | Targeted cloud-edge rejection | Missing | Spatial cloud context, local gradients and persistence; preserve compact lights and streaks |
 | Camera make presets and connection test | Missing | Stream profiles and bounded, credential-safe diagnosis of reachability/login/decoding failures |
 | Optional solar-position schedule | Missing | Retain Always as default; optional Night uses location and explicit schedule status |
-| Pointing and lens geometry | Partial | Manual pinhole geometry exists; add assisted star calibration and uncertainty/provenance |
+| Pointing and lens geometry | Partial | Assisted named-star fit added in 0.9; field validation, blind recognition and distortion fitting remain |
 | Track bearings, angular speed and travelled angle | Partial | Persist calibrated per-sample measurements and uncertainty in review/export |
 | Aircraft correlation | Partial | Existing local ADS-B/OpenSky path; validate full angular-motion agreement and coverage detail |
 | Satellite correlation | Partial | Limited catalogues and geometry exist; improve coverage, visibility context and observed/predicted speed comparison |
@@ -67,8 +67,9 @@ false events. Keep processing bounded on the Pi.
 
 ### 2. Calibrated analysis and reference evidence
 
-- [ ] Assisted star selection and fit, residual display, explicit true-north basis,
-  calibration age and uncertainty; reject poorly constrained solutions.
+- [x] Assisted named-star selection and fit, residual/held-out checks, true-north basis,
+  saved fit provenance and rejected poor geometry (0.9; real-camera validation pending).
+- [ ] Blind star recognition, lens distortion fit and verified whole-frame uncertainty.
 - [ ] Persist per-sample rays, angular speed, distance and fit quality.
 - [ ] Aircraft/satellite agreement on position, timing, direction and angular rate.
 - [ ] Celestial, meteor-like and path-change assessments with separate quality flags.

@@ -15,7 +15,7 @@ class Element {
   removeAttribute(name) { delete this[name]; }
   showModal(){this.open=true;}
   close(){this.open=false;this.listeners.close?.();}
-  getContext(){return {clearRect:()=>{this.drawn=false;this.pixelDrawn=false;this.boxDrawn=false;},createImageData:(w,h)=>({data:new Uint8ClampedArray(w*h*4)}),putImageData:()=>{this.drawn=true;this.pixelDrawn=true;},strokeRect:()=>{this.boxDrawn=true;},fillRect(){},beginPath(){},moveTo(){},lineTo(){},stroke(){},setLineDash(){}};}
+  getContext(){return {clearRect:()=>{this.drawn=false;this.pixelDrawn=false;this.boxDrawn=false;},createImageData:(w,h)=>({data:new Uint8ClampedArray(w*h*4)}),putImageData:()=>{this.drawn=true;this.pixelDrawn=true;},strokeRect:()=>{this.boxDrawn=true;},fillRect(){},beginPath(){},moveTo(){},lineTo(){},stroke(){},setLineDash(){},fillText(){}};}
   getBoundingClientRect(){return {left:0,top:0,width:320,height:180};}
   setPointerCapture(){}
   play(){this.playCalls=(this.playCalls||0)+1;return Promise.resolve();}
@@ -94,6 +94,20 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  await view.onclick();
  assert(!elements['review-still'].classList.contains('hidden'),'Reopening an event must start with its image again');
  elements['review-close'].onclick();
+ elements['star-latitude'].value='40';elements['star-longitude'].value='-98';elements['star-elevation'].value='500';
+ await elements['star-refresh'].onclick();
+ assert(elements['star-event'].children.length>0,'Star calibration should list full-resolution saved frames');
+ await elements['star-load'].onclick();
+ assert(!elements['star-editor'].classList.contains('hidden'),'Frozen calibration image should open');
+ assert(elements['star-name'].children.length>0,'Visible named stars should be available');
+ const starNames=elements['star-name'].children.map(option=>option.value);
+ for(let i=0;i<6;i++) {elements['star-name'].value=starNames[i];elements['star-x'].value=String(10+i*14);elements['star-y'].value=String(10+i*14);elements['star-add'].onclick();}
+ assert.equal(elements['star-points'].children.length,6);
+ elements['star-zoom'].value='2';elements['star-zoom'].onchange();assert.equal(elements['star-surface'].style.width,'200%');
+ await elements['star-solve'].onclick();
+ assert(elements['star-apply'].disabled,'A collinear/misidentified star fit must not be applied');
+ assert(elements['star-status'].textContent.includes('Spread'),'Rejected fit should explain how to improve it');
+ elements['star-clear'].onclick();assert.equal(elements['star-points'].children.length,0);
  // Check setup navigation and save feedback without changing the disposable service config.
  vm.runInContext("renderStatus({state:'setup_required', health:{}, analysis:{}})",context);
  const setupLink=elements.notice.children.find(el=>el.tagName==='a');
@@ -125,5 +139,5 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert.equal(elements['settings-result'].textContent,'Invalid camera settings');
  assert(!submit.disabled);context.fetch=originalFetch;
  await elements.logout.onclick();assert(!elements.login.classList.contains('hidden'));
- console.log('Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, image-first review, playback from zero, full-frame viewing, substream track timing, tracker toggles, detection timeline and exact pixel overlay mode, sign-out.');
+ console.log('Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, image-first review, playback from zero, full-frame viewing, substream track timing, tracker toggles, detection timeline exact pixel overlay mode, assisted star selection and invalid-fit rejection, sign-out.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

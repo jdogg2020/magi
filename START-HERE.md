@@ -142,6 +142,15 @@ toggle changed-pixel highlights and motion boxes. **The original file preserves 
 re-encoding.** Detection replay timing is approximate; use originals and metadata for analysis.
 Full-resolution thumbnail selection runs in the background; see [REVIEW-QUALITY.md](docs/REVIEW-QUALITY.md).
 
+## Point the camera using stars
+
+Without GNSS/IMU hardware, use **Settings → Calibrate with stars**. Save a clear-night
+event, wait for its full-resolution frame, enter the camera's actual location,
+then load the frame and mark at least six known stars across it. Solve, review
+the fit and Apply calibration. Nothing is uploaded; star identities are selected
+by you in this first version. The optional astronomy packages are required.
+See [STAR-CALIBRATION.md](docs/STAR-CALIBRATION.md) for limits and validation.
+
 ## Updates
 
 Once running, use `magi-update` for future releases instead of reinstalling.

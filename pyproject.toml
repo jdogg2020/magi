@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magi-capture"
-version = "0.8.0"
+version = "0.9.0"
 description = "Local-first, continuously buffered sky-camera recording"
 requires-python = ">=3.11"
 # License is intentionally pending the owner's decision before publication.
@@ -20,4 +20,4 @@ magi = "magi.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-magi = ["web/*.html", "web/*.css", "web/*.js"]
+magi = ["web/*.html", "web/*.css", "web/*.js", "data/*.json"]

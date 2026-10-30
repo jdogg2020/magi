@@ -315,7 +315,7 @@ class Application:
             self.recorder.volume.check()
         elif self.cfg.require_mount and not os.path.ismount(self.cfg.mount):
             raise ValueError('Recording volume is not mounted.')
-        names = {'original': 'clip.mkv', 'preview': 'preview.mp4', 'thumbnail': 'thumbnail.jpg', 'metadata': 'event.json', 'motion': 'motion.jsonl.gz', 'identification': 'identification.json', 'video': 'preview-substream.mp4', 'frame': 'best-frame.jpg', 'media': 'media.json'}
+        names = {'original': 'clip.mkv', 'preview': 'preview.mp4', 'thumbnail': 'thumbnail.jpg', 'metadata': 'event.json', 'motion': 'motion.jsonl.gz', 'identification': 'identification.json', 'video': 'preview-substream.mp4', 'frame': 'best-frame.jpg', 'media': 'media.json', 'timeline': 'substream.json'}
         if kind not in names:
             raise ValueError('Unknown file.')
         base = self.cfg.root / 'events'

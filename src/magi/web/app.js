@@ -216,9 +216,10 @@ setInterval(refresh, 2000); setInterval(refreshFrame, 1000);
 signedIn().then(refreshFrame).catch(loggedOut);
 
 let reviewFrames = [], reviewMeta = null, reviewEvent = null;
+let reviewTracks=[], reviewColorTracks=[], reviewTimelineAttempted=false, trackBandSignature='';
 let reviewGeneration = 0, reviewMode = 'image', reviewImageKind = 'thumbnail';
 async function openReview(event, imageKind = 'thumbnail') {
-  const generation = ++reviewGeneration; reviewEvent = event; reviewFrames = []; reviewMeta = null;
+  const generation = ++reviewGeneration; reviewEvent = event; reviewFrames = []; reviewMeta = null; reviewTracks=[]; reviewColorTracks=[]; reviewTimelineAttempted=false;
   $('review-title').textContent = new Date(event.trigger_utc).toLocaleString();
   $('motion-info').textContent = event.motion ? 'Loading motion data…' : 'Motion data unavailable for this older event.';
   $('identification-detail').textContent = ''; $('identification-status').textContent = 'Loading reference check…';
@@ -234,31 +235,149 @@ async function openReview(event, imageKind = 'thumbnail') {
       const records = (await response.text()).trim().split('\n').map(line=>JSON.parse(line));
       if(generation !== reviewGeneration || !reviewEvent || reviewEvent.id !== event.id) return;
       reviewMeta = records.shift();
-      if(reviewMeta.kind !== 'magi_motion_v1' || reviewMeta.width > 640 || reviewMeta.height > 360) throw new Error('Unsupported motion data');
-      reviewFrames = records; $('motion-info').textContent = `${records.length} sampled motion frames`; drawMotion();
-    } catch { if(generation===reviewGeneration) $('motion-info').textContent = 'Motion data could not be loaded.'; }
+      if(reviewMeta.kind !== 'magi_motion_v1' || !Number.isInteger(reviewMeta.width) || !Number.isInteger(reviewMeta.height) || reviewMeta.width<=0 || reviewMeta.height<=0 || reviewMeta.width>1920 || reviewMeta.height>1080 || !Number.isFinite(reviewMeta.fps) || reviewMeta.fps<=0 || reviewMeta.fps>30) throw new Error('Unsupported motion data');
+      reviewFrames = records; reviewTracks=MagiTracks.collect(records,reviewMeta); if(reviewEvent.substream_preview) await loadReviewTimeline(event.id,generation); if(generation!==reviewGeneration||reviewEvent?.id!==event.id) return; $('motion-info').textContent = `${records.length} sampled motion frames`; drawMotion();
+    } catch { if(generation===reviewGeneration) { reviewMeta=null;reviewFrames=[];reviewTracks=[];reviewColorTracks=[];$('motion-info').textContent = 'Motion data could not be loaded.'; } }
   }
+}
+function currentTracks() {
+  return $('review-quality').value === 'analysis' ? reviewTracks : reviewColorTracks;
+}
+function pathStroke(context, points, project, color, scale, dashed) {
+  if(points.length<2) return;
+  context.beginPath();
+  points.forEach((point,index)=>{const [x,y]=project(point); if(index) context.lineTo(x,y); else context.moveTo(x,y);});
+  context.strokeStyle='#07101b'; context.lineWidth=5*scale; context.setLineDash([]); context.stroke();
+  context.strokeStyle=color; context.lineWidth=2*scale; context.setLineDash(dashed ? [5*scale,5*scale] : []); context.stroke(); context.setLineDash([]);
+}
+function trackMarker(context, x, y, color, scale) {
+  const radius=13*scale;
+  context.strokeStyle='#07101b'; context.lineWidth=5*scale; context.strokeRect(x-radius,y-radius,radius*2,radius*2);
+  context.strokeStyle=color; context.lineWidth=2*scale; context.strokeRect(x-radius,y-radius,radius*2,radius*2);
+}
+function paintTracks(context, tracks, seconds, width, height) {
+  const scale=Math.max(.5,width/850), project=point=>[point[1]*width,point[2]*height];
+  tracks.forEach((track,index)=>{
+    const other=track.id!==tracks[0].id, color=other ? '#7bcfff' : '#ff6b65', point=MagiTracks.position(track.points,seconds);
+    pathStroke(context,track.points,project,other ? '#7bcfff' : '#f7c75e',scale,true);
+    const completed=track.points.filter(p=>p[0]<=seconds);
+    if(point && completed.length && completed.length<track.points.length) completed.push(point);
+    pathStroke(context,completed,project,color,scale,false);
+    if(point) {const [x,y]=project(point); trackMarker(context,x,y,color,scale);}
+  });
+}
+function paintStillTracks(context,canvas) {
+  const d=reviewEvent?.media_detail;
+  if(!reviewEvent?.best_frame || !d || !Array.isArray(d.target) || d.target.length!==4 || !d.target.every(Number.isFinite)) return false;
+  const crop=reviewImageKind==='frame' ? [0,0,d.native_width,d.native_height] : d.crop;
+  if(!Array.isArray(crop)||crop.length!==4||!crop.every(Number.isFinite)||!(d.native_width>0&&d.native_height>0)||crop[2]<=crop[0]||crop[3]<=crop[1]||crop[2]-crop[0]>7680||crop[3]-crop[1]>4320) return false;
+  canvas.width=crop[2]-crop[0]; canvas.height=crop[3]-crop[1];
+  const scale=Math.max(.5,canvas.width/850), project=point=>[point[1]*d.native_width-crop[0],point[2]*d.native_height-crop[1]];
+  if($('show-tracker').checked) {
+    reviewTracks.forEach((track,index)=>{
+      const other=track.id!==reviewTracks[0].id;
+      pathStroke(context,track.points,project,other ? '#7bcfff' : '#f7c75e',scale,true);
+      for(let i=0;i<track.points.length;i+=Math.max(1,Math.ceil(track.points.length/80))) {
+        const [x,y]=project(track.points[i]);context.fillStyle=other ? '#7bcfff' : '#f7c75e';context.fillRect(x-scale*2,y-scale*2,scale*4,scale*4);
+      }
+      const [x,y]=project(track.points[track.points.length-1]);trackMarker(context,x,y,other ? '#7bcfff' : '#76e3a9',scale);
+    });
+    const [x,y]=project([0,d.target[0],d.target[1]]);trackMarker(context,x,y,'#ff6b65',scale);
+  }
+  return true;
+}
+function updateTrackNavigation() {
+  const tracks=currentTracks(), video=$('review-video'), enabled=reviewMode==='video'&&tracks.length>0;
+  const starts=tracks.map(t=>t.points[0][0]).sort((a,b)=>a-b);
+  const t=video.currentTime||0;
+  $('track-prev').disabled=!enabled||!starts.some(s=>s<t-.35);
+  $('track-next').disabled=!enabled||!starts.some(s=>s>t+.35);
+  $('track-timeline').disabled=!enabled;
+  $('track-timeline').max=Number.isFinite(video.duration)&&video.duration>0 ? video.duration : Math.max(1,...tracks.map(x=>x.points[x.points.length-1][0]+.5));
+  $('track-timeline').value=t;
+  const duration=Number($('track-timeline').max), signature=JSON.stringify([reviewEvent?.id,$('review-quality').value,duration,tracks.map(track=>[track.id,track.points[0][0],track.points[track.points.length-1][0]])]);
+  if(signature!==trackBandSignature) {
+    trackBandSignature=signature;$('track-bands').replaceChildren();
+    tracks.forEach(track=>{
+      const band=document.createElement('span'), from=track.points[0][0], to=track.points[track.points.length-1][0];
+      band.style.left=`${Math.max(0,Math.min(100,from/duration*100))}%`;
+      band.style.width=`${Math.max(.5,Math.min(100-from/duration*100,(to-from)/duration*100))}%`;
+      if(track.id!==tracks[0].id) band.className='companion';
+      band.title=`Candidate interval ${from.toFixed(1)}–${to.toFixed(1)} seconds`;
+      $('track-bands').append(band);
+    });
+  }
+  $('track-times').textContent=enabled ? `${starts.length} tracked intervals · ${t.toFixed(1)} sec` : 'Tracking becomes available when a clip and saved track data are loaded.';
 }
 function drawMotion() {
-  const canvas = $('motion-overlay'); const context = canvas.getContext('2d');
+  const canvas=$('motion-overlay'), context=canvas.getContext('2d');
   context.clearRect(0,0,canvas.width,canvas.height);
-  if(reviewMode !== 'video') { $('motion-info').textContent = 'Selected event image · Play clip starts at the beginning.'; return; }
-  if($('review-quality').value !== 'analysis') { $('motion-info').textContent = 'Camera substream · choose Detection replay for pixel highlights.'; return; }
-  if(!reviewMeta || !reviewFrames.length) return;
-  canvas.width = reviewMeta.width; canvas.height = reviewMeta.height;
-  const index = Math.min(reviewFrames.length-1, Math.max(0, Math.floor(($('review-video').currentTime||0)*reviewMeta.fps)));
-  const sample = reviewFrames[index];
-  if($('show-pixels').checked) {
-    const packed = atob(sample.mask); const image = context.createImageData(canvas.width,canvas.height);
-    for(let i=0;i<canvas.width*canvas.height;i++) if((packed.charCodeAt(i>>3)>>(7-(i&7)))&1) { const k=i*4; image.data[k]=174;image.data[k+1]=255;image.data[k+2]=105;image.data[k+3]=190; }
-    context.putImageData(image,0,0);
+  updateTrackNavigation();
+  if(reviewMode==='image') {
+    const available=paintStillTracks(context,canvas);
+    canvas.classList.toggle('hidden',!available);
+    $('show-tracker').disabled=!available;
+    $('motion-info').textContent=available ? 'Estimated positions: red marks the selected image target; amber shows the recorded path; green marks its last detection. Crop and timing alignment are approximate.' : 'Selected event image · Play clip starts at the beginning. No selected-image track position is available.';
+    return;
   }
-  if($('show-boxes').checked) {
-    context.strokeStyle='#b5e9ff';context.lineWidth=1;
-    for(const obj of sample.objects||[]) { const [x,y,x2,y2]=obj.box;context.strokeRect(x,y,x2-x,y2-y); }
+  const analysis=$('review-quality').value==='analysis', tracks=currentTracks();
+  $('show-tracker').disabled=!tracks.length;
+  canvas.width=reviewMeta?.width||640; canvas.height=reviewMeta?.height||360;
+  let note=analysis ? 'Detection replay' : 'Camera substream · estimated track timing';
+  if(analysis&&reviewMeta&&reviewFrames.length) {
+    const index=Math.min(reviewFrames.length-1,Math.max(0,Math.floor(($('review-video').currentTime||0)*reviewMeta.fps)));
+    const sample=reviewFrames[index];
+    if($('show-pixels').checked) {
+      try {
+        const packed=atob(sample.mask);
+        if(packed.length!==Math.ceil(canvas.width*canvas.height/8)) throw new Error('Incomplete mask');
+        const image=context.createImageData(canvas.width,canvas.height);
+        for(let i=0;i<canvas.width*canvas.height;i++) if((packed.charCodeAt(i>>3)>>(7-(i&7)))&1) {const k=i*4;image.data[k]=174;image.data[k+1]=255;image.data[k+2]=105;image.data[k+3]=190;}
+        context.putImageData(image,0,0);
+      } catch {note+=' · pixel mask unavailable';}
+    }
+    if($('show-boxes').checked) {
+      context.strokeStyle='#b5e9ff';context.lineWidth=2;
+      for(const obj of (sample.objects||[]).slice(0,32)) {const [x,y,x2,y2]=obj.box;context.strokeRect(x,y,x2-x,y2-y);}
+    }
+    note+=` · frame ${index+1}/${reviewFrames.length}${sample.suppressed?' · broad change rejected':''}`;
   }
-  $('motion-info').textContent = `Frame ${index+1}/${reviewFrames.length}${sample.suppressed ? ' · broad change suppressed by detector' : ''}`;
+  if($('show-tracker').checked) paintTracks(context,tracks,$('review-video').currentTime||0,canvas.width,canvas.height);
+  $('motion-info').textContent=note+(tracks.length ? ' · candidates, not identifications' : ' · tracking unavailable; try Detection replay');
 }
+async function loadReviewTimeline(id,generation) {
+  if(reviewTimelineAttempted) return;
+  reviewTimelineAttempted=true;
+  try {
+    const timeline=await api(`/api/clips/${encodeURIComponent(id)}/timeline`);
+    if(generation!==reviewGeneration||reviewEvent?.id!==id) return;
+    if(!Array.isArray(timeline.segments)) throw new Error('Missing stream timeline');
+    reviewColorTracks=MagiTracks.collect(reviewFrames,reviewMeta,timeline.segments);
+    drawMotion();
+  } catch { /* Keep exact analysis replay available when timing metadata is absent. */ }
+}
+function jumpTrack(direction) {
+  if(reviewMode!=='video') return;
+  const t=$('review-video').currentTime||0, starts=currentTracks().map(track=>track.points[0][0]).sort((a,b)=>a-b);
+  const target=direction>0 ? starts.find(s=>s>t+.35) : starts.filter(s=>s<t-.35).pop();
+  if(target===undefined) return;
+  $('review-video').currentTime=Math.max(0,target-.25);drawMotion();$('review-video').play().catch(()=>{});
+}
+$('track-prev').onclick=()=>jumpTrack(-1);$('track-next').onclick=()=>jumpTrack(1);
+$('track-timeline').oninput=()=>{if(reviewMode==='video') {$('review-video').currentTime=Number($('track-timeline').value);drawMotion();}};
+$('show-tracker').onchange=drawMotion;
+let trackAnimationActive=false;
+$('review-video').addEventListener('play',()=>{
+  if(trackAnimationActive||typeof requestAnimationFrame!=='function') return;
+  trackAnimationActive=true;
+  let last=0;
+  function animate(now) {
+    if(reviewMode!=='video'||$('review-video').paused||!$('review').open) {trackAnimationActive=false;return;}
+    if(now-last>32) {drawMotion();last=now;}
+    requestAnimationFrame(animate);
+  }
+  requestAnimationFrame(animate);
+});
 for(const event of ['timeupdate','seeked','loadedmetadata']) $('review-video').addEventListener(event,drawMotion);
 $('show-pixels').onchange = drawMotion; $('show-boxes').onchange = drawMotion;
 async function loadIdentification(id) {
@@ -274,6 +393,7 @@ $('identify-again').onclick = async () => {
 };
 
 function updateReviewAvailability(event) {
+  if(reviewMeta&&event.substream_preview&&!reviewTimelineAttempted) loadReviewTimeline(event.id,reviewGeneration);
   $('quality-substream').disabled = !event.substream_preview; $('quality-analysis').disabled = !event.preview;
   $('review-play').disabled = !(event.substream_preview || event.preview);
   $('review-full-frame').disabled = !event.best_frame;

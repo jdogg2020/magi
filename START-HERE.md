@@ -133,6 +133,9 @@ Then move an object across the view to test automatic detection.
 Click an event thumbnail to view the selected image first. **Play clip from beginning**
 starts the camera's recorded color substream at zero, without re-encoding.
 **View image** returns to the crop; **Full frame** opens the complete selected frame.
+**Object tracker & path** shows the saved route and moving reticle. Use the detection
+timeline or Previous/Next detection to find a pass. Color-video timing is estimated;
+exact pixel highlights remain on Detection replay.
 Event thumbnails use native-resolution object crops. Choose **Detection replay**
 for motion overlays, then
 toggle changed-pixel highlights and motion boxes. **The original file preserves the camera's compressed video without

@@ -1,4 +1,4 @@
-# Native substream previews and full-resolution thumbnails (0.7.1)
+# Native substream previews and full-resolution thumbnails (0.8.0)
 
 Magi uses the camera's substream at its native resolution and frame rate for
 motion detection. It decodes grayscale pixels for comparison, without spatial
@@ -70,3 +70,38 @@ validate volume identity before writes, and impose a 30-second extraction timeou
 Failure keeps the original and available replay. Shutdown/settings changes
 cancel rendering. No new packages are required. Real Pi capture headroom and
 native-substream detection throughput still require field measurement.
+
+## Object tracker and recorded paths (0.8)
+
+The review viewer now uses a moving reticle and growing path, following the
+presentation observed in UAP Finder's public capture-service release
+`2026.10.26+f217f62`. Magi's implementation is independent; no reference code or
+assets are shipped or used at runtime.
+
+On high-resolution stills, red marks the estimated selected-image target, amber
+dots/path show the recorded main candidate's route, and green marks its last
+saved detection. Blue denotes other candidate tracks. Full-frame and cropped
+views use the same normalized track geometry transformed into the selected
+image's native pixel coordinates. The still is Magi's selected best candidate,
+not necessarily a clip's first frame. Crop/stream alignment remains approximate.
+
+During playback, the reticle follows interpolated saved centroids. The solid
+path grows up to the playhead; the dashed path shows the full recorded route,
+not a prediction. Tracks split at observation gaps longer than 0.75 seconds and
+reticles disappear outside observed intervals (with 0.15-second edge tolerance).
+The longest saved candidate track is emphasized; this does not establish an
+object identity or anomalous behavior. At most eight track intervals are drawn.
+
+The detection timeline scrubs the current video; Previous/Next detection jump
+to just before another tracked interval. Object tracker & path toggles the
+whole visualization. The image-first opening and Play-from-beginning behavior
+remain intact. Exact pixel masks and per-frame boxes remain separate optional
+controls on Detection replay only.
+
+Color-substream overlays map saved analysis host timestamps through the copied
+substream's segment timeline (`substream.json`, exposed through authenticated
+`/api/clips/ID/timeline`). Missing timing does not fall back to the wrong clock:
+color tracking stays unavailable while the detection replay can still work.
+Native-stream timing is explicitly estimated; neither feed is calibrated camera
+exposure time. No new recording, decoding, transcode, or server-side tracking
+work is introduced; the browser draws existing saved observations.

@@ -26,7 +26,8 @@ jobs:
           PYTHONPATH: src
       - name: Verify root-owned install permissions as an unprivileged account
         run: sudo /usr/bin/python3 scripts/check_install_permissions.py
-      - run: node --check src/magi/web/app.js
+      - run: node --check src/magi/web/app.js && node --check src/magi/web/tracks.js
+      - run: node tests/test_tracks.js
       - run: bash -n scripts/install.sh scripts/install-updater.sh scripts/uninstall.sh
       - run: python scripts/build_release.py dist/magi-prototype.zip
   preview-release:

@@ -1,3 +1,17 @@
+# Magi 0.8.0 recorded-track visibility
+
+The dashboard DOM harness passes image-first viewing, selected-image markers,
+color-video track availability, exact-mask suppression on color video, tracker
+toggling, timeline seeking and the existing replay pixel controls. A separate
+Node regression test covers coordinate normalization, segment gaps, malformed
+or missing timing, suppression, path splitting and reticle interpolation/expiry.
+GitHub runs this geometry test alongside the Python suite on 3.11/3.13.
+The authenticated HTTP integration now verifies the substream timeline route.
+
+This validates synthetic data and control behavior, not visual browser layout or
+real camera overlay alignment. Color video and selected-image positions remain
+estimated. The unpublished stream-probe draft is not included in this release.
+
 # Magi 0.7.1 image-first event review
 
 Event thumbnails open an inline native-resolution still without autoplay. Play

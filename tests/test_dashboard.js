@@ -6,7 +6,7 @@ const assert = require('assert');
 const path = require('path');
 const base = process.argv[2] || 'http://127.0.0.1:18790';
 class Element {
-  constructor(tag='div') { this.tagName=tag; this.children=[]; this.value=''; this.textContent=''; this.checked=false; this.disabled=false; this.open=false; this.listeners={}; this.classes=new Set(); this.dataset={}; this.classList={add:(...n)=>n.forEach(v=>this.classes.add(v)),remove:(...n)=>n.forEach(v=>this.classes.delete(v)),toggle:(n,yes)=>{if(yes ?? !this.classes.has(n)) this.classes.add(n);else this.classes.delete(n);},contains:n=>this.classes.has(n)}; }
+  constructor(tag='div') { this.tagName=tag; this.children=[]; this.value=''; this.textContent=''; this.checked=false; this.disabled=false; this.open=false; this.listeners={}; this.classes=new Set(); this.dataset={}; this.style={}; this.classList={add:(...n)=>n.forEach(v=>this.classes.add(v)),remove:(...n)=>n.forEach(v=>this.classes.delete(v)),toggle:(n,yes)=>{if(yes ?? !this.classes.has(n)) this.classes.add(n);else this.classes.delete(n);},contains:n=>this.classes.has(n)}; }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children=[...children]; }
   addEventListener(name, callback) { this.listeners[name]=callback; }
@@ -15,7 +15,7 @@ class Element {
   removeAttribute(name) { delete this[name]; }
   showModal(){this.open=true;}
   close(){this.open=false;this.listeners.close?.();}
-  getContext(){return {clearRect:()=>{this.drawn=false;},createImageData:(w,h)=>({data:new Uint8ClampedArray(w*h*4)}),putImageData:()=>{this.drawn=true;},strokeRect(){},fillRect(){}};}
+  getContext(){return {clearRect:()=>{this.drawn=false;this.pixelDrawn=false;this.boxDrawn=false;},createImageData:(w,h)=>({data:new Uint8ClampedArray(w*h*4)}),putImageData:()=>{this.drawn=true;this.pixelDrawn=true;},strokeRect:()=>{this.boxDrawn=true;},fillRect(){},beginPath(){},moveTo(){},lineTo(){},stroke(){},setLineDash(){}};}
   getBoundingClientRect(){return {left:0,top:0,width:320,height:180};}
   setPointerCapture(){}
   play(){this.playCalls=(this.playCalls||0)+1;return Promise.resolve();}
@@ -41,6 +41,7 @@ async function fetchWithCookies(url, options={}) {
 }
 const context={document,fetch:fetchWithCookies,console,URL,JSON,Date,Math,Number,Error,encodeURIComponent,setInterval:()=>0,setTimeout,Promise,atob};
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/tracks.js'),'utf8'),context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'utf8'),context);
 (async()=>{
  await new Promise(resolve=>setTimeout(resolve,250));
@@ -67,9 +68,17 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert.equal(elements['review-video'].currentTime,0,'Play must start at the beginning');
  assert(!elements['review-video'].classList.contains('hidden'));
  assert(elements['review-still'].classList.contains('hidden'));
- if(vm.runInContext('reviewEvent.substream_preview',context)){assert.equal(elements['review-quality'].value,'substream');assert(!elements['motion-overlay'].drawn,'Substream video must not show misaligned detection overlays');}
+ if(vm.runInContext('reviewEvent.substream_preview',context)){assert.equal(elements['review-quality'].value,'substream');assert(!elements['motion-overlay'].pixelDrawn,'Substream video must not show exact pixel masks');}
+ assert(!elements['show-tracker'].disabled,'Substream should have estimated object tracking');
+ assert(vm.runInContext('reviewColorTracks.length > 0',context),'Substream tracks should map through segment timing');
+ elements['show-tracker'].checked=false;elements['show-tracker'].onchange();
+ assert(!elements['motion-overlay'].boxDrawn,'Tracker should toggle off');
+ elements['show-tracker'].checked=true;elements['show-tracker'].onchange();
  elements['review-quality'].value='analysis';elements['review-quality'].onchange();
- assert(elements['motion-overlay'].drawn,'Changed pixel overlay should draw');elements['show-pixels'].checked=false;elements['show-pixels'].onchange();assert(!elements['motion-overlay'].drawn,'Highlights should turn off');elements['show-pixels'].checked=true;elements['show-pixels'].onchange();assert(elements['motion-overlay'].drawn,'Highlights should turn back on');
+ elements['track-timeline'].value='1.5';elements['track-timeline'].oninput();assert.equal(elements['review-video'].currentTime,1.5);
+ assert(!elements['track-timeline'].disabled,'Analysis track timeline should be available');
+ assert(elements['track-bands'].children.length>0,'Timeline must show recorded detection intervals');
+ assert(elements['motion-overlay'].drawn,'Changed pixel overlay should draw');elements['show-pixels'].checked=false;elements['show-pixels'].onchange();assert(!elements['motion-overlay'].pixelDrawn,'Highlights should turn off');elements['show-pixels'].checked=true;elements['show-pixels'].onchange();assert(elements['motion-overlay'].drawn,'Highlights should turn back on');
  assert(elements.review.open,'Review dialog should open');assert(elements['review-video'].src.endsWith('/preview'));
  elements['review-photo'].onclick();
  assert(!elements['review-still'].classList.contains('hidden'),'View image should return to the still');
@@ -116,5 +125,5 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert.equal(elements['settings-result'].textContent,'Invalid camera settings');
  assert(!submit.disabled);context.fetch=originalFetch;
  await elements.logout.onclick();assert(!elements.login.classList.contains('hidden'));
- console.log('Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, image-first review, playback from zero, full-frame viewing, substream selection and detection overlay mode, sign-out.');
+ console.log('Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, image-first review, playback from zero, full-frame viewing, substream track timing, tracker toggles, detection timeline and exact pixel overlay mode, sign-out.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

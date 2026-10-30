@@ -219,6 +219,10 @@ class PrototypeTests(unittest.TestCase):
         with self.request(base + '/preview', headers={'Range': 'bytes=0-31'}) as r:
             self.assertEqual(r.status, 206)
             self.assertEqual(len(r.read()), 32)
+        with self.request(base + '/timeline') as r:
+            timeline=json.load(r)
+            self.assertEqual(timeline['stream'],'camera_substream')
+            self.assertTrue(timeline['segments'])
         with self.request(base + '/video', headers={'Range': 'bytes=0-31'}) as r:
             self.assertEqual(r.status,206);self.assertEqual(r.headers['Content-Type'],'video/mp4')
         with self.request(base + '/frame') as r:

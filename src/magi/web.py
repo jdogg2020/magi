@@ -116,9 +116,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/health':
             self.reply(200, {'ok': True, 'service': 'magi'})
             return
-        if path in ('/', '/app.js', '/style.css'):
+        if path in ('/', '/app.js', '/tracks.js', '/style.css'):
             name, mime = {'/': ('index.html', 'text/html; charset=utf-8'),
                           '/app.js': ('app.js', 'text/javascript'),
+                          '/tracks.js': ('tracks.js', 'text/javascript'),
                           '/style.css': ('style.css', 'text/css')}[path]
             data = (STATIC / name).read_bytes()
             self.headers_out(200, mime, len(data))
@@ -146,7 +147,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.headers_out(200, 'image/jpeg', len(data))
                 self.wfile.write(data)
         else:
-            match = re.fullmatch(r'/api/clips/([^/]+)/(original|preview|thumbnail|metadata|motion|identification|video|frame|media)', path)
+            match = re.fullmatch(r'/api/clips/([^/]+)/(original|preview|thumbnail|metadata|motion|identification|video|frame|media|timeline)', path)
             if match:
                 try:
                     file = self.server.app.clip_path(*match.groups())
@@ -178,7 +179,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 status = 206
                 extra['Content-Range'] = f'bytes {start}-{end}/{size}'
-            mime = {'video': 'video/mp4', 'frame': 'image/jpeg', 'media': 'application/json', 'preview': 'video/mp4', 'original': 'video/x-matroska', 'thumbnail': 'image/jpeg', 'metadata': 'application/json', 'motion': 'application/x-ndjson', 'identification': 'application/json'}[kind]
+            mime = {'video': 'video/mp4', 'frame': 'image/jpeg', 'media': 'application/json', 'timeline': 'application/json', 'preview': 'video/mp4', 'original': 'video/x-matroska', 'thumbnail': 'image/jpeg', 'metadata': 'application/json', 'motion': 'application/x-ndjson', 'identification': 'application/json'}[kind]
             if kind == 'motion':
                 extra['Content-Encoding'] = 'gzip'
             if kind in ('original', 'metadata', 'identification', 'media'):

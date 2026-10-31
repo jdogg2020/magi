@@ -28,10 +28,24 @@ jobs:
         run: sudo /usr/bin/python3 scripts/check_install_permissions.py
       - run: node --check src/magi/web/app.js && node --check src/magi/web/tracks.js && node --check src/magi/web/events.js
       - run: node tests/test_tracks.js
+      - name: Install Chromium for rendered dashboard checks
+        if: matrix.python == '3.11'
+        run: |
+          npm install --prefix /tmp/magi-browser --no-package-lock playwright@1.56.1
+          /tmp/magi-browser/node_modules/.bin/playwright install --with-deps chromium
       - name: Exercise dashboard against a synthetic station
         run: python tests/run_dashboard.py
         env:
           PYTHONPATH: src
+          NODE_PATH: /tmp/magi-browser/node_modules
+          MAGI_BROWSER_TEST: ${{ matrix.python == '3.11' && '1' || '0' }}
+      - name: Upload rendered dashboard snapshots
+        if: always() && matrix.python == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-dashboard-snapshots
+          path: dist/browser
+          if-no-files-found: ignore
       - run: bash -n scripts/install.sh scripts/install-updater.sh scripts/uninstall.sh
       - run: python scripts/build_release.py dist/magi-prototype.zip
   preview-release:

@@ -1,3 +1,15 @@
+## Station overview and unified archive (0.14.0)
+
+Overview now shows all camera live images together with per-camera recording and
+analysis status, manual-save buttons and Settings links. The left Cameras menu
+opens individual camera settings; the header no longer selects a camera.
+Events is one globally paginated chronological list across all cameras, with a
+Camera column and an All cameras filter. Playback, review and bulk actions use
+both camera and event IDs, preserving separate archives without moving footage.
+Pi health and total recording usage appear once for the station. Offline cameras
+stay visible while healthy feeds continue. Synthetic validation does not establish
+real CX820 operation or Pi 4 capacity; those checks remain local.
+
 ## Calibrated track measurements (0.12.0)
 
 Version 0.13.0 adds simultaneous cameras. Use **Station cameras → Add camera**
@@ -38,7 +50,7 @@ See [camera setup](docs/CAMERA-SETUP.md) for the workflow and limitations.
 # Magi
 
 A local-first, 24/7 sky-camera observation prototype for Raspberry Pi 4 and
-64-bit Raspberry Pi OS. One RTSP camera, recording space on the Pi SD card or an SSD, and a webpage on your LAN.
+64-bit Raspberry Pi OS. RTSP cameras, recording space on the Pi SD card or an SSD, and a webpage on your LAN.
 No cloud account or original-product code, binaries, assets or endpoints.
 
 **Start with [START-HERE.md](START-HERE.md).** Download/extract,
@@ -124,7 +136,7 @@ The web service refuses live-camera operation as root.
 
 ## Status
 
-Version 0.12.0 is an installable prototype, not an unattended-production release.
+Version 0.14.0 is an installable prototype, not an unattended-production release.
 The source license is still pending the owner's decision before public release.
 Live Pi/camera acceptance and a 24-hour run are not claimed as completed.
 

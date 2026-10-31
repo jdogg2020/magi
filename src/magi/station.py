@@ -13,8 +13,10 @@ import threading
 import time
 import uuid
 
+from . import __version__
 from .application import Application
 from .config import Config
+from .event_review import ID as EVENT_ID, ReviewError, changes as review_changes, filters as event_filters
 from .storage import atomic_json
 
 CAMERA_ID = re.compile(r'^(primary|cam-[a-f0-9]{12})$')
@@ -133,8 +135,106 @@ class Station:
                                'analysis': status['analysis'], 'substream': status['substream'],
                                'event_count_since_start': status['event_count_since_start'],
                                'storage_used_bytes': status.get('storage_used_bytes', 0),
-                               'frame_age_seconds': status['frame_age_seconds']})
+                               'frame_age_seconds': status['frame_age_seconds'],
+                               'buffer_span_seconds': status.get('buffer_span_seconds', 0)})
             return {'cameras': result, 'max_cameras': MAX_CAMERAS}
+
+    def recent_events(self):
+        # Reuse worker snapshots for the frequently refreshed overview. Full
+        # archive scans belong to the paginated Events page, not live polling.
+        with self.lock:
+            entries = [(dict(item), self.workers[item['id']]) for item in self.registry['cameras']]
+        rows = []
+        for item, worker in entries:
+            if worker.app:
+                rows.extend({**row, 'camera_id': item['id'],
+                             'camera_name': row.get('camera_name') or item['name']}
+                            for row in worker.app.read()['clips'])
+        rows.sort(key=lambda row: (row.get('trigger_unix') or 0, row['id'], row['camera_id']), reverse=True)
+        return {'clips': rows[:200], 'limit': 200}
+
+    def health_status(self):
+        with self.lock:
+            workers = list(self.workers.values())
+        # Keep station health available when the selected camera has failed.
+        worker = next((worker for worker in workers if worker.app and not worker.failed and not worker.stop.is_set()), None)
+        if worker:
+            status = worker.app.read()['status']
+            return {key: status.get(key) for key in ('health', 'disk_free_bytes', 'uptime_seconds', 'version')}
+        return {'health': {}, 'version': __version__}
+
+    def event_page(self, value):
+        if not isinstance(value, dict):
+            raise ReviewError('Invalid event filters.')
+        value = dict(value)
+        identity = value.pop('camera_id', 'all')
+        f = event_filters(value)
+        with self.lock:
+            entries = [(dict(item), self.workers[item['id']]) for item in self.registry['cameras']]
+        if not isinstance(identity, str) or identity != 'all' and identity not in {item['id'] for item, _ in entries}:
+            raise ReviewError('Unknown camera filter.')
+        rows, labels, unavailable, total = [], set(), [], 0
+        for item, worker in entries:
+            if identity != 'all' and item['id'] != identity:
+                continue
+            try:
+                if worker.app is None:
+                    raise ValueError()
+                page = worker.app.event_page(value, window=(0, f['offset']+f['limit']))
+                if page.get('message'):
+                    unavailable.append(item['id'])
+                total += page['total']
+                labels.update(page['labels'])
+                # Routing identity comes from the archive, never untrusted metadata.
+                rows.extend({**row, 'camera_id': item['id'],
+                             'camera_name': row.get('camera_name') or item['name']} for row in page['events'])
+            except (ValueError, OSError):
+                unavailable.append(item['id'])
+        rows.sort(key=lambda row: (row.get('trigger_unix', 0), row['id'], row['camera_id']), reverse=f['sort']=='newest')
+        result = {'events': rows[f['offset']:f['offset']+f['limit']], 'total': total,
+                  'offset': f['offset'], 'limit': f['limit'], 'labels': sorted(labels),
+                  'unavailable_cameras': unavailable}
+        if unavailable:
+            result['message'] = 'Some camera archives are unavailable; showing accessible events. Check camera status or narrow the date range.'
+        return result
+
+    def manage_events(self, value):
+        if not isinstance(value, dict) or set(value)-{'targets', 'action', 'changes'}:
+            raise ReviewError('Invalid station event action.')
+        targets, action = value.get('targets'), value.get('action', 'update')
+        if not isinstance(targets, list) or not 1 <= len(targets) <= 100:
+            raise ReviewError('Select 1–100 different events.')
+        if action not in ('update', 'trash', 'restore'):
+            raise ReviewError('Unknown event action.')
+        if action == 'update':
+            review_changes(value.get('changes'))
+        elif value.get('changes'):
+            raise ReviewError('Trash and restore cannot change labels or protection.')
+        groups, seen = {}, set()
+        with self.lock:
+            identities = set(self.workers)
+        for target in targets:
+            if (not isinstance(target, dict) or set(target) != {'camera_id', 'id'}
+                    or not isinstance(target['camera_id'], str) or target['camera_id'] not in identities
+                    or not isinstance(target['id'], str) or not EVENT_ID.fullmatch(target['id'])):
+                raise ReviewError('Invalid camera event target.')
+            key = (target['camera_id'], target['id'])
+            if key in seen:
+                raise ReviewError('Select different camera events.')
+            seen.add(key)
+            groups.setdefault(key[0], []).append(key[1])
+        updated, failed = [], []
+        for identity, ids in groups.items():
+            try:
+                payload = {'ids': ids, 'action': action}
+                if action == 'update':
+                    payload['changes'] = value['changes']
+                result = self.camera(identity).request('events_update', payload)
+                updated.extend({'camera_id': identity, 'id': event} for event in result['updated'])
+                failed.extend({**error, 'camera_id': identity} for error in result['failed'])
+            except (ValueError, OSError):
+                failed.extend({'camera_id': identity, 'id': event, 'error': 'Camera unavailable; changes were not confirmed. Refresh before retrying.'} for event in ids)
+        return {'updated': updated, 'failed': failed}
 
     def manage_camera(self, data):
         if not isinstance(data, dict) or set(data)-{'action', 'id', 'name'}:

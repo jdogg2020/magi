@@ -100,6 +100,11 @@ class StationTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 request('/api/cameras', {'action':'add','name':'East'})
             self.assertEqual(caught.exception.code, 403)
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                request('/api/station/events/update', {'targets':[]})
+            self.assertEqual(caught.exception.code, 403)
+            self.assertIn('health', request('/api/station/status'))
+            self.assertEqual(request('/api/station/events/list', {}, csrf)['total'], 0)
             identity = request('/api/cameras', {'action':'add','name':'East'}, csrf)['id']
             scoped = '/api/cameras/'+identity
             self.assertEqual(request(scoped+'/status')['camera_id'], identity)
@@ -117,6 +122,80 @@ class StationTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(3)
+
+    def archive_station(self):
+        from magi.recorder import Recorder
+        from magi.station import Worker
+        def archive_run(worker):
+            try:
+                while not worker.stop.is_set():
+                    worker.app._commands()
+                    worker.app._snapshot()
+                    worker.stop.wait(.04)
+            finally:
+                worker.app.close()
+        with patch.object(Worker, 'run', archive_run):
+            station = self.station()
+            identity = station.manage_camera({'action': 'add', 'name': 'UAP2'})['id']
+        for camera in ('primary', identity):
+            app = station.camera(camera)
+            app.recorder = Recorder(app.cfg)
+        return station, identity
+
+    def archive_event(self, station, camera, index, stamp, **metadata):
+        event_id = '20261031T120000-'+f'{index:012x}'
+        directory = station.camera(camera).cfg.root/'events'/event_id
+        directory.mkdir()
+        atomic_json(directory/'event.json', {'id':event_id, 'trigger_unix':stamp,
+                    'trigger_utc':'2026-10-31T12:00:00+00:00', 'state':'complete',
+                    'trigger_type':'manual', **metadata})
+        return {'camera_id':camera, 'id':event_id}
+
+    def test_station_archive_global_order_pagination_filters_and_legacy_attribution(self):
+        station, other = self.archive_station()
+        targets = []
+        for index in range(135):
+            camera = 'primary' if index%2 else other
+            # Fractional timestamps share an ID's second; sort by capture time.
+            targets.append(self.archive_event(station,camera,index,1000+index/1000))
+        page = station.event_page({'offset':101,'limit':25})
+        self.assertEqual(page['total'],135)
+        self.assertEqual([row['id'] for row in page['events']], [row['id'] for row in targets[::-1][101:126]])
+        self.assertEqual(station.event_page({'sort':'oldest','limit':1})['events'][0]['id'],targets[0]['id'])
+        page = station.event_page({'camera_id':other})
+        self.assertEqual(page['total'],68)
+        self.assertTrue(all(row['camera_id']==other and row['camera_name']=='UAP2' for row in page['events']))
+        stamp = self.archive_event(station,'primary',200,2000,camera_name='Capture-time name',camera_id=other)
+        row = station.event_page({'limit':1})['events'][0]
+        self.assertEqual(row['camera_id'],'primary','Stored metadata cannot reroute archive actions')
+        self.assertEqual(row['camera_name'],'Capture-time name')
+        for value in ({'camera_id':'missing'},{'camera_id':[]},{'limit':101},{'offset':True}):
+            with self.assertRaises(ValueError):station.event_page(value)
+
+    def test_station_bulk_collision_isolation_validation_and_partial_failure(self):
+        station, other = self.archive_station()
+        first = self.archive_event(station,'primary',1,1000)
+        second = self.archive_event(station,other,1,1000)
+        result = station.manage_events({'targets':[first,second],'changes':{'labels':['both'],'reviewed':True}})
+        self.assertEqual(result['updated'],[first,second])
+        self.assertEqual(station.event_page({'label':'both'})['total'],2)
+        station.manage_events({'targets':[second],'action':'trash'})
+        self.assertEqual(station.event_page({})['total'],1)
+        self.assertEqual(station.event_page({'trash':'trash'})['events'][0]['camera_id'],other)
+        station.manage_events({'targets':[second],'action':'restore'})
+        for targets in ([first,first],[first,{'camera_id':'missing','id':first['id']}],
+                        [first,{'camera_id':other,'id':'../../etc/config'}]):
+            with self.assertRaises(ValueError):
+                station.manage_events({'targets':targets,'changes':{'notes':'must not write'}})
+        self.assertEqual(station.event_page({})['events'][0]['review']['notes'],'')
+        station.workers[other].failed=True
+        result=station.manage_events({'targets':[first,second],'changes':{'protected':True}})
+        self.assertEqual(result['updated'],[first]);self.assertEqual(result['failed'][0]['camera_id'],other)
+        self.assertIsNotNone(station.health_status()['health'])
+        station.workers[other].app.event_page = lambda *a, **k: (_ for _ in ()).throw(OSError())
+        page=station.event_page({})
+        self.assertEqual(page['total'],1);self.assertEqual(page['unavailable_cameras'],[other])
+        self.assertIn('unavailable',page['message'])
 
     def test_registry_validation_and_unknown_cameras(self):
         station = self.station()

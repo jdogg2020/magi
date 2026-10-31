@@ -33,3 +33,14 @@
 .event-table th{position:sticky;top:0;z-index:1}.event-table-scroll{max-height:70vh}.event-row-actions>*{display:inline-block;margin:3px 5px 3px 0}.event-row-actions button{padding:4px 7px;font-size:12px}
 
 .camera-picker{display:flex;align-items:center;gap:.5rem;font-size:.8rem}.camera-picker select{width:auto;max-width:180px}.camera-management{margin-bottom:1.5rem;padding:1.2rem}.camera-management summary{cursor:pointer;font-weight:600}.camera-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;margin:1rem 0}.camera-tile{display:flex;flex-direction:column;gap:.5rem;border:1px solid #dedbd0;border-radius:12px;padding:1rem;color:inherit;text-decoration:none}.camera-tile span,.camera-tile small{font-size:.8rem}.camera-tile img{width:100%;aspect-ratio:16/9;object-fit:contain;border-radius:8px;background:#171e22}@media(max-width:600px){.header-right{flex-wrap:wrap}.camera-picker select{max-width:120px}}
+
+/* Station overview and camera settings navigation. */
+.overview-grid{grid-template-columns:minmax(0,1fr) 290px;align-items:start}
+.camera-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));margin:0;min-width:0}
+.camera-tile{border-color:var(--border);min-width:0;background:var(--panel)}
+.camera-tile h2{margin:0;font-size:18px}.camera-tile img{order:0}.camera-tile-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.camera-tile p{margin:0}.camera-tile>p:not(.muted){min-height:180px;display:grid;place-items:center;background:var(--bg);color:var(--muted)}
+.camera-menu{margin-top:12px;padding:12px;border-top:1px solid var(--border)}.camera-menu summary{cursor:pointer;font-weight:600}.camera-menu .camera-picker{display:block;margin-top:12px;color:var(--muted)}.camera-menu select{width:100%;max-width:100%;margin-top:6px}.camera-menu a{display:block;padding:8px 0;font-size:12px;color:var(--mint);overflow-wrap:anywhere}
+#settings>.camera-panel{margin-bottom:20px}#settings>.camera-panel .camera-view{max-height:360px}#settings>#trigger{margin-bottom:20px}
+@media(min-width:1500px){.overview-grid{grid-template-columns:minmax(0,1fr) 310px}}
+@media(max-width:1050px){.overview-grid{grid-template-columns:1fr}.camera-menu{margin-top:0}.camera-menu a{padding:5px 0}}
+@media(max-width:760px){nav{flex-wrap:wrap}.nav{flex:1;width:auto}.camera-menu{flex:1 0 100%;width:100%}.camera-menu .camera-picker{max-width:240px}#camera-links{display:flex;gap:16px;flex-wrap:wrap}}

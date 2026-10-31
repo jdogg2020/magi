@@ -52,15 +52,59 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  await elements['login-form'].onsubmit({preventDefault(){}});
  assert(!elements.app.classList.contains('hidden'),'Dashboard should open after login: '+elements['login-error'].textContent);
  assert(elements.login.classList.contains('hidden'));
- for(let i=0;i<100;i++){await vm.runInContext('refreshFrame()',context);if(elements['camera-frame'].src)break;await new Promise(resolve=>setTimeout(resolve,100));}
+ for(let i=0;i<100;i++){await vm.runInContext('refreshFrame()',context);if(vm.runInContext('[...cameraTiles.values()].filter(tile=>tile.url).length>=2',context))break;await new Promise(resolve=>setTimeout(resolve,100));}
  assert.equal(elements['camera-select'].value,cameraId,'Camera selection must follow the page URL');
  assert(elements['camera-grid'].children.length>=2,'Station should show both camera workers');
  assert.equal(vm.runInContext("cameraPath('/api/settings')",context),cameraId==='primary'?'/api/settings':`/api/cameras/${cameraId}/settings`);
  assert.equal(vm.runInContext("cameraPath('/api/session')",context),'/api/session','Sign-in remains station-wide');
- assert(elements['camera-frame'].src?.startsWith('blob:'),'Live image should load');
- assert.equal(elements['detection-mode'].textContent,'Tracking');
+ assert(vm.runInContext('[...cameraTiles.values()].filter(tile=>tile.img.src?.startsWith("blob:")).length>=2',context),'Both live images should load on the overview');
+ assert(elements['camera-links'].children.length>=2);
+ assert(elements['camera-links'].children.every(link=>link.href.endsWith('#settings')),'Left camera links open individual settings');
+ assert.equal(vm.runInContext("cameraPath('/api/station/events/list')",context),'/api/station/events/list','Combined archive must be independent of settings selection');
+ assert(elements['detection-mode'].textContent.includes('detecting'));
  for(let i=0;i<100;i++){await vm.runInContext('refresh()',context);if(elements['recent-events'].children.some(card=>{const text=card.children[1]?.children[2]?.textContent||'';return text.includes('substream video')&&text.includes('native crop');}))break;await new Promise(resolve=>setTimeout(resolve,150));}await vm.runInContext('MagiEvents.refresh(true)',context);assert(elements['all-events'].children.some(el=>el.className==='event-row'),'Events should render as rows');
- const card=elements['recent-events'].children.find(el=>{const text=el.children[1]?.children[2]?.textContent||'';return text.includes('substream video')&&text.includes('native crop');});
+ for(const tile of vm.runInContext('[...cameraTiles.values()].filter(tile=>!tile.save.disabled)',context))await tile.save.onclick();
+ await new Promise(resolve=>setTimeout(resolve,3000));
+ await vm.runInContext('MagiEvents.refresh(true)',context);
+ const common=await vm.runInContext("api('/api/station/events/list',{limit:100})",context);
+ assert(new Set(common.events.map(row=>row.camera_id)).size===2,'One event list must contain both cameras');
+ assert(common.events.every((row,i)=>i===0 || common.events[i-1].trigger_unix>=row.trigger_unix),'Events must be globally newest first');
+ const other=common.events.find(row=>row.camera_id!==cameraId && row.thumbnail);
+ assert(other,'Other camera should have a thumbnail');
+ context.crossEvent=other;await vm.runInContext('openReview(crossEvent)',context);
+ assert(elements['review-still'].src.includes('/api/cameras/'+other.camera_id+'/'),'Review still must follow event camera, not selected settings');
+ elements['review-play'].onclick();
+ assert(elements['review-video'].src.includes('/api/cameras/'+other.camera_id+'/'),'Playback must follow event camera');
+ elements['review-close'].onclick();elements['review-video'].playCalls=0;
+ elements['event-camera'].value=other.camera_id;await elements['event-filters'].onsubmit({preventDefault(){}});
+ assert(elements['all-events'].children.filter(row=>row.className==='event-row').every(row=>row.dataset.cameraId===other.camera_id));
+ elements['event-camera'].value='all';await elements['event-filters'].onsubmit({preventDefault(){}});
+ // A failed camera must not hide the other live feed or block shared pages.
+ const liveFetch=context.fetch;
+ context.fetch=async(url,options)=>{
+   const response=await liveFetch(url,options);
+   if(url==='/api/cameras' && (!options || options.method==='GET')){const data=await response.json();return {ok:true,json:async()=>({...data,cameras:data.cameras.map(c=>c.id===other.camera_id?{...c,state:'worker_failed',frame_age_seconds:null}:c)})};}
+   return response;
+ };
+ await vm.runInContext('refreshCameras();',context);await vm.runInContext('refreshFrame()',context);
+ context.failedCamera=other.camera_id;
+ assert(vm.runInContext('cameraTiles.get(failedCamera).img.classList.contains("hidden")',context));
+ assert(vm.runInContext('[...cameraTiles.entries()].some(([id,tile])=>id!==failedCamera && tile.url && !tile.img.classList.contains("hidden"))',context));
+ context.fetch=liveFetch;await vm.runInContext('refreshCameras()',context);await vm.runInContext('refreshFrame()',context);
+ // One bulk action can select rows from two different camera archives.
+ const bulkRows=elements['all-events'].children.filter(row=>row.className==='event-row');
+ const completeRows=bulkRows.filter(row=>row.children[7].textContent==='complete' || row.children[7].textContent==='interrupted');
+ const pair=[completeRows.find(row=>row.dataset.cameraId==='primary'),completeRows.find(row=>row.dataset.cameraId!=='primary')];
+ assert(pair.every(Boolean));
+ for(const row of pair){const box=row.children[0].children[0];box.checked=true;box.onchange();}
+ assert(elements['event-selection-count'].textContent.startsWith('2 selected'));
+ elements['event-action'].value='reviewed';await elements['event-apply'].onclick();
+ assert(elements['event-action-status'].textContent.includes('Updated 2 events'));
+
+ let tracked;for(let i=0;i<60;i++){const page=await vm.runInContext("api('/api/station/events/list',{limit:100})",context);tracked=page.events.find(row=>row.camera_id===cameraId && row.trigger_type!=='manual' && row.motion && row.best_frame && row.substream_preview);if(tracked)break;await new Promise(resolve=>setTimeout(resolve,150));}
+ assert(tracked,'Synthetic detection must yield a tracked event');
+ context.trackedEvent=tracked;
+ const card=vm.runInContext('eventCard(trackedEvent)',context);
  assert(card,'A recent event should have its native thumbnail and substream recording');
  const view=card.children[0].children.find(el=>el.tagName==='button');
  assert(view,'Saved event should open its image');
@@ -120,23 +164,23 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  const managedEventId=vm.runInContext('reviewEvent.id',context);
  elements['review-labels'].value='aircraft, regression-review-label';elements['review-notes'].value='UI regression notes';elements['review-reviewed'].checked=true;
  await elements['review-save'].onclick();assert(elements['review-save-status'].textContent.includes('saved'));
- let managed=await vm.runInContext("api('/api/events/list',{q:'regression-review-label'})",context);assert(managed.events.some(e=>e.id===managedEventId && e.review.reviewed && e.review.notes==='UI regression notes'));
+ let managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label'})",context);assert(managed.events.some(e=>e.id===managedEventId && e.review.reviewed && e.review.notes==='UI regression notes'));
  await vm.runInContext('MagiEvents.refresh(true)',context);
  const selectManaged=()=>{const row=elements['all-events'].children.find(r=>r.dataset.eventId===managedEventId);assert(row,'Managed row should be visible');const checkbox=row.children[0].children[0];checkbox.checked=true;checkbox.onchange();};
  selectManaged();elements['event-action'].value='protect';await elements['event-apply'].onclick();
- managed=await vm.runInContext("api('/api/events/list',{q:'regression-review-label'})",context);assert(managed.events[0].review.protected);
+ managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label'})",context);assert(managed.events[0].review.protected);
  selectManaged();elements['event-action'].value='unprotect';await elements['event-apply'].onclick();
- selectManaged();elements['event-action'].value='trash';await elements['event-apply'].onclick();assert(elements['event-action-status'].textContent.includes('Updated 1 event'));
+ selectManaged();elements['event-action'].value='trash';await elements['event-apply'].onclick();assert(elements['event-action-status'].textContent.includes('Updated 1 event'),elements['event-action-status'].textContent);
  elements['event-folder'].value='trash';await elements['event-filters'].onsubmit({preventDefault(){}});
  const trashed=elements['all-events'].children.find(r=>r.dataset.eventId===managedEventId);assert(trashed,'Trash folder should show the event');
- const restore=trashed.children[7].children.find(b=>b.textContent==='Restore');await restore.onclick();
+ const restore=trashed.children[8].children.find(b=>b.textContent==='Restore');await restore.onclick();
  elements['event-folder'].value='active';await elements['event-filters'].onsubmit({preventDefault(){}});
- managed=await vm.runInContext("api('/api/events/list',{q:'regression-review-label'})",context);assert.equal(managed.events[0].review.trashed_at,null);
+ managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label'})",context);assert.equal(managed.events[0].review.trashed_at,null);
  elements['review-close'].onclick();
- await elements['star-refresh'].onclick();
- assert(elements['star-event'].children.length>0,'Star calibration should list full-resolution saved frames');
+ for(let i=0;i<60;i++){await elements['star-refresh'].onclick();if(elements['star-event'].children.length)break;await new Promise(resolve=>setTimeout(resolve,150));}
+ assert(elements['star-event'].children.length>0,'Star calibration should list full-resolution saved frames: '+elements['star-status'].textContent);
  await elements['star-load'].onclick();
- assert(!elements['star-editor'].classList.contains('hidden'),'Frozen calibration image should open');
+ assert(!elements['star-editor'].classList.contains('hidden'),'Frozen calibration image should open: '+elements['star-status'].textContent);
  assert(elements['star-name'].children.length>0,'Visible named stars should be available');
  const starNames=elements['star-name'].children.map(option=>option.value);
  for(let i=0;i<6;i++) {elements['star-name'].value=starNames[i];elements['star-x'].value=String(10+i*14);elements['star-y'].value=String(10+i*14);elements['star-add'].onclick();}

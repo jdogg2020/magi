@@ -175,3 +175,31 @@ frame counts, dropped frames, temperature and power/throttle flags before
 choosing different hardware. Camera removal and a combined cross-camera archive
 are not included in this version; each camera's existing event filters and bulk
 review operate within its own archive.
+
+## Shared overview and events (0.14.0)
+
+Overview always shows every configured camera. Each tile names its camera and
+shows the live analysis image, main/substream and detection status, advancing
+frame counts, dropped frames, recording usage, a manual Save an event button,
+and a Settings link. A disconnected camera stays visible with its status and a
+waiting-image message. Pi health, free space and total usage are station-wide.
+Only the visible overview polls all images; individual settings poll that
+camera's preview instead.
+
+The left Cameras dropdown contains camera settings links and a settings selector.
+Add, Rename and Restart controls are in the selected camera's Station cameras
+panel. Existing camera URLs still work; append `#settings` to open settings.
+
+Events is one list across all cameras, newest first, with a Camera column and
+an All cameras filter. Filters and pagination apply to the combined archive.
+Names on events are capture-time names where stored; older events fall back to
+their archive's current camera name. All asset links and bulk selections carry
+camera and event IDs. Selecting events from different cameras supports the same
+labels, notes, protection, trash/restore and JSON export controls. Footage stays
+in its original per-camera directories. Unavailable archives produce a visible
+partial-results notice; successful actions on other cameras remain reported.
+
+After updating, check both CX820 live images, record a manual event from each,
+verify their Camera names and playback, then monitor Pi CPU, temperature,
+throttling and dropped-frame growth. No real-camera capacity result is implied
+by the synthetic two-camera tests.

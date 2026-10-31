@@ -187,6 +187,13 @@ class PrototypeTests(unittest.TestCase):
             self.request('/api/status')
         self.assertEqual(error.exception.code, 401)
         csrf = self.login()
+        for endpoint in ('/api/camera/info', '/api/camera/setup'):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request(endpoint, {})
+            self.assertEqual(error.exception.code, 403)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('/api/camera/setup', {'action':'inspect','host':'8.8.8.8','password':'do-not-send'}, {'X-CSRF-Token':csrf})
+        self.assertEqual(error.exception.code,409)
         with self.request('/api/settings') as r:
             safe = r.read().decode()
             self.assertNotIn('camera-secret-sentinel', safe)

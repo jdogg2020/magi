@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote
 from .identification import validate as validate_identification
+from .camera_info import api_settings
 
 
 def installation_storage_defaults(storage, *, fresh, strict, mounted, free_bytes):
@@ -85,6 +86,7 @@ class Config:
     def from_dict(cls, data):
         camera, storage = data['camera'], data['storage']
         rec = data.get('recording', {})
+        api_settings(camera)
         source = camera_url(camera, 'mainstream_path')
         sub = dict(camera)
         sub.setdefault('substream_path', '/h264Preview_01_sub')

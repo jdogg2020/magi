@@ -1,3 +1,13 @@
+## Camera setup and inspection (0.10.0)
+
+Settings now includes experimental local CX820 onboarding: discover, inspect,
+review, initialize a blank-password camera if selected, enable RTSP/local HTTP,
+and save the connection. No Windows client is required on supported firmware.
+A read-only panel shows identity, configured streams, clock, image settings and
+nominal model FOV beside live stream status. Real-camera activation still needs
+validation. OpenSky credential downloads can be imported locally in Settings.
+See [camera setup](docs/CAMERA-SETUP.md) for the workflow and limitations.
+
 # Magi
 
 A local-first, 24/7 sky-camera observation prototype for Raspberry Pi 4 and

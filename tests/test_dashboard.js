@@ -116,6 +116,23 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  vm.runInContext("renderStatus({state:'buffering', health:{}, analysis:{state:'analyzing',width:640,height:360,fps:20}})",context);
  assert(elements['analysis-diagnostic'].classList.contains('hidden'));
  assert(elements['analysis-state'].textContent.includes('640×360 / 20 fps'));
+ // Read-only camera information and safe local credential import.
+ vm.runInContext("renderStatus({state:'buffering',health:{},camera_info:{state:'partial',message:'Some information unavailable',streams:{sub:{width:640,height:360,fps:10,codec:'h264',bitrate_kbps:256}},unavailable_commands:['GetIsp']},analysis:{state:'substream_probe_failed'}})",context);
+ assert(elements['camera-info-observed'].textContent.includes('resolution unknown'));
+ assert(elements['camera-info-details'].children.some(p=>p.children.some(v=>typeof v==='string' && v.includes('640×360'))));
+ elements['opensky-credentials-file'].files=[{size:80,text:async()=>JSON.stringify({clientId:'test-import-id',clientSecret:'test-import-secret'})}];
+ await elements['opensky-credentials-file'].onchange();
+ assert.equal(elements['id-opensky_client_id'].value,'test-import-id');assert.equal(elements['id-opensky_client_secret'].value,'test-import-secret');
+ assert.equal(elements['id-aircraft_provider'].value,'opensky');assert(elements['opensky-import-status'].textContent.includes('Save Settings'));
+ elements['opensky-credentials-file'].files=[{size:10,text:async()=>'{bad'}];await elements['opensky-credentials-file'].onchange();assert(elements['opensky-import-status'].textContent.includes('not a valid JSON'));
+ elements['id-opensky_client_id'].value='';elements['id-opensky_client_secret'].value='';
+ // Camera mutation requires a matching inspected connection; edits invalidate Apply.
+ elements.host.value='192.168.86.242';elements.username.value='admin';elements['camera-password'].value='';elements['setup-initialize'].checked=false;
+ vm.runInContext("setupSignature=JSON.stringify(setupFields());renderCameraSetup({camera_setup:{state:'review',token:'test-token',host:'192.168.86.242',identity:{model:'CX820'},ports:{http:{port:80,enabled:false}}}})",context);
+ assert(!elements['setup-apply'].disabled);elements.host.value='192.168.86.243';vm.runInContext("renderCameraSetup({camera_setup:{state:'review',token:'test-token'}})",context);assert(elements['setup-apply'].disabled);
+ await elements['camera-info-read'].onclick();
+ for(let i=0;i<30;i++){await vm.runInContext('refresh()',context);if(elements['camera-info-status'].textContent.includes('test video'))break;await new Promise(resolve=>setTimeout(resolve,100));}
+ assert(elements['camera-info-status'].textContent.includes('test video'),'Synthetic camera should explain why API inspection is unavailable');
  // Check setup navigation and save feedback without changing the disposable service config.
  vm.runInContext("renderStatus({state:'setup_required', health:{}, analysis:{}})",context);
  const setupLink=elements.notice.children.find(el=>el.tagName==='a');

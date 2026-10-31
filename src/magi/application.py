@@ -14,6 +14,8 @@ import time
 
 from . import __version__
 from .config import Config
+from .camera_info import CameraInfo
+from .reolink_setup import Setup, SetupError
 from .calibration import CalibrationError, GEOMETRY_KEYS, active_report, source_fingerprint, frame_time, visible_stars, solve_geometry
 from .detection import Analysis
 from .health import metrics, cpu_counters
@@ -31,6 +33,8 @@ class Application:
     def __init__(self, path):
         self.path = Path(path)
         self.cfg = Config.load(path)
+        self.camera_info = CameraInfo()
+        self.camera_setup = Setup()
         self.calibration_session = None
         self.calibration_report = active_report(json.loads(self.path.read_text()), self.cfg)
         self.recorder = self.substream = self.analysis = self.previews = None
@@ -73,6 +77,8 @@ class Application:
         raw = json.loads(self.path.read_text())
         camera = {key: raw.get('camera', {}).get(key, '') for key in
                   ('host', 'port', 'username', 'mainstream_path', 'substream_path')}
+        camera['api_scheme'] = raw.get('camera', {}).get('api_scheme', 'http')
+        camera['api_port'] = raw.get('camera', {}).get('api_port', 80 if camera['api_scheme'] == 'http' else 443)
         camera['port'] = camera['port'] or 554
         camera['substream_path'] = camera['substream_path'] or '/h264Preview_01_sub'
         camera['has_password'] = bool(raw.get('camera', {}).get('password'))
@@ -83,13 +89,16 @@ class Application:
                 'star_calibration': self.calibration_report, 'identification': {**{k: v for k, v in self.cfg.identification.items() if k not in ('opensky_client_secret', 'opensky_client_id')},
                                    'has_opensky_credentials': bool(self.cfg.identification.get('opensky_client_secret'))}}
 
-    def update_settings(self, changes, calibration=None):
+    def update_settings(self, changes, calibration=None, preserve_setup=False):
+        setup_status = self.camera_setup.read()
+        if not preserve_setup and (setup_status.get('state') == 'saving' or setup_status.get('state') == 'working' and setup_status.get('action') == 'apply'):
+            raise ValueError('Wait for camera setup to finish before changing settings.')
         if not isinstance(changes, dict):
             raise ValueError('Invalid settings.')
         raw = json.loads(self.path.read_text())
         new = copy.deepcopy(raw)
         allowed = {
-            'camera': {'host', 'port', 'username', 'password', 'mainstream_path', 'substream_path'},
+            'camera': {'host', 'port', 'username', 'password', 'mainstream_path', 'substream_path', 'api_scheme', 'api_port'},
             'recording': {'pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds'},
             'storage': {'max_bytes', 'min_free_bytes', 'retention_days'},
             'detection': {'enabled', 'threshold', 'min_pixels', 'max_pixels', 'min_hits', 'min_seconds', 'min_travel', 'ignore_zones'},
@@ -114,6 +123,11 @@ class Application:
         except (ValueError, TypeError, KeyError, OSError):
             raise ValueError('Check camera fields, numeric limits, recording duration and ignore-zone bounds. No settings were changed.') from None
         self.stop_capture()
+        self.camera_info.close()
+        self.camera_info = CameraInfo()
+        if not preserve_setup:
+            self.camera_setup.close()
+            self.camera_setup = Setup()
         self.identifier.close()
         self.media.close()
         atomic_json(self.path.with_suffix('.backup'), raw)
@@ -160,6 +174,13 @@ class Application:
             try:
                 if task['command'] == 'trigger':
                     task['result'] = self.trigger()
+                elif task['command'] == 'camera_setup':
+                    value = task['value']
+                    self.camera_setup.submit(value.get('action'), value, json.loads(self.path.read_text()).get('camera', {}))
+                    task['result'] = self.camera_setup.read()
+                elif task['command'] == 'camera_info':
+                    queued = self.camera_info.submit(json.loads(self.path.read_text()).get('camera', {}))
+                    task['result'] = {'queued': queued, 'camera_info': self.camera_info.read()}
                 elif task['command'] == 'settings':
                     task['result'] = self.update_settings(task['value'])
                 elif task['command'] == 'reconnect':
@@ -181,7 +202,7 @@ class Application:
                 else:
                     raise ValueError('Unknown command.')
             except (OSError, ValueError) as error:
-                if isinstance(error, CalibrationError):
+                if isinstance(error, (CalibrationError, SetupError)):
                     task['error'] = str(error)
                 elif task['command'].startswith('calibration_'):
                     task['error'] = 'Star calibration unavailable. Check the selected event, location and astronomy packages.'
@@ -194,6 +215,14 @@ class Application:
 
     def tick(self):
         self._commands()
+        camera_settings = self.camera_setup.take_completed()
+        if camera_settings:
+            try:
+                self.update_settings({'camera':camera_settings}, preserve_setup=True)
+                self.camera_setup.saved(True)
+                self.camera_info.submit(json.loads(self.path.read_text()).get('camera', {}))
+            except (OSError, ValueError):
+                self.camera_setup.saved(False)
         now = time.monotonic()
         if not self.recorder and self.cfg.source and now >= self.next_start:
             self.next_start = now + 5
@@ -399,7 +428,7 @@ class Application:
             clips = self.list_clips()
         except OSError:
             clips = []
-        status.update({'error': self.last_error, 'trigger_note': self.last_trigger_error,
+        status.update({'camera_setup': self.camera_setup.read(), 'camera_info': self.camera_info.read(), 'error': self.last_error, 'trigger_note': self.last_trigger_error,
                        'uptime_seconds': round(time.monotonic() - self.started, 1),
                        'health': self.health, 'star_calibration': self.calibration_report, 'event_count_since_start': self.event_count,
                        'analysis': {'state': self.analysis.state if self.analysis else 'idle',
@@ -457,6 +486,8 @@ class Application:
         self.frame_at = 0
 
     def close(self):
+        self.camera_setup.close()
+        self.camera_info.close()
         self.media.close()
         self.identifier.close()
         self.stop_capture()

@@ -111,8 +111,9 @@ Open **Settings** and enter:
 | Main stream path | `/h264Preview_01_main` |
 | Analysis substream path | `/h264Preview_01_sub` |
 
-These paths are editable; verify them against your camera configuration. RTSP must
-be enabled on the camera. Save the settings. The dashboard should change from
+These paths are editable; verify them against your camera configuration. Use **Set up a Reolink camera with Magi** for experimental local CX820 discovery,
+initialization and enabling RTSP/HTTP, without the Windows client. See
+[Camera setup](docs/CAMERA-SETUP.md). RTSP must be enabled on the camera. Save the settings. The dashboard should change from
 setup to connecting, then recording, and show a small camera preview.
 
 ## Ignore unwanted areas

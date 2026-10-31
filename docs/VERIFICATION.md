@@ -1,3 +1,15 @@
+# Magi 0.10.0 camera setup and information
+
+HTTP simulation covers token login, the read-only command allowlist, logout,
+credential-free responses, optional fields and conservative clock conversion.
+TCP simulation covers challenge/login framing and fragmented responses; AES
+is checked against an independent OpenSSL ciphertext vector. Setup fixtures
+exercise read-only inspection, model restrictions, single-use/expired tokens,
+identity changes, password verification, preserving other users, XML escaping,
+partial failure without retries and private completion handoff. UI checks cover
+information display, setup edit invalidation and local OpenSky JSON import.
+Actual CX820 firmware activation and Pi/network behavior remain untested.
+
 # Magi 0.9.0 assisted star calibration
 
 Synthetic regression tests recover pointing, roll and both fields of view,

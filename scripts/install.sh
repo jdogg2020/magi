@@ -83,7 +83,7 @@ if [[ "$source_dir" == /opt/magi* ]]; then echo "Install from a separate extract
 if ! "$skip_dependencies"; then
   echo "Installing OS-managed dependencies..."
   run_step 300 "Step 1/7: Refresh package lists (limit 5 minutes)" apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
-  run_step 600 "Step 2/7: Install required packages (limit 10 minutes)" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confold install -y python3 python3-numpy python3-pil ffmpeg
+  run_step 600 "Step 2/7: Install required packages (limit 10 minutes)" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confold install -y python3 python3-numpy python3-pil ffmpeg openssl
   if "$identification"; then run_step 600 "Step 2/7: Install satellite packages (limit 10 minutes)" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confold install -y python3-skyfield; fi
 fi
 current_step='Step 3/7: Validate dependencies'

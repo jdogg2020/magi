@@ -187,8 +187,14 @@ class Analysis:
         # Probe the actual camera feed; stored analysis dimensions are legacy hints.
         probe_args = [cfg.ffprobe, '-v', 'error']
         if not cfg.file_source:
-            probe_args += ['-rtsp_transport', 'tcp', '-timeout', '3000000']
-        probe_args += ['-select_streams', 'v:0', '-show_entries',
+            probe_args += ['-rtsp_transport', 'tcp', '-timeout', '3000000',
+                           '-allowed_media_types', 'video']
+        # FFprobe's default five-second analysis competes with our five-second
+        # wall-clock deadline on live feeds. Bound its sample separately, leaving
+        # time for connection setup and the next keyframe. Output selection alone
+        # does not stop RTSP from opening audio/data tracks we do not need.
+        probe_args += ['-analyzeduration', '1000000', '-probesize', '1000000',
+                      '-select_streams', 'v:0', '-show_entries',
                       'stream=width,height,r_frame_rate', '-of', 'json', cfg.analysis_source]
         try:
             result = subprocess.run(probe_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -207,7 +213,7 @@ class Analysis:
             if isinstance(error, FileNotFoundError):
                 reason = 'Stream inspection tool is missing. Reinstall Magi dependencies.'
             elif isinstance(error, subprocess.TimeoutExpired) or 'timed out' in diagnostic:
-                reason = 'Camera did not answer the substream check in time. Check camera power and network connectivity.'
+                reason = 'The substream video-format check did not finish in time. Recording may still be working; check camera connectivity and stream settings.'
             elif '401' in diagnostic or '403' in diagnostic or 'unauthorized' in diagnostic:
                 reason = 'Camera refused substream access. Check the camera username, password and RTSP permissions in Settings.'
             elif '404' in diagnostic or 'not found' in diagnostic:

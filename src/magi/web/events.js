@@ -20,7 +20,13 @@ const MagiEvents = (()=>{
   }
   function node(tag,text,cls){const item=document.createElement(tag);if(text!=null)item.textContent=text;if(cls)item.className=cls;return item;}
   function button(text,action,cls='quiet'){const item=node('button',text,cls);item.type='button';item.onclick=action;return item;}
+  function mount(page){
+    if(page==='overview' || page==='events')el(page==='overview'?'recent-events':'event-archive').append(el('event-browser'));
+  }
   function render(){
+    const active=currentFilters || filters();
+    const count=Object.entries(active).filter(([key,value])=>value!=null && value!=='' && value!==({camera_id:'all',reviewed:'all',protected:'all',reference:'all',state:'all',type:'all',trash:'active',sort:'newest'}[key])).length;
+    el('event-filter-summary').textContent=count ? `Filters · ${count} active · ${active.sort==='oldest'?'Oldest first':'Newest first'}`:'Filters · All cameras · Newest first';
     const body=el('all-events');body.replaceChildren();
     for(const row of rows){
       if(selected.has(eventKey(row)))selected.set(eventKey(row),row);
@@ -48,7 +54,7 @@ const MagiEvents = (()=>{
     el('event-trash-note').classList.toggle('hidden',currentFilters?.trash==='active');selection();
   }
   async function refresh(force=false){
-    if(loading || !csrf || (!force && (el('events').classList.contains('hidden') || Date.now()-lastRefresh<8000)))return;
+    if(loading || !csrf || (!force && ((el('events').classList.contains('hidden') && el('overview').classList.contains('hidden')) || Date.now()-lastRefresh<8000)))return;
     loading=true;const version=requestVersion;
     try {if(!currentFilters)currentFilters=filters();const result=await api('/api/station/events/list',{...currentFilters,offset,limit:25});
       if(version!==requestVersion)return;rows=result.events;total=result.total;offset=result.offset;
@@ -73,6 +79,7 @@ const MagiEvents = (()=>{
     const index=rows.findIndex(r=>eventKey(r)===eventKey(row));el('review-event-prev').disabled=index<=0;el('review-event-next').disabled=index<0 || index>=rows.length-1;
   }
   function init(){
+    mount('overview');
     setOptions([]);
     el('event-filters').onsubmit=event=>{event.preventDefault();return applyFilters();};
     el('event-reset').onclick=()=>{for(const id of ['event-search','event-label-filter','event-start','event-end'])el(id).value='';for(const id of ['event-reviewed','event-protected','event-state','event-reference','event-type'])el(id).value='all';el('event-camera').value='all';el('event-folder').value='active';el('event-sort').value='newest';applyFilters();};
@@ -85,5 +92,5 @@ const MagiEvents = (()=>{
     el('review-event-prev').onclick=()=>navigate(reviewEvent,-1);el('review-event-next').onclick=()=>navigate(reviewEvent,1);
   }
   function reset(){selected.clear();rows=[];loaded=false;currentFilters=null;lastRefresh=0;requestVersion++;selection();}
-  return {init,refresh,updateReview,reset,loaded:()=>loaded};
+  return {init,mount,refresh,updateReview,reset,loaded:()=>loaded};
 })();

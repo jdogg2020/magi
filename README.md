@@ -1,3 +1,10 @@
+## Recent events list (0.14.1)
+
+Overview's Recent events now uses the same table, filters, pagination, selection
+and actions as Events. Filters start collapsed and show an active-filter count
+when changed. Moving between Overview and Events preserves filters, the current
+page and selections. Camera attribution and image-first review are unchanged.
+
 ## Station overview and unified archive (0.14.0)
 
 Overview now shows all camera live images together with per-camera recording and

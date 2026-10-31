@@ -104,7 +104,7 @@ async function api(path, body, identity = selectedCamera) {
   return value;
 }
 function loggedOut() { if(frameURL){URL.revokeObjectURL(frameURL);frameURL=null;$('camera-frame').removeAttribute('src');}for(const tile of cameraTiles.values()){if(tile.url)URL.revokeObjectURL(tile.url);}cameraTiles.clear();stationCameras=[];$('camera-grid').replaceChildren();MagiEvents.reset(); setupSignature=setupToken=null; setupError=''; for(const id of ['camera-password','setup-new-password','setup-confirm-password','id-opensky_client_id','id-opensky_client_secret']) $(id).value=''; if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
-function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); if(name==='events')MagiEvents.refresh(true); }
+function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); MagiEvents.mount(name);if(name==='events' || name==='overview')MagiEvents.refresh(true); }
 document.querySelectorAll('.nav').forEach(el => el.addEventListener('click', () => tab(el.dataset.tab)));
 $('open-settings').onclick = () => tab('settings');
 $('camera-settings-link').onclick = event => { event.preventDefault(); tab('settings'); }; $('view-all').onclick = () => tab('events');
@@ -169,20 +169,6 @@ function renderHealth(status) {
   $('uptime').textContent = `${Math.floor((status.uptime_seconds || 0) / 3600)}h ${Math.floor((status.uptime_seconds || 0) % 3600 / 60)}m`;
   $('version').textContent = `v${status.version}`;
 }
-function eventCard(event) {
-  const card = document.createElement('article'); card.className = 'event-card';
-  const image = document.createElement('div'); image.className = 'event-image';
-  const base = eventPath(event,'').replace(/\/$/,'');
-  if (event.thumbnail) { const thumb = document.createElement('img'); thumb.src = base + '/thumbnail'; thumb.alt = event.best_frame ? 'Native-resolution crop of the selected event frame' : 'Detection thumbnail for this event'; thumb.loading = 'lazy'; image.append(thumb); }
-  if (event.thumbnail || event.best_frame || event.preview || event.substream_preview) { const view = document.createElement('button'); view.className = 'event-open'; view.textContent = 'View image'; view.setAttribute('aria-label', 'Open event image'); view.onclick = () => openReview(event); image.append(view); }
-  const info = document.createElement('div'); info.className = 'event-info';
-  const type = document.createElement('span'); type.className = 'type'; type.textContent = `${event.camera_name || 'Camera 1'} · ` + (event.trigger_type || 'event').replaceAll('_', ' ');
-  const title = document.createElement('h3'); title.textContent = new Date(event.trigger_utc).toLocaleString();
-  const detail = document.createElement('p'); detail.textContent = `${event.state}${event.estimated_duration_seconds ? ` · ${event.estimated_duration_seconds.toFixed(1)} sec` : ''}${event.interruption ? ' · interrupted' : ''}${event.substream_preview ? ' · substream video' : event.preview ? ' · detection replay' : ' · preview pending or unavailable'}${event.best_frame ? ' · native crop' : ''}`;
-  const links = document.createElement('div'); links.className = 'event-links';
-  for (const [label, kind] of [['Original ↓', 'original'], ['Full-res frame ↗', 'frame'], ['Object crop ↗', 'thumbnail'], ['Review details ↓', 'media'], ['Metadata ↓', 'metadata']]) { if (kind === 'original' && !event.original || kind === 'frame' && !event.best_frame || kind === 'thumbnail' && !event.best_frame || kind === 'media' && !event.best_frame) continue; const link = document.createElement('a'); link.href = base + '/' + kind; link.textContent = label; if (kind === 'thumbnail' || kind === 'frame') { link.onclick = click => { click.preventDefault(); openReview(event, kind); }; } links.append(link); }
-  const identification = document.createElement('p'); identification.textContent = `Reference check: ${(event.identification || 'disabled').replaceAll('_', ' ')}`; info.append(type, title, detail, identification, links); const reviewText=document.createElement('p');reviewText.textContent=`Your labels: ${(event.review?.labels || []).join(', ') || 'Unlabelled'} · ${event.review?.reviewed?'Reviewed':'Unreviewed'}${event.review?.protected?' · Protected':''}`;info.append(reviewText);card.append(image, info); return card;
-}
 function renderEvents(events) {
   if (reviewEvent && $('review').open) {
     const updated = events.find(event => eventKey(event) === eventKey(reviewEvent));
@@ -190,11 +176,7 @@ function renderEvents(events) {
   }
   const signature = JSON.stringify(events); if (signature === clipSignature) return; clipSignature = signature;
   $('event-badge').textContent = events.length;
-  for (const [id, list] of [['recent-events', events.slice(0, 3)]]) {
-    const target = $(id); target.replaceChildren();
-    if (!list.length) { const empty = document.createElement('div'); empty.className = 'empty'; const title = document.createElement('strong'); title.textContent = 'The sky has your attention.'; const text = document.createElement('span'); text.textContent = 'Events will appear here when motion qualifies, or when you save one manually.'; empty.append(title, text); target.append(empty); }
-    else list.forEach(event => target.append(eventCard(event)));
-  }
+
 }
 let setupSignature=null, setupToken=null, lastSetupState='', setupError='';
 function setupFields(){return {host:$('host').value.trim(),username:$('username').value.trim() || 'admin',password:$('camera-password').value,initialize:$('setup-initialize').checked,new_password:$('setup-new-password').value,confirmation:$('setup-confirm-password').value};}

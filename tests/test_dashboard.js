@@ -8,7 +8,7 @@ const cameraId = process.argv[3] || 'primary';
 const base = process.argv[2] || 'http://127.0.0.1:18790';
 class Element {
   constructor(tag='div') { this.tagName=tag; this.children=[]; this.value=''; this.textContent=''; this.checked=false; this.disabled=false; this.open=false; this.listeners={}; this.classes=new Set(); this.dataset={}; this.style={}; this.classList={add:(...n)=>n.forEach(v=>this.classes.add(v)),remove:(...n)=>n.forEach(v=>this.classes.delete(v)),toggle:(n,yes)=>{if(yes ?? !this.classes.has(n)) this.classes.add(n);else this.classes.delete(n);},contains:n=>this.classes.has(n)}; }
-  append(...children) { this.children.push(...children); }
+  append(...children) { for(const child of children){if(child && typeof child==='object'){if(child.parentNode)child.parentNode.children=child.parentNode.children.filter(item=>item!==child);child.parentNode=this;}this.children.push(child);} }
   replaceChildren(...children) { this.children=[...children]; }
   addEventListener(name, callback) { this.listeners[name]=callback; }
   setAttribute(name,value) { this[name]=value; }
@@ -62,7 +62,13 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(elements['camera-links'].children.every(link=>link.href.endsWith('#settings')),'Left camera links open individual settings');
  assert.equal(vm.runInContext("cameraPath('/api/station/events/list')",context),'/api/station/events/list','Combined archive must be independent of settings selection');
  assert(elements['detection-mode'].textContent.includes('detecting'));
- for(let i=0;i<100;i++){await vm.runInContext('refresh()',context);if(elements['recent-events'].children.some(card=>{const text=card.children[1]?.children[2]?.textContent||'';return text.includes('substream video')&&text.includes('native crop');}))break;await new Promise(resolve=>setTimeout(resolve,150));}await vm.runInContext('MagiEvents.refresh(true)',context);assert(elements['all-events'].children.some(el=>el.className==='event-row'),'Events should render as rows');
+ assert(elements['recent-events'].children.includes(elements['event-browser']),'Overview should host the shared event list');
+ assert(!elements['event-filter-panel'].open,'Filters should start collapsed');
+ for(let i=0;i<100;i++){await vm.runInContext('refresh()',context);await vm.runInContext('MagiEvents.refresh(true)',context);if(elements['all-events'].children.some(row=>row.className==='event-row'))break;await new Promise(resolve=>setTimeout(resolve,150));}
+ assert(elements['all-events'].children.some(row=>row.className==='event-row'),'Overview recent events should render as table rows');
+ vm.runInContext("tab('events')",context);assert(elements['event-archive'].children.includes(elements['event-browser']));
+ vm.runInContext("tab('overview')",context);assert(elements['recent-events'].children.includes(elements['event-browser']));
+
  for(const tile of vm.runInContext('[...cameraTiles.values()].filter(tile=>!tile.save.disabled)',context))await tile.save.onclick();
  await new Promise(resolve=>setTimeout(resolve,3000));
  await vm.runInContext('MagiEvents.refresh(true)',context);
@@ -109,10 +115,10 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  let tracked;for(let i=0;i<60;i++){const page=await vm.runInContext("api('/api/station/events/list',{limit:100})",context);tracked=page.events.find(row=>row.camera_id===cameraId && row.trigger_type!=='manual' && row.motion && row.best_frame && row.substream_preview);if(tracked)break;await new Promise(resolve=>setTimeout(resolve,150));}
  assert(tracked,'Synthetic detection must yield a tracked event');
  context.trackedEvent=tracked;
- const card=vm.runInContext('eventCard(trackedEvent)',context);
- assert(card,'A recent event should have its native thumbnail and substream recording');
- const view=card.children[0].children.find(el=>el.tagName==='button');
- assert(view,'Saved event should open its image');
+ await vm.runInContext('MagiEvents.refresh(true)',context);
+ const row=elements['all-events'].children.find(row=>row.dataset.eventId===tracked.id && row.dataset.cameraId===tracked.camera_id);
+ assert(row,'Tracked event should be available in the recent event list');
+ const view=row.children[1].children[0];
  elements['review-video'].currentTime=17;
  await view.onclick();
  assert(!elements['review-still'].classList.contains('hidden'),'Opening an event must show its image first');

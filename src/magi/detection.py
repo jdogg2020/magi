@@ -23,6 +23,10 @@ class Tracker:
         self.last_mask = None
         self.mask_suppressed = False
         self.active_pixels = None
+        self.stable_frames = 0
+        self.flash = None
+        self.last_flash = -1000
+        self.meteor_tracks = {}
 
     def update(self, frame, now):
         current = np.asarray(frame, dtype=np.uint8)
@@ -39,7 +43,30 @@ class Tracker:
         if self.previous is None:
             self.previous = current.copy()
             return [], []
-        delta = np.abs(current.astype(np.int16) - self.previous.astype(np.int16))
+        signed = current.astype(np.int16) - self.previous.astype(np.int16)
+        delta = np.abs(signed)
+        flash_events = []
+        active_count = np.count_nonzero(self.active_pixels)
+        if active_count and self.s.get('lightning_enabled',True):
+            positive_fraction = np.count_nonzero((signed >= 35) & self.active_pixels) / active_count
+            mean = float(current[self.active_pixels].mean())
+            previous_mean = float(self.previous[self.active_pixels].mean())
+            if self.flash:
+                flash = self.flash
+                if now-flash['start'] > .8:
+                    self.flash = None
+                elif mean <= flash['baseline']+15 and previous_mean-mean >= 25:
+                    if now-self.last_flash >= 3:
+                        flash_events.append({'detection_type':'lightning_candidate','track_id':uuid.uuid4().hex[:12],
+                            'x':current.shape[1]/2,'y':current.shape[0]/2,'box':[0,0,current.shape[1],current.shape[0]],
+                            'pixels':int(active_count),'width':current.shape[1],'height':current.shape[0],
+                            'track_seconds':round(now-flash['start'],3),'sample_offset_seconds':round(now-flash['start'],6),'flash_fraction':flash['fraction'],
+                            'brightness_jump':flash['jump'],'classification_basis':'brief broad brightening after stable frames; exposure changes can mimic lightning'})
+                        self.last_flash = now
+                    self.flash = None
+            if not self.flash and self.stable_frames >= 3 and positive_fraction >= .6 and mean-previous_mean >= 35:
+                self.flash = {'start':now,'baseline':previous_mean,'fraction':round(positive_fraction,3),'jump':round(mean-previous_mean,1)}
+            self.stable_frames = self.stable_frames+1 if np.count_nonzero((delta >= self.s['threshold']) & self.active_pixels) <= active_count*.02 else 0
         self.previous = current.copy()
         mask = delta >= self.s['threshold']
         # Keep raw changed pixels for review. Only detection uses the exclusion mask.
@@ -47,9 +74,10 @@ class Tracker:
         mask &= self.active_pixels
         if np.count_nonzero(mask) > np.count_nonzero(self.active_pixels) * self.s['max_changed_fraction']:
             self.tracks.clear()
+            self.meteor_tracks.clear()
             self.suppressed_frames += 1
             self.mask_suppressed = True
-            return [], []
+            return [], flash_events
         # Flood-fill only the sparse difference mask. Broad changes are rejected
         # above, so cloud/exposure frames cannot grow an unbounded Python queue.
         pixels = set(zip(*np.nonzero(mask)))
@@ -69,12 +97,13 @@ class Tracker:
                 ys, xs = zip(*component)
                 objects.append({'x': sum(xs) / len(xs), 'y': sum(ys) / len(ys),
                                 'box': [int(min(xs)), int(min(ys)), int(max(xs)) + 1, int(max(ys)) + 1],
-                                'pixels': len(component)})
+                                'pixels': len(component), 'brightness':float(current[ys,xs].mean()), 'brightening':float(signed[ys,xs].mean())})
         objects = sorted(objects, key=lambda obj: obj['pixels'], reverse=True)[:32]
         self.tracks = {key: value for key, value in self.tracks.items()
                        if now - value['last'] <= self.s['max_gap_seconds']}
-        used, qualified = set(), []
-        for obj in objects:
+        meteor_rows = self._meteor_evidence(objects,current.shape,now)
+        used, qualified = set(), flash_events
+        for object_index, obj in enumerate(objects):
             candidates = [(math.hypot(track['x'] - obj['x'], track['y'] - obj['y']), key)
                           for key, track in self.tracks.items() if key not in used]
             distance, key = min(candidates, default=(float('inf'), None))
@@ -91,12 +120,49 @@ class Tracker:
             obj['track_id'] = key
             used.add(key)
             travel = math.hypot(track['x'] - track['origin'][0], track['y'] - track['origin'][1])
-            if (track['hits'] >= self.s['min_hits'] and now - track['start'] >= self.s['min_seconds']
-                    and travel >= self.s['min_travel'] and now - track['last_emit'] >= .5):
+            duration = now-track['start']
+            meteor = meteor_rows.get(object_index)
+            normal = track['hits'] >= self.s['min_hits'] and duration >= self.s['min_seconds'] and travel >= self.s['min_travel']
+            if (meteor or normal) and now-track['last_emit'] >= .5:
                 track['last_emit'] = now
-                qualified.append({'track_id': key, **obj, 'track_seconds': round(now - track['start'], 3),
-                                  'width': current.shape[1], 'height': current.shape[0]})
+                event = {'track_id':key,**obj,'track_seconds':round(duration,3),'width':current.shape[1],'height':current.shape[0]}
+                if meteor:
+                    event.update(detection_type='meteor_candidate',**meteor,
+                                 classification_basis='fast straight bright track or elongated bright trail; aircraft and insects can mimic meteors')
+                qualified.append(event)
         return objects, qualified
+
+
+    def _meteor_evidence(self, objects, shape, now):
+        if not self.s.get('meteor_enabled',True):
+            return {}
+        diagonal = math.hypot(*shape)
+        self.meteor_tracks = {k:t for k,t in self.meteor_tracks.items() if now-t['last'] <= .4}
+        used, result = set(), {}
+        for index, obj in enumerate(objects):
+            # Track brightening components separately: an old object's fading
+            # footprint must never count as another bright meteor observation.
+            if obj['brightness'] < 80 or obj['brightening'] < self.s['threshold']*.5:
+                continue
+            candidates = [(math.hypot(t['x']-obj['x'],t['y']-obj['y']),k) for k,t in self.meteor_tracks.items() if k not in used]
+            distance, key = min(candidates,default=(float('inf'),None))
+            if distance > max(self.s['max_jump'],diagonal*.15):
+                if len(self.meteor_tracks)>=64:
+                    continue
+                key = uuid.uuid4().hex[:12]
+                self.meteor_tracks[key] = {'x':obj['x'],'y':obj['y'],'origin':(obj['x'],obj['y']),'start':now,'path':0,'hits':0}
+            track = self.meteor_tracks[key]
+            track['path'] += math.hypot(track['x']-obj['x'],track['y']-obj['y'])
+            track.update(x=obj['x'],y=obj['y'],last=now,hits=track['hits']+1)
+            used.add(key)
+            travel = math.hypot(obj['x']-track['origin'][0],obj['y']-track['origin'][1])
+            duration = now-track['start']
+            speed = travel/max(duration,.001)/diagonal
+            straightness = travel/max(track['path'],.001)
+            box=obj['box'];extent=max(box[2]-box[0],box[3]-box[1]);aspect=extent/max(1,min(box[2]-box[0],box[3]-box[1]))
+            if (track['hits']>=3 and .15<=duration<=3 and travel>=diagonal*.04 and speed>=.15 and straightness>=.92 or aspect>=6 and extent>=diagonal*.06 and obj['pixels']>=12):
+                result[index] = {'speed_frame_diagonals_per_second':round(speed,3),'straightness':round(straightness,3),'trail_aspect':round(aspect,2)}
+        return result
 
 
 class Analysis:

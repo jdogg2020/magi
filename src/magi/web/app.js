@@ -24,8 +24,8 @@ async function api(path, body) {
   if (!response.ok) throw new Error(value.error || 'Request failed.');
   return value;
 }
-function loggedOut() { setupSignature=setupToken=null; for(const id of ['camera-password','setup-new-password','setup-confirm-password','id-opensky_client_id','id-opensky_client_secret']) $(id).value=''; if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
-function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); }
+function loggedOut() { MagiEvents.reset(); setupSignature=setupToken=null; for(const id of ['camera-password','setup-new-password','setup-confirm-password','id-opensky_client_id','id-opensky_client_secret']) $(id).value=''; if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
+function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); if(name==='events')MagiEvents.refresh(true); }
 document.querySelectorAll('.nav').forEach(el => el.addEventListener('click', () => tab(el.dataset.tab)));
 $('open-settings').onclick = () => tab('settings');
 $('camera-settings-link').onclick = event => { event.preventDefault(); tab('settings'); }; $('view-all').onclick = () => tab('events');
@@ -100,7 +100,7 @@ function eventCard(event) {
   const detail = document.createElement('p'); detail.textContent = `${event.state}${event.estimated_duration_seconds ? ` · ${event.estimated_duration_seconds.toFixed(1)} sec` : ''}${event.interruption ? ' · interrupted' : ''}${event.substream_preview ? ' · substream video' : event.preview ? ' · detection replay' : ' · preview pending or unavailable'}${event.best_frame ? ' · native crop' : ''}`;
   const links = document.createElement('div'); links.className = 'event-links';
   for (const [label, kind] of [['Original ↓', 'original'], ['Full-res frame ↗', 'frame'], ['Object crop ↗', 'thumbnail'], ['Review details ↓', 'media'], ['Metadata ↓', 'metadata']]) { if (kind === 'original' && !event.original || kind === 'frame' && !event.best_frame || kind === 'thumbnail' && !event.best_frame || kind === 'media' && !event.best_frame) continue; const link = document.createElement('a'); link.href = base + '/' + kind; link.textContent = label; if (kind === 'thumbnail' || kind === 'frame') { link.onclick = click => { click.preventDefault(); openReview(event, kind); }; } links.append(link); }
-  const identification = document.createElement('p'); identification.textContent = `Reference check: ${(event.identification || 'disabled').replaceAll('_', ' ')}`; info.append(type, title, detail, identification, links); card.append(image, info); return card;
+  const identification = document.createElement('p'); identification.textContent = `Reference check: ${(event.identification || 'disabled').replaceAll('_', ' ')}`; info.append(type, title, detail, identification, links); const reviewText=document.createElement('p');reviewText.textContent=`Your labels: ${(event.review?.labels || []).join(', ') || 'Unlabelled'} · ${event.review?.reviewed?'Reviewed':'Unreviewed'}${event.review?.protected?' · Protected':''}`;info.append(reviewText);card.append(image, info); return card;
 }
 function renderEvents(events) {
   if (reviewEvent && $('review').open) {
@@ -109,7 +109,7 @@ function renderEvents(events) {
   }
   const signature = JSON.stringify(events); if (signature === clipSignature) return; clipSignature = signature;
   $('event-badge').textContent = events.length;
-  for (const [id, list] of [['recent-events', events.slice(0, 3)], ['all-events', events]]) {
+  for (const [id, list] of [['recent-events', events.slice(0, 3)]]) {
     const target = $(id); target.replaceChildren();
     if (!list.length) { const empty = document.createElement('div'); empty.className = 'empty'; const title = document.createElement('strong'); title.textContent = 'The sky has your attention.'; const text = document.createElement('span'); text.textContent = 'Events will appear here when motion qualifies, or when you save one manually.'; empty.append(title, text); target.append(empty); }
     else list.forEach(event => target.append(eventCard(event)));
@@ -142,6 +142,7 @@ $('setup-discover').onclick=()=>runCameraSetup('discover');$('setup-inspect').on
 $('setup-devices').onchange=()=>{if($('setup-devices').value){$('host').value=$('setup-devices').value;updateCameraWebLink();setupToken=null;$('setup-apply').disabled=true;}};
 for(const id of ['host','username','camera-password','setup-initialize','setup-new-password','setup-confirm-password']) $(id).addEventListener('input',()=>{setupToken=null;$('setup-apply').disabled=true;});
 
+async function refresh(){await refreshDashboard();await MagiEvents.refresh();}
 function updateCameraWebLink() {
   const host=$('host').value.trim(), scheme=$('api_scheme').value, port=Number($('api_port').value), link=$('camera-web');
   link.classList.add('hidden'); link.removeAttribute('href');
@@ -180,6 +181,8 @@ async function fillSettings() {
   $('max_gb').value = s.storage.max_bytes / 1e9; $('free_gb').value = s.storage.min_free_bytes / 1e9; $('retention_days').value = s.storage.retention_days;
   for (const key of ['threshold', 'min_pixels', 'min_seconds', 'min_travel']) $(key).value = s.detection[key];
   $('enabled').checked = s.detection.enabled;
+  for(const key of ['lightning_enabled','meteor_enabled','retain_aircraft_matches','retain_satellite_matches']) $(key).checked=s.detection[key] ?? true;
+  for(const kind of ['motion','lightning_candidate','meteor_candidate']) $('retain-'+kind).checked=(s.detection.retain_types || ['motion','lightning_candidate','meteor_candidate']).includes(kind);
   ignoreZones = (s.detection.ignore_zones || []).map(zone => ({...zone}));
   renderZoneList(); drawZones(); loadZoneImage();
   const id = s.identification || {};
@@ -190,7 +193,7 @@ async function fillSettings() {
   $('id-opensky_client_id').placeholder = id.has_opensky_credentials ? 'Saved — leave blank to keep' : 'Your OpenSky API client ID';
   settingsLoaded = true;
 }
-async function refresh() {
+async function refreshDashboard() {
   if (!csrf || busy) return; busy = true;
   try { const [status, result] = await Promise.all([api('/api/status'), api('/api/clips')]); renderStatus(status); renderEvents(result.clips); if (!settingsLoaded) await fillSettings(); }
   catch (error) { if (csrf) { notice(`Station unavailable: ${error.message}`); $('connection').textContent = 'Disconnected'; $('connection').classList.add('warning'); $('trigger').disabled = true; } }
@@ -204,6 +207,8 @@ async function refreshFrame() {
 $('settings-form').onsubmit = async event => { event.preventDefault(); const submit = event.submitter; submit.disabled = true; $('settings-result').textContent = 'Saving…'; const camera = {}; for (const key of ['host', 'username', 'mainstream_path', 'substream_path']) camera[key] = $(key).value.trim(); camera.port = Number($('port').value); camera.api_scheme = $('api_scheme').value; camera.api_port = Number($('api_port').value); camera.password = $('camera-password').value;
   const recording = {}; for (const key of ['pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds']) recording[key] = Number($(key).value);
   const detection = {enabled: $('enabled').checked, ignore_zones: ignoreZones.map(zone => ({...zone}))}; for (const key of ['threshold', 'min_pixels', 'min_seconds', 'min_travel']) detection[key] = Number($(key).value);
+  for(const key of ['lightning_enabled','meteor_enabled','retain_aircraft_matches','retain_satellite_matches']) detection[key]=$(key).checked;
+  detection.retain_types=['motion','lightning_candidate','meteor_candidate'].filter(kind=>$('retain-'+kind).checked);
   const identification = {};
   for(const key of ['latitude','longitude','elevation_m','azimuth_deg','elevation_deg','roll_deg','horizontal_fov_deg','vertical_fov_deg','tolerance_deg']) identification[key] = $('id-'+key).value === '' ? null : Number($('id-'+key).value);
   for(const key of ['enabled','calibrated','satellites']) identification[key] = $('id-'+key).checked;
@@ -215,7 +220,7 @@ $('settings-form').onsubmit = async event => { event.preventDefault(); const sub
 };
 $('trigger').onclick = async () => { connectionStartedAt = 0; $('trigger').disabled = true; try { await api('/api/trigger', {}); notice('Event started. It will appear after post-roll and clip assembly.'); setTimeout(refresh, 1500); } catch(error) { notice(error.message); } };
 $('reconnect').onclick = async () => { try { await api('/api/reconnect', {}); $('settings-result').textContent = 'Reconnecting…'; } catch(error) { $('settings-result').textContent = error.message; } };
-$('refresh-events').onclick = refresh;
+
 $('review-close').onclick = () => $('review').close(); $('review').addEventListener('close', () => { $('review-video').pause(); $('review-video').removeAttribute('src'); $('review-video').load(); reviewFrames = []; reviewMeta = null; reviewEvent = null; reviewMode = 'image'; $('review-still').removeAttribute('src'); drawMotion(); });
 function drawZones() {
   const canvas = $('zone-canvas'), context = canvas.getContext('2d');
@@ -298,7 +303,7 @@ let reviewFrames = [], reviewMeta = null, reviewEvent = null;
 let reviewTracks=[], reviewColorTracks=[], reviewTimelineAttempted=false, trackBandSignature='';
 let reviewGeneration = 0, reviewMode = 'image', reviewImageKind = 'thumbnail';
 async function openReview(event, imageKind = 'thumbnail') {
-  const generation = ++reviewGeneration; reviewEvent = event; reviewFrames = []; reviewMeta = null; reviewTracks=[]; reviewColorTracks=[]; reviewTimelineAttempted=false;
+  const generation = ++reviewGeneration; reviewEvent = event; MagiEvents.updateReview(event); reviewFrames = []; reviewMeta = null; reviewTracks=[]; reviewColorTracks=[]; reviewTimelineAttempted=false;
   $('review-title').textContent = new Date(event.trigger_utc).toLocaleString();
   $('motion-info').textContent = event.motion ? 'Loading motion data…' : 'Motion data unavailable for this older event.';
   $('identification-detail').textContent = ''; $('identification-status').textContent = 'Loading reference check…';
@@ -479,7 +484,8 @@ function updateReviewAvailability(event) {
   $('render-preview').disabled = !event.original || event.media_status === 'queued';
   const video = event.substream_preview ? 'Camera substream recording ready.' : 'Substream recording pending or unavailable; older events may only have detection replay.';
   const thumbnail = event.best_frame && event.media_status !== 'failed' ? 'Full-resolution thumbnail ready.' : event.media_status === 'failed' ? `Thumbnail unavailable: ${event.media_error || 'selection failed'}. You can retry.` : event.media_status === 'queued' ? 'Selecting a full-resolution thumbnail…' : 'Full-resolution thumbnail has not been generated yet.';
-  $('render-status').textContent = `${video} ${thumbnail}`;
+  $('identify-again').disabled=event.state==='not_retained';
+  $('render-status').textContent = event.state==='not_retained' ? 'Footage was excluded by retention rules. Only the event record and any reference report remain.' : `${video} ${thumbnail}`;
 }
 function showReviewImage(kind = 'thumbnail') {
   if (!reviewEvent) return;
@@ -494,7 +500,7 @@ function showReviewImage(kind = 'thumbnail') {
     still.alt = kind === 'frame' ? 'Selected event frame at full camera resolution' : reviewEvent.best_frame ? 'Full-resolution object crop from the selected event frame' : 'Temporary detection image; full-resolution selection is pending';
   } else still.removeAttribute('src');
   $('review-image-status').classList.toggle('hidden', available);
-  $('review-image-status').textContent = 'The selected image is not available yet. You can play the clip while it is prepared.';
+  $('review-image-status').textContent = reviewEvent.state==='not_retained' ? 'No footage was retained for this event. You can still label and review its record.' : 'The selected image is not available yet. You can play the clip while it is prepared.';
   $('show-pixels').disabled = true; $('show-boxes').disabled = true;
   drawMotion();
 }
@@ -603,3 +609,5 @@ $('star-apply').onclick=async()=>{
   try{await api('/api/calibration/apply',{token:starSession.token});starSession=null;starSolution=null;$('star-editor').classList.add('hidden');await fillSettings();$('star-status').textContent='Star calibration saved. Recording is reconnecting; new events will include its provenance.';}
   catch(error){$('star-status').textContent=error.message;}
 };
+
+MagiEvents.init();

@@ -123,3 +123,14 @@ objects/triggers use the masked detector. Motion sidecars include the configured
 zones, and automatic event metadata records detector settings. A mask does not
 claim that an object in an excluded region was absent. Whole-frame masking is
 allowed but disables all automatic detections until zones are removed.
+
+## 0.11.0 event review
+
+Implemented independently: archive table with full-history filters/pagination,
+manual labels and notes separate from machine results, reviewed/protected flags,
+cross-page bulk actions, trash/restore and selected-summary JSON export. Optional
+lightning/meteor candidate heuristics and initial/post-reference footage policy
+controls are included. Real sky accuracy remains unvalidated; these are not
+confirmed classifications. Permanent trash deletion, cloud sharing, community
+classification and scientifically calibrated meteor/lightning detection are not
+claimed. See EVENTS.md.

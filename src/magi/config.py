@@ -100,8 +100,17 @@ class Config:
         detection = {'enabled': True, 'width': 320, 'height': 180, 'fps': 8,
                      'threshold': 18, 'min_pixels': 2, 'max_pixels': 500,
                      'min_hits': 4, 'min_seconds': 0.6, 'min_travel': 3,
+                     'lightning_enabled': True, 'meteor_enabled': True,
+                     'retain_types': ['motion','lightning_candidate','meteor_candidate'],
+                     'retain_aircraft_matches': True, 'retain_satellite_matches': True,
                      'max_jump': 35, 'max_gap_seconds': 0.6, 'max_changed_fraction': 0.08, 'ignore_zones': []}
         detection.update(data.get('detection', {}))
+        for key in ('lightning_enabled','meteor_enabled','retain_aircraft_matches','retain_satellite_matches'):
+            if not isinstance(detection[key],bool):
+                raise ValueError('invalid event type switch')
+        retained = detection['retain_types']
+        if not isinstance(retained,list) or len(retained)>3 or any(not isinstance(k,str) or k not in ('motion','lightning_candidate','meteor_candidate') for k in retained) or len(set(retained))!=len(retained):
+            raise ValueError('invalid retained event types')
         bounds = {'width': (160, 640), 'height': (90, 360), 'fps': (2, 15),
                   'threshold': (2, 100), 'min_pixels': (1, 200), 'max_pixels': (2, 5000),
                   'min_hits': (2, 100), 'min_seconds': (0.1, 10), 'min_travel': (1, 100),

@@ -116,10 +116,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/health':
             self.reply(200, {'ok': True, 'service': 'magi'})
             return
-        if path in ('/', '/app.js', '/tracks.js', '/style.css'):
+        if path in ('/', '/app.js', '/tracks.js', '/events.js', '/style.css'):
             name, mime = {'/': ('index.html', 'text/html; charset=utf-8'),
                           '/app.js': ('app.js', 'text/javascript'),
                           '/tracks.js': ('tracks.js', 'text/javascript'),
+                          '/events.js': ('events.js', 'text/javascript'),
                           '/style.css': ('style.css', 'text/css')}[path]
             data = (STATIC / name).read_bytes()
             self.headers_out(200, mime, len(data))
@@ -226,11 +227,14 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, {'ok': True}, {'Set-Cookie': 'magi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})
             return
         try:
-            commands = {'/api/camera/setup': 'camera_setup', '/api/camera/info': 'camera_info', '/api/trigger': 'trigger', '/api/settings': 'settings', '/api/reconnect': 'reconnect', '/api/identify': 'identify', '/api/render': 'render', '/api/calibration/load': 'calibration_load', '/api/calibration/solve': 'calibration_solve', '/api/calibration/apply': 'calibration_apply'}
+            if path == '/api/events/list':
+                self.reply(200, self.server.app.event_page(body))
+                return
+            commands = {'/api/events/list': 'events_list', '/api/events/update': 'events_update', '/api/camera/setup': 'camera_setup', '/api/camera/info': 'camera_info', '/api/trigger': 'trigger', '/api/settings': 'settings', '/api/reconnect': 'reconnect', '/api/identify': 'identify', '/api/render': 'render', '/api/calibration/load': 'calibration_load', '/api/calibration/solve': 'calibration_solve', '/api/calibration/apply': 'calibration_apply'}
             if path not in commands:
                 self.reply(404, {'error': 'Not found.'})
                 return
             self.reply(200, self.server.app.request(commands[path], body))
-        except ValueError as error:
-            message = str(error) if path.startswith(('/api/calibration/', '/api/camera/setup')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
+        except (ValueError,OSError) as error:
+            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/camera/setup', '/api/events/')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
             self.reply(409, {'error': message})

@@ -42,6 +42,7 @@ async function fetchWithCookies(url, options={}) {
 const context={document,fetch:fetchWithCookies,console,URL,JSON,Date,Math,Number,Error,encodeURIComponent,setInterval:()=>0,setTimeout,Promise,atob};
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/tracks.js'),'utf8'),context);
+vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/events.js'),'utf8'),context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'utf8'),context);
 (async()=>{
  await new Promise(resolve=>setTimeout(resolve,250));
@@ -53,7 +54,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  for(let i=0;i<100;i++){await vm.runInContext('refreshFrame()',context);if(elements['camera-frame'].src)break;await new Promise(resolve=>setTimeout(resolve,100));}
  assert(elements['camera-frame'].src?.startsWith('blob:'),'Live image should load');
  assert.equal(elements['detection-mode'].textContent,'Tracking');
- for(let i=0;i<100;i++){await vm.runInContext('refresh()',context);if(elements['recent-events'].children.some(card=>{const text=card.children[1]?.children[2]?.textContent||'';return text.includes('substream video')&&text.includes('native crop');}))break;await new Promise(resolve=>setTimeout(resolve,150));}assert(elements['all-events'].children.some(el=>el.className==='event-card'),'Events should render');
+ for(let i=0;i<100;i++){await vm.runInContext('refresh()',context);if(elements['recent-events'].children.some(card=>{const text=card.children[1]?.children[2]?.textContent||'';return text.includes('substream video')&&text.includes('native crop');}))break;await new Promise(resolve=>setTimeout(resolve,150));}await vm.runInContext('MagiEvents.refresh(true)',context);assert(elements['all-events'].children.some(el=>el.className==='event-row'),'Events should render as rows');
  const card=elements['recent-events'].children.find(el=>{const text=el.children[1]?.children[2]?.textContent||'';return text.includes('substream video')&&text.includes('native crop');});
  assert(card,'A recent event should have its native thumbnail and substream recording');
  const view=card.children[0].children.find(el=>el.tagName==='button');
@@ -95,6 +96,24 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(!elements['review-still'].classList.contains('hidden'),'Reopening an event must start with its image again');
  elements['review-close'].onclick();
  elements['star-latitude'].value='40';elements['star-longitude'].value='-98';elements['star-elevation'].value='500';
+ // Operator review metadata and bulk actions round-trip through the real API.
+ await view.onclick();
+ const managedEventId=vm.runInContext('reviewEvent.id',context);
+ elements['review-labels'].value='aircraft, regression-review-label';elements['review-notes'].value='UI regression notes';elements['review-reviewed'].checked=true;
+ await elements['review-save'].onclick();assert(elements['review-save-status'].textContent.includes('saved'));
+ let managed=await vm.runInContext("api('/api/events/list',{q:'regression-review-label'})",context);assert(managed.events.some(e=>e.id===managedEventId && e.review.reviewed && e.review.notes==='UI regression notes'));
+ await vm.runInContext('MagiEvents.refresh(true)',context);
+ const selectManaged=()=>{const row=elements['all-events'].children.find(r=>r.dataset.eventId===managedEventId);assert(row,'Managed row should be visible');const checkbox=row.children[0].children[0];checkbox.checked=true;checkbox.onchange();};
+ selectManaged();elements['event-action'].value='protect';await elements['event-apply'].onclick();
+ managed=await vm.runInContext("api('/api/events/list',{q:'regression-review-label'})",context);assert(managed.events[0].review.protected);
+ selectManaged();elements['event-action'].value='unprotect';await elements['event-apply'].onclick();
+ selectManaged();elements['event-action'].value='trash';await elements['event-apply'].onclick();assert(elements['event-action-status'].textContent.includes('Updated 1 event'));
+ elements['event-folder'].value='trash';await elements['event-filters'].onsubmit({preventDefault(){}});
+ const trashed=elements['all-events'].children.find(r=>r.dataset.eventId===managedEventId);assert(trashed,'Trash folder should show the event');
+ const restore=trashed.children[7].children.find(b=>b.textContent==='Restore');await restore.onclick();
+ elements['event-folder'].value='active';await elements['event-filters'].onsubmit({preventDefault(){}});
+ managed=await vm.runInContext("api('/api/events/list',{q:'regression-review-label'})",context);assert.equal(managed.events[0].review.trashed_at,null);
+ elements['review-close'].onclick();
  await elements['star-refresh'].onclick();
  assert(elements['star-event'].children.length>0,'Star calibration should list full-resolution saved frames');
  await elements['star-load'].onclick();
@@ -154,7 +173,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(!elements.overview.classList.contains('hidden'),'Successful save should open camera overview');
  assert(elements.settings.classList.contains('hidden'));
  assert(/Recording is active|Connecting to your camera/.test(elements.notice.textContent),'Overview should show connection outcome');
- assert(!submit.disabled);assert.equal(savedPayload.detection.ignore_zones.length,1,'Saved settings should include zones');
+ assert(!submit.disabled);assert.equal(savedPayload.detection.ignore_zones.length,1,'Saved settings should include zones');assert.equal(savedPayload.detection.lightning_enabled,true);assert.equal(savedPayload.detection.meteor_enabled,true);assert(savedPayload.detection.retain_types.includes('meteor_candidate'));
  elements['zone-clear'].onclick();assert.equal(vm.runInContext('ignoreZones.length',context),0);
  vm.runInContext("tab('settings')",context);
  context.fetch=async(url,options)=>url==='/api/settings' && options?.method==='POST'
@@ -164,5 +183,5 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert.equal(elements['settings-result'].textContent,'Invalid camera settings');
  assert(!submit.disabled);context.fetch=originalFetch;
  await elements.logout.onclick();assert(!elements.login.classList.contains('hidden'));
- console.log('Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, image-first review, playback from zero, full-frame viewing, substream track timing, tracker toggles, detection timeline exact pixel overlay mode, assisted star selection and invalid-fit rejection, sign-out.');
+ console.log('Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, image-first review, playback from zero, full-frame viewing, substream track timing, tracker toggles, detection timeline exact pixel overlay mode, assisted star selection and invalid-fit rejection, event rows, operator labels/notes, bulk protection, trash/restore, sign-out.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

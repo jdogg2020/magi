@@ -1,3 +1,16 @@
+# Magi 0.11.0 event management and candidate profiles
+
+Synthetic tests cover brief broad flashes with a stable baseline, rejected slow/
+alternating illumination, bright trails, straight point tracks, curved-track
+rejection and ignore zones. Storage tests exercise private sidecar annotations,
+full-archive filtering/paging, per-event bulk failures, persisted protection,
+trash/restore/expiry, invalid paths, calibration/worker guards, metadata-only
+exclusions, reference policy snapshots, cleanup recovery and preserved legacy,
+manual, mixed and annotated footage. HTTP tests cover CSRF and label queries;
+the dashboard harness round-trips rows, notes, reviewed status, bulk protection
+and trash/restore through a running synthetic service. Real-world accuracy and
+Pi CPU/storage measurements are not established. See EVENTS.md.
+
 # Magi 0.10.0 camera setup and information
 
 HTTP simulation covers token login, the read-only command allowlist, logout,

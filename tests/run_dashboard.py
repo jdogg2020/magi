@@ -1,0 +1,44 @@
+"""Run the dashboard DOM integration against an isolated synthetic station."""
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import threading
+import time
+
+from magi.application import Application
+from magi.auth import password_hash
+from magi.web import Server
+from test_prototype import PrototypeTests
+
+
+def main():
+    PrototypeTests.setUpClass()
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            config=root/'config.json'
+            config.write_text(json.dumps({
+                'camera':{'test_file':str(PrototypeTests.sample)},
+                'storage':{'mount':str(root),'directory':str(root/'recordings'),'require_mount':False,'max_bytes':250000000,'min_free_bytes':0},
+                'control_socket':str(root/'control.sock'),
+                'recording':{'segment_seconds':.5,'pre_roll_seconds':1,'post_roll_seconds':1,'max_event_seconds':6,'stall_seconds':3},
+                'web':{'host':'127.0.0.1','port':8090,'username':'admin','password_hash':password_hash('demo-password-123')}}))
+            config.chmod(0o600)
+            app=Application(config);server=Server(app,('127.0.0.1',0));stop=threading.Event();failures=[]
+            def tick():
+                try:
+                    while not stop.is_set():app.tick();time.sleep(.025)
+                except Exception as error:failures.append(error)
+            worker=threading.Thread(target=tick,daemon=True)
+            http=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.05},daemon=True)
+            worker.start();http.start()
+            try:
+                subprocess.run(['node',str(Path(__file__).with_name('test_dashboard.js')),f'http://127.0.0.1:{server.server_port}'],check=True,timeout=120)
+                if failures:raise RuntimeError('Synthetic station failed') from failures[0]
+            finally:
+                server.shutdown();server.server_close();http.join(2);stop.set();worker.join(10);app.close()
+    finally:PrototypeTests.tearDownClass()
+
+
+if __name__=='__main__':main()

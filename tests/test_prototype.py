@@ -137,7 +137,7 @@ class PrototypeTests(unittest.TestCase):
                         'require_mount': False, 'min_free_bytes': 0, 'max_bytes': 50_000_000, 'retention_days': 14},
             'recording': {'segment_seconds': .5, 'pre_roll_seconds': 1, 'post_roll_seconds': 1,
                           'max_event_seconds': 6, 'stall_seconds': 3},
-            'detection': {'enabled': True, 'width': 320, 'height': 180, 'fps': 2},
+            'detection': {'enabled': True, 'width': 320, 'height': 180, 'fps': 2, 'meteor_enabled':False,'lightning_enabled':False},
             'identification': {'opensky_client_id': 'private-client-sentinel', 'opensky_client_secret': 'private-secret-sentinel'},
             'web': {'host': '127.0.0.1', 'port': 8090, 'username': 'admin', 'password_hash': password_hash('test-password-123')},
             'control_socket': str(self.root / 'run' / 'control.sock')}
@@ -187,7 +187,7 @@ class PrototypeTests(unittest.TestCase):
             self.request('/api/status')
         self.assertEqual(error.exception.code, 401)
         csrf = self.login()
-        for endpoint in ('/api/camera/info', '/api/camera/setup'):
+        for endpoint in ('/api/camera/info', '/api/camera/setup','/api/events/list','/api/events/update'):
             with self.assertRaises(urllib.error.HTTPError) as error:
                 self.request(endpoint, {})
             self.assertEqual(error.exception.code, 403)
@@ -276,6 +276,12 @@ class PrototypeTests(unittest.TestCase):
             time.sleep(.05)
         with self.request(base + '/identification') as r:
             self.assertEqual(json.load(r)['status'], 'disabled')
+        with self.request('/api/events/update', {'ids':[saved['id']],'changes':{'labels':['aircraft'],'reviewed':True}}, {'X-CSRF-Token':csrf}) as response:
+            self.assertEqual(json.load(response)['updated'],[saved['id']])
+        with self.request('/api/events/list', {'label':'aircraft','reviewed':'yes'}, {'X-CSRF-Token':csrf}) as response:
+            page=json.load(response)
+            self.assertEqual(page['total'],1)
+            self.assertEqual(page['events'][0]['id'],saved['id'])
         with self.request('/api/settings', {'recording': {'pre_roll_seconds': 1.5}, 'camera': {'password': ''}}, {'X-CSRF-Token': csrf}) as r:
             self.assertTrue(json.load(r)['saved'])
         self.assertEqual(json.loads(self.config.read_text())['camera']['password'], 'camera-secret-sentinel')

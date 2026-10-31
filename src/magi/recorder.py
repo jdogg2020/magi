@@ -72,6 +72,7 @@ class Recorder:
         self.next_storage_check = 0
         self.reconnects = 0
         self.extra_protected = set()
+        self.reference_retention_ids = set()
         self.wall_offset = time.time() - time.monotonic()
         self._recover()
 
@@ -79,6 +80,9 @@ class Recorder:
         # Atomic manifests plus hardlinks keep completed input footage recoverable.
         for path in sorted((self.cfg.root / "events").glob("*/" + self.meta_name)):
             meta = json.loads(path.read_text())
+            decision, policy = meta.get('retention'), meta.get('retention_policy')
+            if (isinstance(decision,dict) and decision.get('cleanup_pending') or isinstance(policy,dict) and any(policy.get(k) is False for k in ('retain_aircraft_matches','retain_satellite_matches'))):
+                self.reference_retention_ids.add(meta['id'])
             if meta["state"] in ("collecting", "assembling"):
                 meta["interruption"] = "service_restart"
                 meta["state"] = "assembling"
@@ -228,6 +232,9 @@ class Recorder:
         return {"event_id": event_id, "merged": False}
 
     def _track(self, event, kind, track):
+        types = event['meta'].setdefault('detection_types',[])
+        if kind not in types:
+            types.append(kind)
         if track:
             samples = event['meta'].setdefault('track_samples', [])
             if len(samples) < 1200:

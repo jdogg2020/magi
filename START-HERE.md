@@ -193,3 +193,15 @@ internet. For encrypted access, leave localhost binding and use an SSH tunnel:
 This prototype has been tested with generated video on Linux. Actual Pi/camera
 installation, reboot recovery, thermal load and a 24-hour day/night run still
 require your hardware. See `docs/PI-ACCEPTANCE.md` for that checklist.
+
+## Manage events and choose retention
+
+Open **Events** for the filtered list. Select rows for bulk review/label/protect/
+trash actions; use the Trash filter to restore an event while footage remains.
+Open a row to label it and add notes in **Your review**. Protect events that must
+survive automatic storage retention.
+
+Settings → Motion detection → **Event types & footage retention** contains the
+lightning/meteor candidate switches and footage retention choices. All footage
+is kept by default. Aircraft/satellite discard uses tentative reference matches;
+leave it off while checking calibration/data quality. See [Events](docs/EVENTS.md).

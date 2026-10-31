@@ -1,3 +1,13 @@
+## Events and selective retention (0.11.0)
+
+Events now uses a filterable, paginated list with selection, manual labels/notes,
+review markers, bulk protection, recoverable trash/restore and JSON export. The
+viewer keeps its image-first workflow. New optional lightning/meteor candidate
+heuristics run on the native substream. Settings lets you choose detector types
+to keep and whether to keep possible aircraft/satellite matches. Defaults keep
+all footage; candidate accuracy still needs real-camera validation. See
+[event review and retention](docs/EVENTS.md) for behavior and limits.
+
 ## Camera setup and inspection (0.10.0)
 
 Settings now includes experimental local CX820 onboarding: discover, inspect,

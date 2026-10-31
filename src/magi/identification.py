@@ -176,6 +176,7 @@ class Identifier:
         self.cfg = cfg
         self.settings = cfg.identification
         self.pending = queue.Queue(maxsize=4)
+        self.completed = queue.Queue(maxsize=512)
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.ids = set()
@@ -438,6 +439,10 @@ class Identifier:
                 # Do not recreate an event that retention or a missing volume removed.
                 if not self.stop.is_set() and directory.is_dir() and self._volume_safe():
                     atomic_json(directory / 'identification.json', result)
+                    try:
+                        self.completed.put_nowait(meta['id'])
+                    except queue.Full:
+                        pass
             except Exception:
                 pass
             finally:

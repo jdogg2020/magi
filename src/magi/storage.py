@@ -6,6 +6,7 @@ import shutil
 import time
 import uuid
 from pathlib import Path
+from .event_review import read as read_review
 
 
 def atomic_json(path: Path, value):
@@ -73,14 +74,17 @@ class Volume:
             if directory.name in protected or not directory.is_dir():
                 continue
             try:
-                meta = json.loads((directory / "event.json").read_text())
-                if meta["state"] not in ("complete", "interrupted", "failed"):
+                review = read_review(directory)
+                if review["protected"]:
                     continue
-                events.append((meta["trigger_unix"], directory))
-            except (OSError, ValueError, KeyError):
+                meta = json.loads((directory / "event.json").read_text())
+                if meta["state"] not in ("complete", "interrupted", "failed", "not_retained"):
+                    continue
+                events.append((0 if review["trashed_at"] is not None else 1, meta["trigger_unix"], directory, review["trashed_at"]))
+            except (OSError, ValueError, KeyError, TypeError):
                 continue
-        for created, directory in sorted(events):
-            if created < cutoff or used + reserve >= self.cfg.max_bytes or free - reserve < self.cfg.min_free:
+        for _, created, directory, trashed_at in sorted(events):
+            if (trashed_at is not None and trashed_at < time.time()-7*86400) or created < cutoff or used + reserve >= self.cfg.max_bytes or free - reserve < self.cfg.min_free:
                 self.check()
                 shutil.rmtree(directory)
                 used, free = self.usage()

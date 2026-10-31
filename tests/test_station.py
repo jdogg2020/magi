@@ -95,6 +95,9 @@ class StationTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 request('/api/cameras')
             self.assertEqual(caught.exception.code, 401)
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                request('/api/station/update')
+            self.assertEqual(caught.exception.code, 401)
             request('/api/login', {'username':'admin','password':'test-password-123'})
             csrf = request('/api/session')['csrf']
             with self.assertRaises(urllib.error.HTTPError) as caught:
@@ -105,6 +108,17 @@ class StationTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, 403)
             self.assertIn('health', request('/api/station/status'))
             self.assertEqual(request('/api/station/events/list', {}, csrf)['total'], 0)
+            with patch('magi.web.update_request', return_value={'helper_available':True,'state':'idle'}) as helper:
+                self.assertTrue(request('/api/station/update')['helper_available'])
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    request('/api/station/update', {'action':'check'})
+                self.assertEqual(caught.exception.code,403)
+                request('/api/station/update', {'action':'check'}, csrf)
+                helper.assert_called_with({'action':'check'})
+                for payload in ({'action':'command','cmd':'id'},{'action':'check','url':'https://evil.invalid'}):
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        request('/api/station/update', payload, csrf)
+                    self.assertEqual(caught.exception.code,409)
             identity = request('/api/cameras', {'action':'add','name':'East'}, csrf)['id']
             scoped = '/api/cameras/'+identity
             self.assertEqual(request(scoped+'/status')['camera_id'], identity)

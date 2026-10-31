@@ -1,3 +1,17 @@
+## Dashboard updates (0.15.0)
+
+The station-wide **Updates** page checks published Magi releases and installs a
+newer checked version through a separate root-owned, socket-activated helper.
+The camera service stays unprivileged; no sudo password is sent to the browser.
+Downloads and preflight checks precede the recording pause. The helper survives
+Magi's restart, persists the result, and uses the existing startup rollback path.
+Sign in again after the dashboard restarts to see the result.
+
+Existing installations need one final `magi-update-github`, followed by
+`sudo bash /opt/magi/scripts/install-updater.sh` to install the helper. New installs
+include it automatically; subsequent updates refresh its files. See
+[dashboard update setup](docs/UPDATES.md#dashboard-updates-0150).
+
 ## Recent events list (0.14.1)
 
 Overview's Recent events now uses the same table, filters, pagination, selection

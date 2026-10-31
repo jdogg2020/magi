@@ -139,3 +139,51 @@ browser or with the public update command.
 
 GitHub CLI command references: https://cli.github.com/manual/gh_release_download
 and https://cli.github.com/manual/gh_release_create.
+
+## Dashboard updates (0.15.0)
+
+For an installation running an older release, first run as your ordinary Pi user:
+
+```bash
+magi-update-github
+sudo bash /opt/magi/scripts/install-updater.sh
+```
+
+The second command installs the new root-owned helper and its systemd socket.
+It does not stop the recorder. The older installed updater cannot bootstrap a
+helper it did not know about, so this is a one-time step. Afterward refresh the
+dashboard and open **Updates** in the left navigation. New installs include the
+helper automatically. Future releases refresh installed helper code and units.
+
+**Check for updates** looks for downloadable releases in `jdogg2020/magi`, including
+previews. **Install v…** accepts only the newer version found by a check during
+the past hour. Download and checksum verification happen before recording stops;
+existing preflight, startup/version checks and rollback still apply. Installation
+pauses all cameras briefly. The independent helper continues running while
+`magi.service` restarts. Dashboard sessions expire on restart: sign in again and
+open Updates to see the persisted result, then use Reload dashboard to load the
+new web assets. A failed check or download leaves recording running. A failed
+installation reports failure and attempts to restore the previous release; use
+the existing recovery commands if the updater reports an unfinished transaction.
+
+The camera service retains `User=magi`, `NoNewPrivileges=true` and its existing
+filesystem restrictions. No passwordless sudo rule is installed. The helper's
+Unix socket is `/run/magi-update-agent.sock`, owned by root with group magi and
+mode 0660. It additionally checks peer UIDs; only magi and root are accepted.
+Its protocol allows status, check and install of the checked release, never
+shell commands, arbitrary URLs, package paths or passwords. Root-owned code lives
+under `/usr/local/lib/magi`; private status lives under `/var/lib/magi-updater`.
+The helper has its own systemd lifetime and exits after installation so the next
+request loads updated helper code. An update lock prevents overlapping installs
+with command-line updates. A root-only CI probe checks real Unix credentials,
+rejection of unauthorized requests, and helper file/state permissions.
+
+Troubleshooting (on the Pi):
+
+```bash
+sudo systemctl status magi-update-agent.socket magi-update-agent.service
+sudo journalctl -u magi-update-agent.service -n 60 --no-pager
+```
+
+A missing helper disables the dashboard buttons and displays the bootstrap command.
+Do not enter your sudo password in the dashboard; it is never requested there.

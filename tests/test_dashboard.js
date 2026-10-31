@@ -30,7 +30,7 @@ for (const match of html.matchAll(/<([a-z][a-z0-9]*)\b([^>]*\bid="([^"]+)"[^>]*)
  const classes=attributes.match(/class="([^"]*)"/); if(classes) classes[1].split(' ').forEach(c=>el.classList.add(c));
  const value=attributes.match(/value="([^"]*)"/); if(value) el.value=value[1]; el.checked=/\bchecked\b/.test(attributes);elements[el.id]=el;
 }
-const tabs=['overview','events','settings'].map(id=>elements[id]);
+const tabs=['overview','events','settings','updates'].map(id=>elements[id]);
 const nav=tabs.map(tab=>{const el=new Element('button');el.dataset.tab=tab.id;return el;});
 const document={getElementById:id=>{assert(elements[id],`Missing HTML ID: ${id}`);return elements[id];},querySelectorAll:selector=>selector==='.tab'?tabs:selector==='.nav'?nav:[],createElement:tag=>new Element(tag),hidden:false};
 let cookie='';
@@ -62,6 +62,22 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(elements['camera-links'].children.every(link=>link.href.endsWith('#settings')),'Left camera links open individual settings');
  assert.equal(vm.runInContext("cameraPath('/api/station/events/list')",context),'/api/station/events/list','Combined archive must be independent of settings selection');
  assert(elements['detection-mode'].textContent.includes('detecting'));
+ // Update controls never ask for sudo credentials and send only fixed actions.
+ const updateFetch=context.fetch;let updatePayload;
+ context.fetch=async(url,options)=>{
+   if(url==='/api/station/update'){
+     if(options?.method==='POST'){updatePayload=JSON.parse(options.body);return {ok:true,json:async()=>({helper_available:true,state:updatePayload.action==='check'?'checking':'installing',busy:true,current_version:'0.14.1',message:'Operation started'})};}
+     return {ok:true,json:async()=>({helper_available:true,state:'available',busy:false,current_version:'0.14.1',available_version:'v0.15.0',preview:true,message:'New release available'})};
+   }
+   return updateFetch(url,options);
+ };
+ await vm.runInContext('refreshUpdates(true)',context);assert(!elements['update-install'].disabled);
+ await elements['update-check'].onclick();assert.equal(updatePayload.action,'check');assert(elements['update-check'].disabled);
+ await vm.runInContext('refreshUpdates(true)',context);await elements['update-install'].onclick();
+ assert.deepEqual(updatePayload,{action:'install',version:'v0.15.0'});assert(!elements['update-progress'].classList.contains('hidden'));
+ context.fetch=updateFetch;await vm.runInContext('refreshUpdates(true)',context);
+ assert(elements['update-check'].disabled,'A missing privileged helper must disable dashboard installs');
+
  assert(elements['recent-events'].children.includes(elements['event-browser']),'Overview should host the shared event list');
  assert(!elements['event-filter-panel'].open,'Filters should start collapsed');
  for(let i=0;i<100;i++){await vm.runInContext('refresh()',context);await vm.runInContext('MagiEvents.refresh(true)',context);if(elements['all-events'].children.some(row=>row.className==='event-row'))break;await new Promise(resolve=>setTimeout(resolve,150));}

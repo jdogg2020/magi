@@ -10,8 +10,9 @@ if [[ "$EUID" -ne 0 ]]; then echo "Run with sudo after reviewing this script." >
 read -r -p "Remove Magi service, code, configuration and user? Type REMOVE: " answer
 [[ "$answer" == REMOVE ]] || exit 1
 echo "Stopping and disabling service..."
+systemctl disable --now magi-update-agent.socket magi-update-agent.service || true
 systemctl disable --now magi.service || true
-rm -f /etc/systemd/system/magi.service
+rm -f /etc/systemd/system/magi.service /etc/systemd/system/magi-update-agent.socket /etc/systemd/system/magi-update-agent.service
 systemctl daemon-reload
 echo "Removing installed code and configuration; retaining recordings..."
 rm -rf /opt/magi /etc/magi /opt/magi.releases /var/lib/magi-updater /usr/local/lib/magi

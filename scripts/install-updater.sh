@@ -13,5 +13,6 @@ install -m 0644 "$source_dir/scripts/update.py" /usr/local/lib/magi/update.py
 install -m 0644 "$source_dir/scripts/fetch_release.py" /usr/local/lib/magi/fetch_release.py
 install -m 0755 "$source_dir/scripts/magi-update" /usr/local/bin/magi-update
 install -m 0755 "$source_dir/scripts/magi-update-github" /usr/local/bin/magi-update-github
+/usr/bin/python3 "$source_dir/scripts/install_update_agent.py" --source "$source_dir"
 echo "magi-update installed. Recording was not stopped."
 echo "Next: check the actual ZIP you downloaded with magi-update and --check."

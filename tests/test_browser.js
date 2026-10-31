@@ -20,6 +20,16 @@ const base = process.argv[2];
     const images=await page.locator('#camera-grid img:visible').evaluateAll(images=>images.every(img=>img.complete && img.naturalWidth>0));
     assert(images,'Both synthetic images must decode');
     assert(await page.locator('aside #camera-links a').count()>=2);
+    await page.evaluate(()=>{
+      window.stationTextViolations=[];
+      const formats={connection:/^\d+\/\d+ cameras recording$/,buffer:/^\d+ \/ \d+$/,'detection-mode':/^\d+ detecting$/};
+      const observer=new MutationObserver(()=>{for(const [id,format] of Object.entries(formats)){const text=document.getElementById(id).textContent;if(!format.test(text))window.stationTextViolations.push({id,text});}});
+      for(const id of Object.keys(formats))observer.observe(document.getElementById(id),{childList:true,characterData:true,subtree:true});
+      window.stationTextObserver=observer;
+    });
+    await page.waitForTimeout(4500); // Observe more than two normal dashboard refreshes.
+    assert.deepEqual(await page.evaluate(()=>{window.stationTextObserver.disconnect();return window.stationTextViolations;}),[],'Station indicators must not flash per-camera labels between polls');
+
     fs.mkdirSync('dist/browser',{recursive:true});
     await page.screenshot({path:'dist/browser/overview.png',fullPage:true});
     assert.equal(await page.locator('#overview #event-browser').count(),1,'Recent events must use the full list');

@@ -62,6 +62,21 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(elements['camera-links'].children.every(link=>link.href.endsWith('#settings')),'Left camera links open individual settings');
  assert.equal(vm.runInContext("cameraPath('/api/station/events/list')",context),'/api/station/events/list','Combined archive must be independent of settings selection');
  assert(elements['detection-mode'].textContent.includes('detecting'));
+ // A slow station response must never show selected-camera values in its place.
+ const statusIds=['connection','buffer','detection-mode','session-events','analysis-count'];
+ const stationValues=statusIds.map(id=>elements[id].textContent);
+ const statusFetch=context.fetch;let releaseInventory, reachedInventory;
+ const heldInventory=new Promise(resolve=>{releaseInventory=resolve;});
+ const inventoryReached=new Promise(resolve=>{reachedInventory=resolve;});
+ context.fetch=async(url,options)=>{if(url==='/api/cameras' && options.method==='GET'){reachedInventory();await heldInventory;}return statusFetch(url,options);};
+ const refreshing=vm.runInContext('refreshDashboard()',context);
+ try{
+   await inventoryReached;
+   assert.deepEqual(statusIds.map(id=>elements[id].textContent),stationValues,'Selected-camera refresh must not overwrite station indicators while station data is pending');
+ }finally{releaseInventory();await refreshing;context.fetch=statusFetch;}
+ assert(elements.connection.textContent.includes('cameras recording'));
+ assert(elements['detection-mode'].textContent.includes('detecting'));
+
  // Update controls never ask for sudo credentials and send only fixed actions.
  const updateFetch=context.fetch;let updatePayload;
  context.fetch=async(url,options)=>{

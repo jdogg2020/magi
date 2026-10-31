@@ -120,7 +120,7 @@ fi
 current_step="Step 5/7: Install application files"
 progress "$current_step"
 install -d -m 0755 /opt/magi
-cp -R "$source_dir/src" "$source_dir/docs" "$source_dir/scripts" /opt/magi/
+cp -R "$source_dir/src" "$source_dir/docs" "$source_dir/scripts" "$source_dir/systemd" /opt/magi/
 cp "$source_dir/README.md" "$source_dir/START-HERE.md" "$source_dir/config.example.json" /opt/magi/
 # Source extraction may leave private directories/files (installer umask is 077).
 # Application code is public-readable; secrets live separately in /etc/magi.
@@ -146,6 +146,7 @@ install -m 0644 "$source_dir/scripts/update.py" /usr/local/lib/magi/update.py
 install -m 0644 "$source_dir/scripts/fetch_release.py" /usr/local/lib/magi/fetch_release.py
 install -m 0755 "$source_dir/scripts/magi-update" /usr/local/bin/magi-update
 install -m 0755 "$source_dir/scripts/magi-update-github" /usr/local/bin/magi-update-github
+/usr/bin/python3 "$source_dir/scripts/install_update_agent.py" --source "$source_dir"
 install -m 0644 "$source_dir/systemd/magi.service" /etc/systemd/system/magi.service
 run_step 30 "Step 7/7: Reload service configuration" systemctl daemon-reload
 run_step 60 "Step 7/7: Enable and start Magi" systemctl enable --now magi.service

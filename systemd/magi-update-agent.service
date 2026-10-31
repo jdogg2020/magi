@@ -1,0 +1,24 @@
+[Unit]
+Description=Magi fixed-purpose update helper
+Requires=magi-update-agent.socket
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /usr/local/lib/magi/update_agent.py
+StateDirectory=magi-updater
+StateDirectoryMode=0700
+LogsDirectory=magi
+LogsDirectoryMode=0750
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt /usr/local/lib/magi /usr/local/bin /etc/systemd/system /var/lib/magi-updater /var/log/magi
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+TimeoutStopSec=180

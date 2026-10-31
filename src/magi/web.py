@@ -11,6 +11,8 @@ import time
 from urllib.parse import urlsplit
 
 from .auth import Sessions
+from . import __version__
+from .updates import request as update_request
 from .reolink_setup import suggested_network
 
 STATIC = Path(__file__).parent / 'web'
@@ -146,6 +148,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/session':
             self.reply(200, {'csrf': session['csrf'], 'username': self.server.app.cfg.web['username']})
             return
+        if path == '/api/station/update':
+            try:
+                self.reply(200, {**update_request({'action':'status'}), 'current_version':__version__})
+            except (ValueError, OSError):
+                self.reply(503, {'error':'Update helper status unavailable.'})
+            return
         if path == '/api/station/clips':
             station = self.server.app
             self.reply(200, station.recent_events() if hasattr(station, 'recent_events') else {'clips': station.read()['clips'], 'limit': 200})
@@ -262,6 +270,13 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, {'ok': True}, {'Set-Cookie': 'magi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})
             return
         try:
+            if path == '/api/station/update':
+                if body.get('action') not in ('check','install'):
+                    raise ValueError('Choose Check for updates or Install update.')
+                if set(body) != ({'action','version'} if body['action']=='install' else {'action'}):
+                    raise ValueError('Invalid update action fields.')
+                self.reply(200, update_request(body))
+                return
             if path in ('/api/station/events/list', '/api/station/events/update'):
                 station = self.server.app
                 if not hasattr(station, 'camera'):
@@ -283,5 +298,5 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.reply(200, app.request(commands[path], body))
         except (ValueError,OSError) as error:
-            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/camera/setup', '/api/events/', '/api/cameras', '/api/station/events/')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
+            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/camera/setup', '/api/events/', '/api/cameras', '/api/station/events/', '/api/station/update')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
             self.reply(409, {'error': message})

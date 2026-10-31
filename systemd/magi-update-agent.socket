@@ -1,0 +1,12 @@
+[Unit]
+Description=Magi dashboard update control socket
+
+[Socket]
+ListenStream=/run/magi-update-agent.sock
+SocketUser=root
+SocketGroup=magi
+SocketMode=0660
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

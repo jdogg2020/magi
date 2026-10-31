@@ -119,6 +119,29 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(settings.read_text(),'private settings');self.assertEqual(footage.read_bytes(),b'original')
             self.assertEqual(updater.actions,['preflight','stop','start','health-2'])
 
+    def test_helper_refresh_runs_after_health_and_failure_restores_previous_service(self):
+        for fail in (False,True):
+            with self.subTest(fail=fail),tempfile.TemporaryDirectory() as folder:
+                root=Path(folder);updater=FakeUpdater(root);stage=self.stage(root)
+                (stage/'scripts').mkdir();(stage/'scripts/install_update_agent.py').write_text('fixture')
+                original_command=updater.command
+                def command(*args):
+                    if args[0]=='runuser':return original_command(*args)
+                    self.assertIn('health-2',updater.actions)
+                    self.assertEqual(args[:2],('/usr/bin/python3','-I'))
+                    self.assertTrue(args[2].endswith('/scripts/install_update_agent.py'))
+                    updater.actions.append('helper-refresh')
+                    if fail:raise RuntimeError('helper refresh failed')
+                    return ''
+                updater.command=command
+                with patch.object(module.signal,'signal'):
+                    if fail:
+                        with self.assertRaises(RuntimeError):updater.apply(stage,'2')
+                        self.assertEqual((updater.live/'version').read_text(),'1')
+                    else:
+                        updater.apply(stage,'2');self.assertEqual(updater.actions[-1],'helper-refresh')
+                self.assertFalse(updater.journal.exists())
+
     def test_startup_failure_restores_old_code_unit_and_service(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);updater=FakeUpdater(root,fail=True)

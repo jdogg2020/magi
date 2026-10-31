@@ -81,6 +81,7 @@ $('camera-restart').onclick=async()=>{
 };
 let connectionStartedAt = 0;
 let ignoreZones = [], zoneStart = null, zoneDraft = null, zoneFrameURL = null, zoneFrameReady = false;
+let updateBusy=false, updateInProgress=false;
 let csrf = '', settingsLoaded = false, busy = false, frameURL = null, clipSignature = '';
 const bytes = n => n == null ? '—' : n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${(n / 1e6).toFixed(0)} MB`;
 const number = (n, suffix = '') => n == null ? '—' : `${n}${suffix}`;
@@ -103,15 +104,15 @@ async function api(path, body, identity = selectedCamera) {
   if (!response.ok) throw new Error(value.error || 'Request failed.');
   return value;
 }
-function loggedOut() { if(frameURL){URL.revokeObjectURL(frameURL);frameURL=null;$('camera-frame').removeAttribute('src');}for(const tile of cameraTiles.values()){if(tile.url)URL.revokeObjectURL(tile.url);}cameraTiles.clear();stationCameras=[];$('camera-grid').replaceChildren();MagiEvents.reset(); setupSignature=setupToken=null; setupError=''; for(const id of ['camera-password','setup-new-password','setup-confirm-password','id-opensky_client_id','id-opensky_client_secret']) $(id).value=''; if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
-function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); MagiEvents.mount(name);if(name==='events' || name==='overview')MagiEvents.refresh(true); }
+function loggedOut() { if(updateInProgress)$('login-error').textContent='Magi is updating or has restarted. Sign in again to see the update result.'; if(frameURL){URL.revokeObjectURL(frameURL);frameURL=null;$('camera-frame').removeAttribute('src');}for(const tile of cameraTiles.values()){if(tile.url)URL.revokeObjectURL(tile.url);}cameraTiles.clear();stationCameras=[];$('camera-grid').replaceChildren();MagiEvents.reset(); setupSignature=setupToken=null; setupError=''; for(const id of ['camera-password','setup-new-password','setup-confirm-password','id-opensky_client_id','id-opensky_client_secret']) $(id).value=''; if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
+function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); MagiEvents.mount(name);if(name==='updates')refreshUpdates(true);if(name==='events' || name==='overview')MagiEvents.refresh(true); }
 document.querySelectorAll('.nav').forEach(el => el.addEventListener('click', () => tab(el.dataset.tab)));
 $('open-settings').onclick = () => tab('settings');
 $('camera-settings-link').onclick = event => { event.preventDefault(); tab('settings'); }; $('view-all').onclick = () => tab('events');
 async function signedIn() {
   const session = await api('/api/session'); csrf = session.csrf;
   $('login').classList.add('hidden'); $('app').classList.remove('hidden');
-  settingsLoaded = false; clipSignature = ''; await refreshCameras(); await refresh(); if(typeof location !== 'undefined' && new URL(location.href).hash==='#settings')tab('settings');
+  settingsLoaded = false; clipSignature = ''; await refreshCameras(); await refresh(); await refreshUpdates(true); if(typeof location !== 'undefined' && new URL(location.href).hash==='#settings')tab('settings');
 }
 $('login-form').onsubmit = async event => { event.preventDefault(); $('login-error').textContent = ''; try { await api('/api/login', {username: $('login-user').value, password: $('login-password').value}); $('login-password').value = ''; await signedIn(); } catch (error) { $('login-error').textContent = error.message; } };
 $('opensky-credentials-file').onchange=async()=>{
@@ -128,6 +129,36 @@ $('opensky-credentials-file').onchange=async()=>{
   finally {input.value='';}
 };
 $('logout').onclick = async () => { try { await api('/api/logout', {}); } finally { loggedOut(); } };
+function renderUpdate(status){
+  updateInProgress=!!status.busy || ['checking','downloading','installing'].includes(status.state);
+  $('update-current').textContent=status.current_version ? 'v'+status.current_version:'Unavailable';
+  $('update-available').textContent=status.available_version ? status.available_version+(status.preview?' (preview)':''):status.state==='current'?'Up to date':'Not available';
+  $('update-install').dataset.version=status.available_version || '';
+  $('update-status').textContent=status.message || 'Update status unavailable.';
+  $('update-check').disabled=!status.helper_available || updateInProgress;
+  $('update-install').disabled=!status.helper_available || updateInProgress || status.state!=='available';
+  $('update-install').textContent=status.available_version?'Install '+status.available_version:'Install update';
+  $('update-progress').classList.toggle('hidden',!updateInProgress);
+  $('update-reload').classList.toggle('hidden',status.state!=='succeeded');
+}
+async function refreshUpdates(force=false){
+  if(!csrf || updateBusy || (!force && !updateInProgress && $('updates').classList.contains('hidden')))return;
+  updateBusy=true;
+  try{renderUpdate(await api('/api/station/update'));}
+  catch(error){$('update-status').textContent=updateInProgress?'Waiting for Magi to restart. Sign in again when it is available.':error.message;}
+  finally{updateBusy=false;}
+}
+async function updateAction(action){
+  if(updateBusy)return;updateBusy=true;
+  $('update-check').disabled=$('update-install').disabled=true;
+  try{renderUpdate(await api('/api/station/update',{action,...(action==='install'?{version:$('update-install').dataset.version}:{})}));}
+  catch(error){$('update-status').textContent=error.message;}
+  finally{updateBusy=false;}
+}
+$('update-check').onclick=()=>updateAction('check');
+$('update-install').onclick=()=>updateAction('install');
+$('update-reload').onclick=()=>location.reload();
+setInterval(refreshUpdates,3000);
 function renderStatus(status) {
   renderCameraSetup(status);
   renderCameraInfo(status);

@@ -26,6 +26,8 @@ jobs:
           PYTHONPATH: src
       - name: Verify root-owned install permissions as an unprivileged account
         run: sudo /usr/bin/python3 scripts/check_install_permissions.py
+      - name: Verify update helper permissions and real Unix peer identities
+        run: sudo /usr/bin/python3 scripts/check_update_permissions.py
       - run: node --check src/magi/web/app.js && node --check src/magi/web/tracks.js && node --check src/magi/web/events.js
       - run: node tests/test_tracks.js
       - name: Install Chromium for rendered dashboard checks

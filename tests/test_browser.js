@@ -37,6 +37,13 @@ const base = process.argv[2];
     await page.locator('#event-reset').click();
     await page.locator('#event-filter-summary').click();
     await page.locator('.nav[data-tab=overview]').click();
+    await page.locator('.nav[data-tab=updates]').click();
+    await page.locator('#update-status').filter({hasText:'helper is not available'}).waitFor();
+    assert(await page.locator('#update-check').isDisabled());
+    assert(await page.locator('#update-install').isDisabled());
+    assert.equal(await page.locator('#updates input[type=password]').count(),0);
+    await page.screenshot({path:'dist/browser/updates.png',fullPage:true});
+    await page.locator('.nav[data-tab=overview]').click();
     // Capture requests to prove the tile's manual-save action uses its camera.
     const tile=page.locator('#camera-grid article').nth(1);
     const camera=await tile.getAttribute('data-camera-id');

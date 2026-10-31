@@ -36,7 +36,7 @@ def read_url(url, limit, opener=None):
             chunks.append(data)
 
 
-def download_release(selection, directory, opener=None):
+def select_release(selection, opener=None):
     if selection != 'latest' and not TAG.fullmatch(selection):
         raise ValueError('use latest or a version such as v0.4.2')
     url = API + ('?per_page=20' if selection == 'latest' else '/tags/' + selection)
@@ -57,6 +57,12 @@ def download_release(selection, directory, opener=None):
     tag = selected['tag_name']
     if selection != 'latest' and tag != selection:
         raise ValueError('release version differs from requested version')
+    return selected
+
+
+def download_release(selection, directory, opener=None):
+    selected = select_release(selection, opener)
+    tag = selected['tag_name']
     print(f'Downloading public Magi {tag}' + (' (preview)' if selected.get('prerelease') else '') + '…', flush=True)
     base = f'https://github.com/{REPOSITORY}/releases/download/{tag}/'
     checksum = read_url(base + 'magi-prototype.zip.sha256', 256, opener).decode('ascii')

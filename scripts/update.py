@@ -261,6 +261,8 @@ class Updater:
             self.install_unit(self.live / 'systemd/magi.service')
             self.control('start')
             self.healthy(version)
+            if (self.live/'scripts/install_update_agent.py').is_file():
+                self.command('/usr/bin/python3', '-I', str(self.live/'scripts/install_update_agent.py'), '--source', str(self.live))
             atomic_json(self.previous, transaction)
             self.journal.unlink()
             LOG.info('Update complete. Magi %s is healthy; previous version %s is available.', version, old_version)

@@ -124,3 +124,54 @@ Magi does not implement the cipher or place keys in command-line arguments.
 - CX820 specifications: https://reolink.com/us/product/cx820/
 - Manufacturer initial setup: https://support.reolink.com/sections/206490527/
 - Service ports: https://support.reolink.com/articles/900000621783-How-to-Configure-Reolink-Ports-Settings/
+
+## Multiple cameras (0.13.0)
+
+The dashboard header selects the camera whose live view, settings, calibration,
+manual event button and archive you are using. **Station cameras** shows all
+configured cameras, with recording/detection state, recent analysis images,
+event counts and storage usage. All configured cameras run concurrently.
+
+To add the existing second CX820, open **Station cameras**, enter a descriptive
+name and click **Add camera**. The new camera's Settings screen opens. Use
+Find cameras, select its IP, enter its existing admin password, leave factory-new
+initialization unchecked, then Inspect and Apply. Do not initialize a camera
+whose password has already been set. New cameras start with empty connection
+fields, no ignore zones and reference matching/calibration disabled. Each camera
+needs its own pointing calibration. Renaming a camera preserves its stable ID.
+
+Upgrades leave the original `/etc/magi/config.json` and recording directory in
+place as Camera 1. Adding/renaming saves the private `/etc/magi/cameras.json`
+registry; additional private configurations and backups live under
+`/etc/magi/camera-configs/`. Additional footage is isolated under
+`<original recording directory>/cameras/<camera ID>/`. Updates preserve all of
+these paths. Back up the entire configuration directory, not just config.json.
+
+Each camera has a separate worker, reconnect state, main/substream recorders,
+motion tracker, calibration, reference checks and archive. A failed or stalled
+camera does not stop the other workers. **Restart selected camera worker** closes
+and recovers only that camera's work, preserving its config and recordings.
+Settings saves and setup also reconnect only the selected camera. A broken
+additional config is reported as a failed worker without taking down Camera 1.
+The existing unscoped API/control commands refer to Camera 1; scoped dashboard
+requests use `/api/cameras/<id>/...` with the same station authentication and CSRF
+requirements. `/api/cameras` lists credential-free camera status. New event
+metadata and JSON exports include camera ID and capture-time name. Existing
+unattributed events remain in Camera 1's archive.
+
+Storage caps and retention are **per camera**. A camera's storage accounting and
+pruning exclude other cameras' directories. All cameras share the physical disk
+free-space guard; a quota is not a reservation of disk space. New cameras default
+to a cap of at most 10 GB (or the original camera's smaller cap). Configure each
+cap and retention in that camera's Settings. CPU, memory, temperature and disk
+available are whole-Pi measurements; per-camera tiles report recording state,
+detection frame age/format and storage used.
+
+There is a service limit of eight configured cameras. This is not a claim that a
+Pi 4 can process eight streams: two independent synthetic sources and both scoped
+dashboard flows are tested, but multiple real CX820 streams and Pi performance
+still need field validation. Add cameras one at a time and watch native detection
+frame counts, dropped frames, temperature and power/throttle flags before
+choosing different hardware. Camera removal and a combined cross-camera archive
+are not included in this version; each camera's existing event filters and bulk
+review operate within its own archive.

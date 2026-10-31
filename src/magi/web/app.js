@@ -1,5 +1,53 @@
 'use strict';
 const $ = id => document.getElementById(id);
+const selectedCamera = typeof location !== 'undefined' ? (new URL(location.href).searchParams.get('camera') || 'primary') : 'primary';
+function cameraPath(path) {
+  if (selectedCamera === 'primary' || !path.startsWith('/api/') || path.startsWith('/api/cameras/') || ['/api/login','/api/logout','/api/session','/api/cameras'].includes(path)) return path;
+  return '/api/cameras/'+encodeURIComponent(selectedCamera)+'/'+path.slice(5);
+}
+async function refreshCameras() {
+  if (!csrf) return;
+  try {
+    const result = await api('/api/cameras');
+    const select = $('camera-select'), grid = $('camera-grid');
+    const signature = JSON.stringify(result.cameras.map(c=>[c.id,c.name]));
+    if (select.dataset.signature !== signature) {
+      select.replaceChildren();
+      for (const camera of result.cameras) { const option=document.createElement('option');option.value=camera.id;option.textContent=camera.name;select.append(option); }
+      select.value=selectedCamera;select.dataset.signature=signature;
+      const current=result.cameras.find(c=>c.id===selectedCamera);
+      if(current){$('camera-name').value=current.name;$('selected-camera-name').textContent=current.name;}
+    }
+    $('camera-add').disabled=result.cameras.length >= result.max_cameras;
+    $('camera-rename').disabled=$('camera-restart').disabled=result.max_cameras===1;
+    grid.replaceChildren();
+    for (const camera of result.cameras) {
+      const card=document.createElement('a');card.className='camera-tile';card.href='/?camera='+encodeURIComponent(camera.id);
+      const title=document.createElement('strong');title.textContent=camera.name;
+      const state=document.createElement('span');state.textContent=`Recording: ${camera.state.replaceAll('_',' ')} · Detection: ${(camera.analysis?.state || 'idle').replaceAll('_',' ')}`;
+      const count=document.createElement('small');count.textContent=`${camera.event_count_since_start || 0} events this session · ${bytes(camera.storage_used_bytes)} used`;
+      const analysis=document.createElement('small'), a=camera.analysis || {};
+      analysis.textContent=`${a.width || '?'}×${a.height || '?'} @ ${a.fps || '?'} fps · ${a.frames || 0} detection frames · ${a.dropped_frames || 0} dropped`;
+      card.append(title,state,count,analysis);
+      if(camera.state!=='worker_failed' && camera.frame_age_seconds!=null && camera.frame_age_seconds<10){const img=document.createElement('img');img.src='/api/cameras/'+encodeURIComponent(camera.id)+'/frame.jpg';img.alt=camera.name+' latest detection frame';card.append(img);}
+      grid.append(card);
+    }
+  } catch(error) { $('camera-management-status').textContent=error.message; }
+}
+$('camera-select').onchange=()=>{location.href='/?camera='+encodeURIComponent($('camera-select').value);};
+for(const [button,action] of [['camera-add','add'],['camera-rename','rename']]) $(button).onclick=async()=>{
+  $(button).disabled=true;
+  try {const result=await api('/api/cameras',{action,id:selectedCamera,name:$(action==='add'?'camera-new-name':'camera-name').value});
+    if(action==='add')location.href='/?camera='+encodeURIComponent(result.id)+'#settings';
+    else {$('camera-management-status').textContent='Camera renamed.';await refreshCameras();}
+  }catch(error){$('camera-management-status').textContent=error.message;}finally{$(button).disabled=false;}
+};
+$('camera-restart').onclick=async()=>{
+  $('camera-restart').disabled=true;
+  try {await api('/api/cameras',{action:'restart',id:selectedCamera});$('camera-management-status').textContent='Camera worker restarted.';await refreshCameras();await refresh();}
+  catch(error){$('camera-management-status').textContent=error.message;}
+  finally{$('camera-restart').disabled=false;}
+};
 let connectionStartedAt = 0;
 let ignoreZones = [], zoneStart = null, zoneDraft = null, zoneFrameURL = null, zoneFrameReady = false;
 let csrf = '', settingsLoaded = false, busy = false, frameURL = null, clipSignature = '';
@@ -18,7 +66,7 @@ function notice(message = '', setupLink = false) {
   banner.classList.toggle('hidden', !message && !setupLink);
 }
 async function api(path, body) {
-  const response = await fetch(path, {method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', headers: body === undefined ? {} : {'Content-Type': 'application/json', 'X-CSRF-Token': csrf}, body: body === undefined ? undefined : JSON.stringify(body)});
+  const response = await fetch(cameraPath(path), {method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', headers: body === undefined ? {} : {'Content-Type': 'application/json', 'X-CSRF-Token': csrf}, body: body === undefined ? undefined : JSON.stringify(body)});
   const value = await response.json();
   if (response.status === 401 && path !== '/api/login') { loggedOut(); throw new Error('Sign in to continue.'); }
   if (!response.ok) throw new Error(value.error || 'Request failed.');
@@ -32,7 +80,7 @@ $('camera-settings-link').onclick = event => { event.preventDefault(); tab('sett
 async function signedIn() {
   const session = await api('/api/session'); csrf = session.csrf;
   $('login').classList.add('hidden'); $('app').classList.remove('hidden');
-  settingsLoaded = false; clipSignature = ''; await refresh();
+  settingsLoaded = false; clipSignature = ''; await refreshCameras(); await refresh(); if(typeof location !== 'undefined' && new URL(location.href).hash==='#settings')tab('settings');
 }
 $('login-form').onsubmit = async event => { event.preventDefault(); $('login-error').textContent = ''; try { await api('/api/login', {username: $('login-user').value, password: $('login-password').value}); $('login-password').value = ''; await signedIn(); } catch (error) { $('login-error').textContent = error.message; } };
 $('opensky-credentials-file').onchange=async()=>{
@@ -91,7 +139,7 @@ function renderStatus(status) {
 function eventCard(event) {
   const card = document.createElement('article'); card.className = 'event-card';
   const image = document.createElement('div'); image.className = 'event-image';
-  const base = `/api/clips/${encodeURIComponent(event.id)}`;
+  const base = cameraPath(`/api/clips/${encodeURIComponent(event.id)}`);
   if (event.thumbnail) { const thumb = document.createElement('img'); thumb.src = base + '/thumbnail'; thumb.alt = event.best_frame ? 'Native-resolution crop of the selected event frame' : 'Detection thumbnail for this event'; thumb.loading = 'lazy'; image.append(thumb); }
   if (event.thumbnail || event.best_frame || event.preview || event.substream_preview) { const view = document.createElement('button'); view.className = 'event-open'; view.textContent = 'View image'; view.setAttribute('aria-label', 'Open event image'); view.onclick = () => openReview(event); image.append(view); }
   const info = document.createElement('div'); info.className = 'event-info';
@@ -203,7 +251,7 @@ async function refreshDashboard() {
 let frameBusy = false;
 async function refreshFrame() {
   if (!csrf || frameBusy || document.hidden) return; frameBusy = true;
-  try { const response = await fetch('/api/frame.jpg'); if (!response.ok) { $('camera-frame').classList.add('hidden'); $('camera-empty').classList.remove('hidden'); return; } const url = URL.createObjectURL(await response.blob()); $('camera-frame').src = url; if (frameURL) URL.revokeObjectURL(frameURL); frameURL = url; $('camera-frame').classList.remove('hidden'); $('camera-empty').classList.add('hidden'); } catch { $('camera-frame').classList.add('hidden'); $('camera-empty').classList.remove('hidden'); } finally { frameBusy = false; }
+  try { const response = await fetch(cameraPath('/api/frame.jpg')); if (!response.ok) { $('camera-frame').classList.add('hidden'); $('camera-empty').classList.remove('hidden'); return; } const url = URL.createObjectURL(await response.blob()); $('camera-frame').src = url; if (frameURL) URL.revokeObjectURL(frameURL); frameURL = url; $('camera-frame').classList.remove('hidden'); $('camera-empty').classList.add('hidden'); } catch { $('camera-frame').classList.add('hidden'); $('camera-empty').classList.remove('hidden'); } finally { frameBusy = false; }
 }
 $('settings-form').onsubmit = async event => { event.preventDefault(); const submit = event.submitter; submit.disabled = true; $('settings-result').textContent = 'Saving…'; const camera = {}; for (const key of ['host', 'username', 'mainstream_path', 'substream_path']) camera[key] = $(key).value.trim(); camera.port = Number($('port').value); camera.api_scheme = $('api_scheme').value; camera.api_port = Number($('api_port').value); camera.password = $('camera-password').value;
   const recording = {}; for (const key of ['pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds']) recording[key] = Number($(key).value);
@@ -254,7 +302,7 @@ function addZone(zone) {
 }
 async function loadZoneImage() {
   try {
-    const response = await fetch('/api/frame.jpg');
+    const response = await fetch(cameraPath('/api/frame.jpg'));
     if (!response.ok) throw new Error('No camera image');
     const url = URL.createObjectURL(await response.blob());
     $('zone-frame').src = url;
@@ -315,7 +363,7 @@ async function openReview(event, imageKind = 'thumbnail') {
   loadIdentification(event.id);
   if(event.motion) {
     try {
-      const response = await fetch(`/api/clips/${encodeURIComponent(event.id)}/motion`);
+      const response = await fetch(cameraPath(`/api/clips/${encodeURIComponent(event.id)}/motion`));
       if(!response.ok) throw new Error('Motion data unavailable');
       const records = (await response.text()).trim().split('\n').map(line=>JSON.parse(line));
       if(generation !== reviewGeneration || !reviewEvent || reviewEvent.id !== event.id) return;
@@ -468,7 +516,7 @@ $('show-pixels').onchange = drawMotion; $('show-boxes').onchange = drawMotion;
 async function loadIdentification(id) {
   try { const report = await api(`/api/clips/${encodeURIComponent(id)}/identification`); if(reviewEvent?.id!==id) return;
     $('identification-status').textContent = report.status.replaceAll('_',' ');
-    $('track-report').href=`/api/clips/${encodeURIComponent(id)}/identification`; $('track-report').classList.remove('hidden');
+    $('track-report').href=cameraPath(`/api/clips/${encodeURIComponent(id)}/identification`); $('track-report').classList.remove('hidden');
     const measurements=report.measurements;
     const summary=(measurements?.tracks || []).map(t=>`Track ${t.track_id}: ${t.sampled_path_angle_deg.toFixed(2)}° sampled path over ${t.duration_seconds.toFixed(2)}s · ${t.mean_path_speed_deg_s == null ? 'speed unavailable' : t.mean_path_speed_deg_s.toFixed(2)+'°/s mean angular speed'}`).join('\n');
     $('identification-detail').textContent = (summary ? summary+'\nHost timing and centroid uncertainty unverified; angles do not establish physical speed or distance.\n\n' : '')+JSON.stringify(report, null, 2);
@@ -499,7 +547,7 @@ function showReviewImage(kind = 'thumbnail') {
   const available = kind === 'frame' ? reviewEvent.best_frame : reviewEvent.thumbnail;
   const still = $('review-still'); still.classList.toggle('hidden', !available);
   if (available) {
-    const src = `/api/clips/${encodeURIComponent(reviewEvent.id)}/${kind === 'frame' ? 'frame' : 'thumbnail'}?selected=${reviewEvent.best_frame ? 1 : 0}`;
+    const src = cameraPath(`/api/clips/${encodeURIComponent(reviewEvent.id)}/${kind === 'frame' ? 'frame' : 'thumbnail'}?selected=${reviewEvent.best_frame ? 1 : 0}`);
     if (still.getAttribute('src') !== src) still.src = src;
     still.alt = kind === 'frame' ? 'Selected event frame at full camera resolution' : reviewEvent.best_frame ? 'Full-resolution object crop from the selected event frame' : 'Temporary detection image; full-resolution selection is pending';
   } else still.removeAttribute('src');
@@ -516,7 +564,7 @@ function selectReviewVideo() {
   const analysis = $('review-quality').value === 'analysis';
   $('show-pixels').disabled = !analysis; $('show-boxes').disabled = !analysis;
   const video = $('review-video');
-  video.src = `/api/clips/${encodeURIComponent(reviewEvent.id)}/${analysis ? 'preview' : 'video'}`;
+  video.src = cameraPath(`/api/clips/${encodeURIComponent(reviewEvent.id)}/${analysis ? 'preview' : 'video'}`);
   video.load(); video.currentTime = 0;
   drawMotion();
 }
@@ -574,7 +622,7 @@ $('star-load').onclick=async()=>{
     starSession=result;$('star-name').replaceChildren();
     for(const star of result.stars) {const option=document.createElement('option');option.value=star.id;option.textContent=`${star.name} · mag ${star.magnitude.toFixed(1)} · az ${star.azimuth_deg.toFixed(0)}° / alt ${star.altitude_deg.toFixed(0)}°`;$('star-name').append(option);}
     if(result.stars.length)$('star-name').value=result.stars[0].id;
-    $('star-frame').src=`/api/clips/${encodeURIComponent(result.id)}/frame?calibration=${encodeURIComponent(result.token)}`;
+    $('star-frame').src=cameraPath(`/api/clips/${encodeURIComponent(result.id)}/frame?calibration=${encodeURIComponent(result.token)}`);
     $('star-status').textContent=`Frozen frame: ${new Date(result.timestamp*1000).toLocaleString()} · ${result.width}×${result.height}. Choose a known star, then click its center. Select at least six across the image.`;
     $('star-editor').classList.remove('hidden');renderStarPoints();
   } catch(error){$('star-status').textContent=error.message;}
@@ -615,3 +663,5 @@ $('star-apply').onclick=async()=>{
 };
 
 MagiEvents.init();
+
+setInterval(refreshCameras, 4000);

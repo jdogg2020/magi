@@ -109,6 +109,18 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError('Invalid body size.')
         return json.loads(self.rfile.read(length))
 
+    def camera_route(self, path):
+        station = self.server.app
+        match = re.fullmatch(r'/api/cameras/([a-z0-9-]+)/(.+)', path)
+        identity = match[1] if match else 'primary'
+        if hasattr(station, 'camera'):
+            app = station.camera(identity)
+        elif identity == 'primary':
+            app = station
+        else:
+            raise ValueError('Unknown camera.')
+        return app, '/api/'+match[2] if match else path
+
     def do_GET(self):
         if not self.valid_host():
             self.reply(400, {'error': 'Invalid host.'})
@@ -131,10 +143,24 @@ class Handler(BaseHTTPRequestHandler):
         if not session:
             self.reply(401, {'error': 'Sign in to continue.'})
             return
-        view = self.server.app.read()
         if path == '/api/session':
             self.reply(200, {'csrf': session['csrf'], 'username': self.server.app.cfg.web['username']})
-        elif path == '/api/status':
+            return
+        if path == '/api/cameras':
+            station = self.server.app
+            if hasattr(station, 'cameras'):
+                self.reply(200, station.cameras())
+            else:
+                status = station.read()['status']
+                self.reply(200, {'cameras': [{'id':'primary','name':'Camera 1', **status}], 'max_cameras':1})
+            return
+        try:
+            app, path = self.camera_route(path)
+        except ValueError:
+            self.reply(404, {'error':'Camera unavailable.'})
+            return
+        view = app.read()
+        if path == '/api/status':
             self.reply(200, view['status'])
         elif path == '/api/clips':
             self.reply(200, {'clips': view['clips'], 'limit': 200})
@@ -142,7 +168,6 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, {**view['settings'], 'camera_setup': {
                 'suggested_network': suggested_network(self.connection.getsockname()[0], view['settings']['camera'].get('host', ''))}})
         elif path == '/api/frame.jpg':
-            app = self.server.app
             data = app.frame_jpeg
             if not data or time.monotonic() - app.frame_at > 10:
                 self.reply(503, {'error': 'Waiting for a fresh analysis frame.'})
@@ -153,7 +178,7 @@ class Handler(BaseHTTPRequestHandler):
             match = re.fullmatch(r'/api/clips/([^/]+)/(original|preview|thumbnail|metadata|motion|identification|video|frame|media|timeline)', path)
             if match:
                 try:
-                    file = self.server.app.clip_path(*match.groups())
+                    file = app.clip_path(*match.groups())
                     self.send_file(file, match[2])
                 except (OSError, ValueError):
                     self.reply(404, {'error': 'File unavailable.'})
@@ -229,14 +254,20 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, {'ok': True}, {'Set-Cookie': 'magi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})
             return
         try:
+            if path == '/api/cameras':
+                if not hasattr(self.server.app, 'manage_camera'):
+                    raise ValueError('Camera management needs the station service.')
+                self.reply(200, self.server.app.manage_camera(body))
+                return
+            app, path = self.camera_route(path)
             if path == '/api/events/list':
-                self.reply(200, self.server.app.event_page(body))
+                self.reply(200, app.event_page(body))
                 return
             commands = {'/api/events/list': 'events_list', '/api/events/update': 'events_update', '/api/camera/setup': 'camera_setup', '/api/camera/info': 'camera_info', '/api/trigger': 'trigger', '/api/settings': 'settings', '/api/reconnect': 'reconnect', '/api/identify': 'identify', '/api/render': 'render', '/api/calibration/load': 'calibration_load', '/api/calibration/solve': 'calibration_solve', '/api/calibration/apply': 'calibration_apply'}
             if path not in commands:
                 self.reply(404, {'error': 'Not found.'})
                 return
-            self.reply(200, self.server.app.request(commands[path], body))
+            self.reply(200, app.request(commands[path], body))
         except (ValueError,OSError) as error:
-            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/camera/setup', '/api/events/')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
+            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/camera/setup', '/api/events/', '/api/cameras')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
             self.reply(409, {'error': message})

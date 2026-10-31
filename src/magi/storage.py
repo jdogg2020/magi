@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -53,16 +54,24 @@ class Volume:
     def usage(self):
         self.check()
         seen, total = set(), 0
-        for path in self.cfg.root.rglob("*"):
-            if path.is_symlink():
-                raise OSError("symlinks are not allowed in recording storage")
-            try:
-                st = path.stat()
-            except FileNotFoundError:
-                continue
-            if path.is_file() and (st.st_dev, st.st_ino) not in seen:
-                seen.add((st.st_dev, st.st_ino))
-                total += st.st_size
+        def scan_error(error):
+            raise error
+        for directory, directories, files in os.walk(self.cfg.root, followlinks=False, onerror=scan_error):
+            base = Path(directory)
+            if base == self.cfg.root:
+                # Each camera accounts for its own subtree; do not walk peers.
+                directories[:] = [name for name in directories if name != 'cameras']
+            for name in directories + files:
+                path = base / name
+                if path.is_symlink():
+                    raise OSError("symlinks are not allowed in recording storage")
+                try:
+                    st = path.stat()
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISREG(st.st_mode) and (st.st_dev, st.st_ino) not in seen:
+                    seen.add((st.st_dev, st.st_ino))
+                    total += st.st_size
         return total, shutil.disk_usage(self.cfg.root).free
 
     def prune(self, protected=(), reserve=0):

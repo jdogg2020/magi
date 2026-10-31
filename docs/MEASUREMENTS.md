@@ -3,7 +3,7 @@
 New events preserve the observer and camera geometry plus the calibrated flag at
 capture. When calibrated, opening the Events tab queues a bounded local report,
 even if aircraft/satellite reference checks are disabled. In review, the reference
-panel shows angular summaries and the detailed JSON; download Reference report
+panel shows angular summaries and the detailed JSON; choose Download track report
 for the complete report. Check again rebuilds the report. Existing reports are
 not automatically rewritten. The selected-event archive export remains a summary,
 not a complete evidence bundle.

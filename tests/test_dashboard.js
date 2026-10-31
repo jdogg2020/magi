@@ -159,6 +159,16 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert.equal(elements['id-aircraft_provider'].value,'opensky');assert(elements['opensky-import-status'].textContent.includes('Save Settings'));
  elements['opensky-credentials-file'].files=[{size:10,text:async()=>'{bad'}];await elements['opensky-credentials-file'].onchange();assert(elements['opensky-import-status'].textContent.includes('not a valid JSON'));
  elements['id-opensky_client_id'].value='';elements['id-opensky_client_secret'].value='';
+ // Inspection validation errors must survive background status refreshes.
+ elements['setup-initialize'].checked=true;elements['setup-new-password'].value='new-camera-pass';elements['setup-confirm-password'].value='different-password';
+ await elements['setup-inspect'].onclick();
+ assert(elements['setup-status'].textContent.includes('do not match'));
+ vm.runInContext("renderCameraSetup({camera_setup:{state:'discovered',message:'Found 1 compatible setup service'}})",context);
+ assert(elements['setup-status'].textContent.includes('do not match'),'Discovery refresh must not hide inspection errors');
+ assert(elements['setup-apply'].disabled);
+ elements['setup-confirm-password'].listeners.input();
+ vm.runInContext("renderCameraSetup({camera_setup:{state:'discovered',message:'Found 1 compatible setup service'}})",context);
+ assert(elements['setup-status'].textContent.includes('Found 1'));
  // Camera mutation requires a matching inspected connection; edits invalidate Apply.
  elements.host.value='192.168.86.242';elements.username.value='admin';elements['camera-password'].value='';elements['setup-initialize'].checked=false;
  vm.runInContext("setupSignature=JSON.stringify(setupFields());renderCameraSetup({camera_setup:{state:'review',token:'test-token',host:'192.168.86.242',identity:{model:'CX820'},ports:{http:{port:80,enabled:false}}}})",context);

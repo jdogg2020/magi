@@ -132,7 +132,7 @@ function renderCameraSetup(status){
 }
 async function runCameraSetup(action){
   try {setupError='';let data={action};if(action==='discover') data.network=$('setup-network').value.trim();
-    if(action==='inspect'){const fields=setupFields();if(fields.initialize && fields.new_password!==fields.confirmation) throw new Error('The new camera passwords do not match.');setupSignature=JSON.stringify(fields);data={action,...fields};delete data.confirmation;}
+    if(action==='inspect'){const fields=setupFields();if(fields.initialize && !fields.new_password) throw new Error('Choose and confirm a new camera admin password before inspection. Apply will create it on the camera.');if(fields.initialize && fields.new_password!==fields.confirmation) throw new Error('The new camera passwords do not match.');setupSignature=JSON.stringify(fields);data={action,...fields};delete data.confirmation;}
     if(action==='apply'){if(!setupToken || setupSignature!==JSON.stringify(setupFields())) throw new Error('Inspect these connection details before applying setup.');data.token=setupToken;setupToken=null;}
     for(const id of ['setup-discover','setup-inspect','setup-apply']) $(id).disabled=true;
     const result=await api('/api/camera/setup',data);renderCameraSetup({camera_setup:result});

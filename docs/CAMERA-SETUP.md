@@ -1,9 +1,9 @@
 # Camera information and Reolink onboarding
 
 Magi 0.10.0 adds local camera inspection and an **experimental CX820 setup flow**.
-No physical camera is available in development: protocol fixtures, HTTP/TCP
-simulators and UI behavior are tested; real firmware activation is not yet
-validated. Keep the camera password until live video is confirmed.
+The owner has confirmed discovery, factory-new activation, service enabling and
+live video on a real CX820. Protocol fixtures, HTTP/TCP simulators and UI behavior
+are also tested; overlay removal still needs real-camera validation. Keep the camera password until live video is confirmed.
 
 ## Without the Windows Reolink client
 
@@ -24,14 +24,21 @@ validated. Keep the camera password until live video is confirmed.
    reuses the saved password only for the same IP and username. For a factory-new
    or reset camera, select initialization, use `admin`, leave the existing password
    empty, and choose/confirm a new password of 8–31 printable ASCII characters
-   without spaces. Magi never attempts a blank password unless explicitly selected.
+   without spaces **before inspection**. Inspection only validates these fields; Apply
+   creates the password on the camera. Magi never attempts a blank password unless explicitly selected.
 5. **Inspect selected camera** reads model, firmware, name and service ports.
    No device settings change. Automatic setup is restricted to identity `CX820`;
    other models and incomplete responses stop here. Review the IP and identity.
 6. **Enable services & connect** (or **Create password, enable services & connect**)
    reconnects and checks identity, creates the admin password only when requested,
    verifies the new login, enables only RTSP and local HTTP if disabled, and reads
-   the ports back. Other users and camera settings are preserved. It then saves
+   the ports back. It then reads channel 0 OSD settings over the local HTTP API,
+   disables the watermark, date/time and camera-name display switches with SetOsd,
+   and reads them back to verify removal. Camera name text, positions and all other
+   OSD fields are preserved. Missing controls, unsupported commands or failed
+   readback stop setup with a partial-change message. Other users and camera settings
+   are preserved. Existing cameras can repeat Inspect and Apply with initialization
+   unchecked and their current password to remove overlays without resetting. It then saves
    the connection through Magi's normal private config/backup mechanism and
    reconnects capture. Camera-reported RTSP/HTTP port numbers are used, with the
    CX820 main/substream path defaults.

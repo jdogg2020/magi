@@ -35,6 +35,7 @@ class FakeCamera:
 class SetupTests(unittest.TestCase):
     def setUp(self):
         FakeCamera.password='existing-pass';FakeCamera.actions=[];FakeCamera.enabled=False;FakeCamera.reject_identity=False;FakeCamera.fail_enable=False
+        self.overlays=patch('magi.reolink_setup.disable_overlays');self.disable_overlays=self.overlays.start();self.addCleanup(self.overlays.stop)
     def wait(self,worker):worker.thread.join(3);self.assertFalse(worker.thread.is_alive());worker.next_at=0;return worker.read()
     def inspect(self,worker,**extra):
         data={'host':'192.168.86.242','username':'admin','password':'existing-pass',**extra}
@@ -52,10 +53,12 @@ class SetupTests(unittest.TestCase):
         with patch('magi.reolink_setup.Camera',FakeCamera):
             result=self.inspect(worker)
             self.assertEqual(result['state'],'review')
+            self.disable_overlays.assert_not_called()
             self.assertFalse(any(a[0] in ('enable','password') for a in FakeCamera.actions))
             self.assertNotIn('existing-pass',json.dumps(result))
             worker.submit('apply',{'token':result['token']},{})
             self.assertEqual(self.wait(worker)['state'],'saving')
+        self.disable_overlays.assert_called_once()
         cfg=worker.take_completed();self.assertEqual(cfg['password'],'existing-pass');self.assertEqual(cfg['port'],554)
         self.assertIsNone(worker.take_completed())
         with self.assertRaises(SetupError):worker.submit('apply',{'token':result['token']},{})
@@ -79,6 +82,20 @@ class SetupTests(unittest.TestCase):
             failed=self.wait(worker);self.assertIn('may already have changed',failed['message'])
             self.assertIsNone(worker.take_completed())
             self.assertEqual(len([a for a in FakeCamera.actions if a[0]=='enable']),1)
+    def test_overlay_failure_reports_partial_changes_without_saving(self):
+        from magi.camera_info import CameraInfoError
+        worker=Setup()
+        self.disable_overlays.side_effect=CameraInfoError('Camera did not confirm overlay removal.')
+        with patch('magi.reolink_setup.Camera',FakeCamera):
+            result=self.inspect(worker)
+            worker.submit('apply',{'token':result['token']},{})
+            result=self.wait(worker)
+        self.assertEqual(result['state'],'unavailable')
+        self.assertIn('overlay removal failed',result['message'])
+        self.assertIn('may already have changed',result['message'])
+        self.assertIsNone(worker.take_completed())
+        self.disable_overlays.assert_called_once()
+
     def test_validation_expiry_and_changed_identity(self):
         worker=Setup()
         for fields in [{'host':'8.8.8.8'},{'host':'127.0.0.1'},{'host':'192.168.1.1','initialize':True,'password':'old','username':'admin'}, {'host':'192.168.1.1','initialize':True,'password':'','new_password':'short'}]:

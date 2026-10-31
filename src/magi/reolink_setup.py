@@ -16,6 +16,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from xml.etree import ElementTree as ET
 
+from .camera_info import CameraInfoError
+from .camera_overlays import disable_overlays
+
 
 class SetupError(ValueError):
     pass
@@ -333,7 +336,7 @@ class Setup:
                     if not self.closed:
                         self.session = work
                 result = {'state':'review','token':token,'identity':identity,'host':work['host'],'ports':ports,
-                          'initialize':work['initialize'],'message':'Review the camera below. Apply will '+('create its admin password, ' if work['initialize'] else '')+'enable RTSP and local HTTP if disabled, then save the connection in Magi. Other camera settings stay unchanged.'}
+                          'initialize':work['initialize'],'message':'Review the camera below. Apply will '+('create its admin password, ' if work['initialize'] else '')+'enable RTSP and local HTTP if disabled, remove the watermark, timestamp and camera-name overlays, then save the connection in Magi. Other camera settings stay unchanged.'}
             else:
                 session = work['session']
                 camera = Camera(session['host'])
@@ -361,10 +364,17 @@ class Setup:
                 settings = {'host':session['host'],'username':session['username'],'password':session['password'],
                             'port':ports['rtsp']['port'],'api_scheme':'http','api_port':ports['http']['port'],
                             'mainstream_path':'/h264Preview_01_main','substream_path':'/h264Preview_01_sub'}
+                if self.closed:
+                    raise SetupError('Camera setup was cancelled.')
+                changes_started = True
+                try:
+                    disable_overlays(settings)
+                except CameraInfoError as error:
+                    raise SetupError('Camera services are enabled, but overlay removal failed. '+str(error)) from None
                 with self.lock:
                     if not self.closed:
                         self.completed = settings
-                result = {'state':'saving','message':'Camera services confirmed. Saving Magi connection…'}
+                result = {'state':'saving','message':'Camera services and overlay removal confirmed. Saving Magi connection…'}
         except Exception as error:
             message = str(error) if isinstance(error, SetupError) else 'Camera setup connection or response failed. Check power, the local address, port 9000 and camera firmware.'
             if changes_started:
@@ -384,7 +394,7 @@ class Setup:
 
     def saved(self, success):
         with self.lock:
-            self.result = {'state':'complete' if success else 'unavailable','message': 'Camera configured and Magi connection saved. Connecting video; wait for Recording and a live image.' if success else 'Camera services were configured, but Magi could not save the connection. Keep the password and enter the connection in Settings.'}
+            self.result = {'state':'complete' if success else 'unavailable','message': 'Camera configured with watermark, timestamp and camera-name overlays disabled. Magi connection saved. Connecting video; wait for Recording and a live image.' if success else 'Camera services were configured, but Magi could not save the connection. Keep the password and enter the connection in Settings.'}
 
     def close(self):
         with self.lock:

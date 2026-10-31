@@ -160,6 +160,9 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  elements['opensky-credentials-file'].files=[{size:10,text:async()=>'{bad'}];await elements['opensky-credentials-file'].onchange();assert(elements['opensky-import-status'].textContent.includes('not a valid JSON'));
  elements['id-opensky_client_id'].value='';elements['id-opensky_client_secret'].value='';
  // Inspection validation errors must survive background status refreshes.
+ elements['setup-initialize'].checked=true;elements['setup-new-password'].value='';elements['setup-confirm-password'].value='';
+ await elements['setup-inspect'].onclick();
+ assert(elements['setup-status'].textContent.includes('before inspection'));
  elements['setup-initialize'].checked=true;elements['setup-new-password'].value='new-camera-pass';elements['setup-confirm-password'].value='different-password';
  await elements['setup-inspect'].onclick();
  assert(elements['setup-status'].textContent.includes('do not match'));

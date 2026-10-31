@@ -1,6 +1,7 @@
 """On-demand, read-only Reolink CGI inspection, isolated from capture workers."""
 import calendar
 import copy
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -149,7 +150,9 @@ def sanitize(responses, camera, sampled_at, elapsed, token):
     return result
 
 
-def inspect(camera):
+@contextmanager
+def camera_api(camera):
+    """Bounded authenticated local API session; callers choose commands explicitly."""
     if camera.get('test_file'):
         raise CameraInfoError('Camera API information is unavailable for a test video file.')
     if not all(camera.get(k) for k in ('host', 'username', 'password')):
@@ -193,10 +196,7 @@ def inspect(camera):
         token = login[0].get('value', {}).get('Token', {}).get('name')
         if not isinstance(token, str) or not token or len(token) > 256:
             raise CameraInfoError('Camera API did not provide a valid login token.')
-        started = time.time()
-        responses = send([{'cmd':cmd,'action':0,'param':{'channel':0} if cmd in ('GetEnc','GetRtspUrl','GetIsp') else {}} for cmd in COMMANDS], token)
-        elapsed = time.time()-started
-        return sanitize(responses, camera, started+elapsed/2, elapsed, token)
+        yield (lambda commands: send(commands, token)), token
     except CameraInfoError:
         raise
     except HTTPError as error:
@@ -220,6 +220,14 @@ def inspect(camera):
                 send([{'cmd':'Logout','action':0,'param':{}}], token)
             except Exception:
                 pass
+
+
+def inspect(camera):
+    with camera_api(camera) as (send, token):
+        started = time.time()
+        responses = send([{'cmd':cmd,'action':0,'param':{'channel':0} if cmd in ('GetEnc','GetRtspUrl','GetIsp') else {}} for cmd in COMMANDS])
+        elapsed = time.time()-started
+        return sanitize(responses, camera, started+elapsed/2, elapsed, token)
 
 
 class CameraInfo:

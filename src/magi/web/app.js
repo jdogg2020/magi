@@ -1,40 +1,71 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const selectedCamera = typeof location !== 'undefined' ? (new URL(location.href).searchParams.get('camera') || 'primary') : 'primary';
-function cameraPath(path) {
-  if (selectedCamera === 'primary' || !path.startsWith('/api/') || path.startsWith('/api/cameras/') || ['/api/login','/api/logout','/api/session','/api/cameras'].includes(path)) return path;
-  return '/api/cameras/'+encodeURIComponent(selectedCamera)+'/'+path.slice(5);
+function cameraPath(path, identity = selectedCamera) {
+  if (identity === 'primary' || !path.startsWith('/api/') || path.startsWith('/api/cameras/') || path.startsWith('/api/station/') || ['/api/login','/api/logout','/api/session','/api/cameras'].includes(path)) return path;
+  return '/api/cameras/'+encodeURIComponent(identity)+'/'+path.slice(5);
 }
+const cameraTiles = new Map();
+let stationCameras = [], cameraRefreshBusy = false;
+const eventKey = row => `${row.camera_id || selectedCamera}:${row.id}`;
+const eventPath = (row, part) => `/api/cameras/${encodeURIComponent(row.camera_id || selectedCamera)}/clips/${encodeURIComponent(row.id)}/${part}`;
 async function refreshCameras() {
-  if (!csrf) return;
+  if (!csrf || cameraRefreshBusy) return;
+  cameraRefreshBusy = true;
   try {
     const result = await api('/api/cameras');
+    if (!csrf) return;
+    stationCameras = result.cameras;
     const select = $('camera-select'), grid = $('camera-grid');
     const signature = JSON.stringify(result.cameras.map(c=>[c.id,c.name]));
     if (select.dataset.signature !== signature) {
-      select.replaceChildren();
-      for (const camera of result.cameras) { const option=document.createElement('option');option.value=camera.id;option.textContent=camera.name;select.append(option); }
-      select.value=selectedCamera;select.dataset.signature=signature;
+      select.replaceChildren();$('camera-links').replaceChildren();
+      const filter = $('event-camera'), previous = filter.value || 'all';filter.replaceChildren();
+      const all=document.createElement('option');all.value='all';all.textContent='All cameras';filter.append(all);
+      for (const camera of result.cameras) {
+        const option=document.createElement('option');option.value=camera.id;option.textContent=camera.name;select.append(option);
+        const choice=document.createElement('option');choice.value=camera.id;choice.textContent=camera.name;filter.append(choice);
+        const link=document.createElement('a');link.href='/?camera='+encodeURIComponent(camera.id)+'#settings';link.textContent=camera.name+' settings';$('camera-links').append(link);
+      }
+      filter.value=previous;select.value=selectedCamera;select.dataset.signature=signature;
       const current=result.cameras.find(c=>c.id===selectedCamera);
       if(current){$('camera-name').value=current.name;$('selected-camera-name').textContent=current.name;}
     }
     $('camera-add').disabled=result.cameras.length >= result.max_cameras;
     $('camera-rename').disabled=$('camera-restart').disabled=result.max_cameras===1;
-    grid.replaceChildren();
     for (const camera of result.cameras) {
-      const card=document.createElement('a');card.className='camera-tile';card.href='/?camera='+encodeURIComponent(camera.id);
-      const title=document.createElement('strong');title.textContent=camera.name;
-      const state=document.createElement('span');state.textContent=`Recording: ${camera.state.replaceAll('_',' ')} · Detection: ${(camera.analysis?.state || 'idle').replaceAll('_',' ')}`;
-      const count=document.createElement('small');count.textContent=`${camera.event_count_since_start || 0} events this session · ${bytes(camera.storage_used_bytes)} used`;
-      const analysis=document.createElement('small'), a=camera.analysis || {};
-      analysis.textContent=`${a.width || '?'}×${a.height || '?'} @ ${a.fps || '?'} fps · ${a.frames || 0} detection frames · ${a.dropped_frames || 0} dropped`;
-      card.append(title,state,count,analysis);
-      if(camera.state!=='worker_failed' && camera.frame_age_seconds!=null && camera.frame_age_seconds<10){const img=document.createElement('img');img.src='/api/cameras/'+encodeURIComponent(camera.id)+'/frame.jpg';img.alt=camera.name+' latest detection frame';card.append(img);}
-      grid.append(card);
+      let tile=cameraTiles.get(camera.id);
+      if(!tile){
+        const card=document.createElement('article');card.className='panel camera-tile';card.dataset.cameraId=camera.id;
+        const title=document.createElement('h2'), state=document.createElement('span'), count=document.createElement('small'), analysis=document.createElement('small');
+        const img=document.createElement('img');img.alt=camera.name+' latest detection frame';img.classList.add('hidden');
+        const empty=document.createElement('p');empty.textContent='Waiting for a fresh camera image.';
+        const actions=document.createElement('div');actions.className='camera-tile-actions';
+        const link=document.createElement('a');link.href='/?camera='+encodeURIComponent(camera.id)+'#settings';link.textContent='Settings';
+        const save=document.createElement('button');save.type='button';save.className='secondary';save.textContent='＋ Save an event';
+        const feedback=document.createElement('p');feedback.setAttribute('role','status');feedback.className='muted';
+        tile={card,title,state,count,analysis,img,empty,save,feedback,url:null};
+        save.onclick=async()=>{save.disabled=true;try{await api('/api/trigger',{},camera.id);feedback.textContent='Event started. Waiting for post-roll and assembly.';}catch(error){feedback.textContent=error.message;}finally{save.disabled=false;}};
+        actions.append(save,link);card.append(title,state,count,analysis,img,empty,actions,feedback);grid.append(card);cameraTiles.set(camera.id,tile);
+      }
+      tile.title.textContent=camera.name;tile.img.alt=camera.name+' latest detection frame';
+      tile.state.textContent=`Main: ${camera.state.replaceAll('_',' ')} · Substream: ${(camera.substream?.state || 'idle').replaceAll('_',' ')} · Detection: ${(camera.analysis?.state || 'idle').replaceAll('_',' ')}`;
+      tile.count.textContent=`${camera.event_count_since_start || 0} events this session · ${bytes(camera.storage_used_bytes)} used`;
+      const a=camera.analysis || {};tile.analysis.textContent=`${a.width || '?'}×${a.height || '?'} @ ${a.fps || '?'} fps · ${a.frames || 0} detection frames · ${a.dropped_frames || 0} dropped`;
+      tile.save.disabled=camera.state!=='buffering';
+      if(camera.state==='worker_failed' || camera.frame_age_seconds==null || camera.frame_age_seconds>=10){tile.img.classList.add('hidden');tile.empty.classList.remove('hidden');}
     }
+    const recording=result.cameras.filter(c=>c.state==='buffering').length;
+    $('connection').textContent=`${recording}/${result.cameras.length} cameras recording`;$('connection').classList.toggle('warning',recording!==result.cameras.length);
+    $('session-events').textContent=result.cameras.reduce((n,c)=>n+(c.event_count_since_start || 0),0);
+    $('used').textContent=bytes(result.cameras.reduce((n,c)=>n+(c.storage_used_bytes || 0),0));
+    $('buffer').textContent=`${recording} / ${result.cameras.length}`;
+    $('detection-mode').textContent=`${result.cameras.filter(c=>c.analysis?.state==='analyzing').length} detecting`;
+    $('analysis-count').textContent=`${result.cameras.reduce((n,c)=>n+(c.analysis?.frames || 0),0)} frames · ${result.cameras.reduce((n,c)=>n+(c.analysis?.dropped_frames || 0),0)} dropped`;
   } catch(error) { $('camera-management-status').textContent=error.message; }
+  finally {cameraRefreshBusy=false;}
 }
-$('camera-select').onchange=()=>{location.href='/?camera='+encodeURIComponent($('camera-select').value);};
+$('camera-select').onchange=()=>{location.href='/?camera='+encodeURIComponent($('camera-select').value)+'#settings';};
 for(const [button,action] of [['camera-add','add'],['camera-rename','rename']]) $(button).onclick=async()=>{
   $(button).disabled=true;
   try {const result=await api('/api/cameras',{action,id:selectedCamera,name:$(action==='add'?'camera-new-name':'camera-name').value});
@@ -65,14 +96,14 @@ function notice(message = '', setupLink = false) {
   }
   banner.classList.toggle('hidden', !message && !setupLink);
 }
-async function api(path, body) {
-  const response = await fetch(cameraPath(path), {method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', headers: body === undefined ? {} : {'Content-Type': 'application/json', 'X-CSRF-Token': csrf}, body: body === undefined ? undefined : JSON.stringify(body)});
+async function api(path, body, identity = selectedCamera) {
+  const response = await fetch(cameraPath(path, identity), {method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', headers: body === undefined ? {} : {'Content-Type': 'application/json', 'X-CSRF-Token': csrf}, body: body === undefined ? undefined : JSON.stringify(body)});
   const value = await response.json();
   if (response.status === 401 && path !== '/api/login') { loggedOut(); throw new Error('Sign in to continue.'); }
   if (!response.ok) throw new Error(value.error || 'Request failed.');
   return value;
 }
-function loggedOut() { MagiEvents.reset(); setupSignature=setupToken=null; setupError=''; for(const id of ['camera-password','setup-new-password','setup-confirm-password','id-opensky_client_id','id-opensky_client_secret']) $(id).value=''; if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
+function loggedOut() { if(frameURL){URL.revokeObjectURL(frameURL);frameURL=null;$('camera-frame').removeAttribute('src');}for(const tile of cameraTiles.values()){if(tile.url)URL.revokeObjectURL(tile.url);}cameraTiles.clear();stationCameras=[];$('camera-grid').replaceChildren();MagiEvents.reset(); setupSignature=setupToken=null; setupError=''; for(const id of ['camera-password','setup-new-password','setup-confirm-password','id-opensky_client_id','id-opensky_client_secret']) $(id).value=''; if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
 function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); if(name==='events')MagiEvents.refresh(true); }
 document.querySelectorAll('.nav').forEach(el => el.addEventListener('click', () => tab(el.dataset.tab)));
 $('open-settings').onclick = () => tab('settings');
@@ -115,15 +146,6 @@ function renderStatus(status) {
   $('buffer').textContent = number(status.buffer_span_seconds, ' sec');
   $('detection-mode').textContent = status.automatic_detection ? 'Tracking' : 'Manual';
   $('analysis-count').textContent = `${status.analysis?.frames || 0} frames · ${status.analysis?.dropped_frames || 0} dropped`;
-  const h = status.health || {};
-  $('cpu').textContent = number(h.cpu_percent, '%'); $('cpu-meter').value = h.cpu_percent || 0;
-  $('memory').textContent = h.memory_used_bytes == null ? '—' : `${bytes(h.memory_used_bytes)} / ${bytes(h.memory_total_bytes)}`;
-  $('memory-meter').value = h.memory_total_bytes ? h.memory_used_bytes / h.memory_total_bytes * 100 : 0;
-  $('temperature').textContent = number(h.temperature_c, ' °C');
-  $('disk').textContent = bytes(status.disk_free_bytes); $('used').textContent = bytes(status.storage_used_bytes);
-  $('throttled').textContent = h.throttle_flags ?? 'Unavailable';
-  $('uptime').textContent = `${Math.floor(status.uptime_seconds / 3600)}h ${Math.floor(status.uptime_seconds % 3600 / 60)}m`;
-  $('version').textContent = `v${status.version}`;
   $('frame-age').textContent = status.frame_age_seconds == null ? 'NO FRAME' : `${Math.round(status.frame_age_seconds)}s AGO`;
   let connectionMessage = '';
   if (connectionStartedAt) {
@@ -136,14 +158,25 @@ function renderStatus(status) {
   $('camera-empty-title').textContent = status.state === 'setup_required' ? 'Waiting for your camera' : buffering ? 'Waiting for camera preview' : 'Connecting to your camera…';
   notice(status.error || connectionMessage || (status.state === 'setup_required' ? 'Welcome. Open Settings to connect your camera and start capturing.' : '') || status.trigger_note || '', !status.error && status.state === 'setup_required');
 }
+function renderHealth(status) {
+  const h = status.health || {};
+  $('cpu').textContent = number(h.cpu_percent, '%'); $('cpu-meter').value = h.cpu_percent || 0;
+  $('memory').textContent = h.memory_used_bytes == null ? '—' : `${bytes(h.memory_used_bytes)} / ${bytes(h.memory_total_bytes)}`;
+  $('memory-meter').value = h.memory_total_bytes ? h.memory_used_bytes / h.memory_total_bytes * 100 : 0;
+  $('temperature').textContent = number(h.temperature_c, ' °C');
+  $('disk').textContent = bytes(status.disk_free_bytes);
+  $('throttled').textContent = h.throttle_flags ?? 'Unavailable';
+  $('uptime').textContent = `${Math.floor((status.uptime_seconds || 0) / 3600)}h ${Math.floor((status.uptime_seconds || 0) % 3600 / 60)}m`;
+  $('version').textContent = `v${status.version}`;
+}
 function eventCard(event) {
   const card = document.createElement('article'); card.className = 'event-card';
   const image = document.createElement('div'); image.className = 'event-image';
-  const base = cameraPath(`/api/clips/${encodeURIComponent(event.id)}`);
+  const base = eventPath(event,'').replace(/\/$/,'');
   if (event.thumbnail) { const thumb = document.createElement('img'); thumb.src = base + '/thumbnail'; thumb.alt = event.best_frame ? 'Native-resolution crop of the selected event frame' : 'Detection thumbnail for this event'; thumb.loading = 'lazy'; image.append(thumb); }
   if (event.thumbnail || event.best_frame || event.preview || event.substream_preview) { const view = document.createElement('button'); view.className = 'event-open'; view.textContent = 'View image'; view.setAttribute('aria-label', 'Open event image'); view.onclick = () => openReview(event); image.append(view); }
   const info = document.createElement('div'); info.className = 'event-info';
-  const type = document.createElement('span'); type.className = 'type'; type.textContent = (event.trigger_type || 'event').replaceAll('_', ' ');
+  const type = document.createElement('span'); type.className = 'type'; type.textContent = `${event.camera_name || 'Camera 1'} · ` + (event.trigger_type || 'event').replaceAll('_', ' ');
   const title = document.createElement('h3'); title.textContent = new Date(event.trigger_utc).toLocaleString();
   const detail = document.createElement('p'); detail.textContent = `${event.state}${event.estimated_duration_seconds ? ` · ${event.estimated_duration_seconds.toFixed(1)} sec` : ''}${event.interruption ? ' · interrupted' : ''}${event.substream_preview ? ' · substream video' : event.preview ? ' · detection replay' : ' · preview pending or unavailable'}${event.best_frame ? ' · native crop' : ''}`;
   const links = document.createElement('div'); links.className = 'event-links';
@@ -152,7 +185,7 @@ function eventCard(event) {
 }
 function renderEvents(events) {
   if (reviewEvent && $('review').open) {
-    const updated = events.find(event => event.id === reviewEvent.id);
+    const updated = events.find(event => eventKey(event) === eventKey(reviewEvent));
     if (updated) { reviewEvent = updated; updateReviewAvailability(updated); if (reviewMode === 'image') showReviewImage(reviewImageKind); }
   }
   const signature = JSON.stringify(events); if (signature === clipSignature) return; clipSignature = signature;
@@ -244,14 +277,31 @@ async function fillSettings() {
 }
 async function refreshDashboard() {
   if (!csrf || busy) return; busy = true;
-  try { const [status, result] = await Promise.all([api('/api/status'), api('/api/clips')]); renderStatus(status); renderEvents(result.clips); if (!settingsLoaded) await fillSettings(); }
+  try { const [status, result, health] = await Promise.allSettled([api('/api/status'), api('/api/station/clips'), api('/api/station/status')]); if(health.status==='fulfilled')renderHealth(health.value); if(status.status==='fulfilled')renderStatus(status.value);else {$('settings-result').textContent=status.reason.message;$('trigger').disabled=true;} if(result.status==='fulfilled')renderEvents(result.value.clips); await refreshCameras(); if (!settingsLoaded) {try {await fillSettings();} catch(error) {$('settings-result').textContent=error.message;}} }
   catch (error) { if (csrf) { notice(`Station unavailable: ${error.message}`); $('connection').textContent = 'Disconnected'; $('connection').classList.add('warning'); $('trigger').disabled = true; } }
   finally { busy = false; }
 }
 let frameBusy = false;
 async function refreshFrame() {
-  if (!csrf || frameBusy || document.hidden) return; frameBusy = true;
-  try { const response = await fetch(cameraPath('/api/frame.jpg')); if (!response.ok) { $('camera-frame').classList.add('hidden'); $('camera-empty').classList.remove('hidden'); return; } const url = URL.createObjectURL(await response.blob()); $('camera-frame').src = url; if (frameURL) URL.revokeObjectURL(frameURL); frameURL = url; $('camera-frame').classList.remove('hidden'); $('camera-empty').classList.add('hidden'); } catch { $('camera-frame').classList.add('hidden'); $('camera-empty').classList.remove('hidden'); } finally { frameBusy = false; }
+  if (!csrf || frameBusy || document.hidden) return;
+  frameBusy=true;const session=csrf;
+  try {
+    if(!$('overview').classList.contains('hidden')) await Promise.all(stationCameras.map(async camera=>{
+      const tile=cameraTiles.get(camera.id);if(!tile)return;
+      try {
+        if(camera.state==='worker_failed')throw new Error('Unavailable');
+        const response=await fetch(`/api/cameras/${encodeURIComponent(camera.id)}/frame.jpg`);
+        if(!response.ok)throw new Error('No fresh frame');
+        const blob=await response.blob();if(csrf!==session)return;
+        const url=URL.createObjectURL(blob);tile.img.src=url;if(tile.url)URL.revokeObjectURL(tile.url);tile.url=url;
+        tile.img.classList.remove('hidden');tile.empty.classList.add('hidden');
+      }catch{tile.img.classList.add('hidden');tile.empty.classList.remove('hidden');}
+    }));
+    if(!$('settings').classList.contains('hidden')) {
+      try {const response=await fetch(cameraPath('/api/frame.jpg'));if(!response.ok)throw new Error('No fresh frame');const blob=await response.blob();if(csrf!==session)return;const url=URL.createObjectURL(blob);$('camera-frame').src=url;if(frameURL)URL.revokeObjectURL(frameURL);frameURL=url;$('camera-frame').classList.remove('hidden');$('camera-empty').classList.add('hidden');}
+      catch{$('camera-frame').classList.add('hidden');$('camera-empty').classList.remove('hidden');}
+    }
+  }finally{frameBusy=false;}
 }
 $('settings-form').onsubmit = async event => { event.preventDefault(); const submit = event.submitter; submit.disabled = true; $('settings-result').textContent = 'Saving…'; const camera = {}; for (const key of ['host', 'username', 'mainstream_path', 'substream_path']) camera[key] = $(key).value.trim(); camera.port = Number($('port').value); camera.api_scheme = $('api_scheme').value; camera.api_port = Number($('api_port').value); camera.password = $('camera-password').value;
   const recording = {}; for (const key of ['pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds']) recording[key] = Number($(key).value);
@@ -270,7 +320,7 @@ $('settings-form').onsubmit = async event => { event.preventDefault(); const sub
 $('trigger').onclick = async () => { connectionStartedAt = 0; $('trigger').disabled = true; try { await api('/api/trigger', {}); notice('Event started. It will appear after post-roll and clip assembly.'); setTimeout(refresh, 1500); } catch(error) { notice(error.message); } };
 $('reconnect').onclick = async () => { try { await api('/api/reconnect', {}); $('settings-result').textContent = 'Reconnecting…'; } catch(error) { $('settings-result').textContent = error.message; } };
 
-$('review-close').onclick = () => $('review').close(); $('review').addEventListener('close', () => { $('review-video').pause(); $('review-video').removeAttribute('src'); $('review-video').load(); reviewFrames = []; reviewMeta = null; reviewEvent = null; reviewMode = 'image'; $('review-still').removeAttribute('src'); drawMotion(); });
+$('review-close').onclick = () => $('review').close(); $('review').addEventListener('close', () => { $('review-video').pause(); $('review-video').removeAttribute('src'); $('review-video').load(); reviewGeneration++; reviewFrames = []; reviewMeta = null; reviewEvent = null; reviewMode = 'image'; $('review-still').removeAttribute('src'); drawMotion(); });
 function drawZones() {
   const canvas = $('zone-canvas'), context = canvas.getContext('2d');
   context.clearRect(0, 0, canvas.width, canvas.height);
@@ -353,7 +403,7 @@ let reviewTracks=[], reviewColorTracks=[], reviewTimelineAttempted=false, trackB
 let reviewGeneration = 0, reviewMode = 'image', reviewImageKind = 'thumbnail';
 async function openReview(event, imageKind = 'thumbnail') {
   const generation = ++reviewGeneration; reviewEvent = event; MagiEvents.updateReview(event); reviewFrames = []; reviewMeta = null; reviewTracks=[]; reviewColorTracks=[]; reviewTimelineAttempted=false;
-  $('review-title').textContent = new Date(event.trigger_utc).toLocaleString();
+  $('review-title').textContent = `${event.camera_name || 'Camera 1'} · ${new Date(event.trigger_utc).toLocaleString()}`;
   $('motion-info').textContent = event.motion ? 'Loading motion data…' : 'Motion data unavailable for this older event.';
   $('track-report').classList.add('hidden'); $('identification-detail').textContent = ''; $('identification-status').textContent = 'Loading reference check…';
   updateReviewAvailability(event);
@@ -363,7 +413,7 @@ async function openReview(event, imageKind = 'thumbnail') {
   loadIdentification(event.id);
   if(event.motion) {
     try {
-      const response = await fetch(cameraPath(`/api/clips/${encodeURIComponent(event.id)}/motion`));
+      const response = await fetch(eventPath(event,'motion'));
       if(!response.ok) throw new Error('Motion data unavailable');
       const records = (await response.text()).trim().split('\n').map(line=>JSON.parse(line));
       if(generation !== reviewGeneration || !reviewEvent || reviewEvent.id !== event.id) return;
@@ -482,7 +532,7 @@ async function loadReviewTimeline(id,generation) {
   if(reviewTimelineAttempted) return;
   reviewTimelineAttempted=true;
   try {
-    const timeline=await api(`/api/clips/${encodeURIComponent(id)}/timeline`);
+    const timeline=await api(eventPath(reviewEvent,'timeline'));
     if(generation!==reviewGeneration||reviewEvent?.id!==id) return;
     if(!Array.isArray(timeline.segments)) throw new Error('Missing stream timeline');
     reviewColorTracks=MagiTracks.collect(reviewFrames,reviewMeta,timeline.segments);
@@ -514,17 +564,18 @@ $('review-video').addEventListener('play',()=>{
 for(const event of ['timeupdate','seeked','loadedmetadata']) $('review-video').addEventListener(event,drawMotion);
 $('show-pixels').onchange = drawMotion; $('show-boxes').onchange = drawMotion;
 async function loadIdentification(id) {
-  try { const report = await api(`/api/clips/${encodeURIComponent(id)}/identification`); if(reviewEvent?.id!==id) return;
+  if(!reviewEvent || reviewEvent.id!==id)return;const key=eventKey(reviewEvent), generation=reviewGeneration;
+  try { const report = await api(eventPath(reviewEvent,'identification')); if(generation!==reviewGeneration || !reviewEvent || eventKey(reviewEvent)!==key) return;
     $('identification-status').textContent = report.status.replaceAll('_',' ');
-    $('track-report').href=cameraPath(`/api/clips/${encodeURIComponent(id)}/identification`); $('track-report').classList.remove('hidden');
+    $('track-report').href=eventPath(reviewEvent,'identification'); $('track-report').classList.remove('hidden');
     const measurements=report.measurements;
     const summary=(measurements?.tracks || []).map(t=>`Track ${t.track_id}: ${t.sampled_path_angle_deg.toFixed(2)}° sampled path over ${t.duration_seconds.toFixed(2)}s · ${t.mean_path_speed_deg_s == null ? 'speed unavailable' : t.mean_path_speed_deg_s.toFixed(2)+'°/s mean angular speed'}`).join('\n');
     $('identification-detail').textContent = (summary ? summary+'\nHost timing and centroid uncertainty unverified; angles do not establish physical speed or distance.\n\n' : '')+JSON.stringify(report, null, 2);
-  } catch { if(reviewEvent?.id===id) $('identification-status').textContent = 'Not checked yet. Enable reference checks and configure camera geometry in Settings.'; }
+  } catch { if(generation===reviewGeneration && reviewEvent && eventKey(reviewEvent)===key) $('identification-status').textContent = 'Not checked yet. Enable reference checks and configure camera geometry in Settings.'; }
 }
 $('identify-again').onclick = async () => {
-  if(!reviewEvent) return; const id = reviewEvent.id;
-  try { await api('/api/identify',{id}); $('identification-status').textContent='Check queued…'; setTimeout(()=>loadIdentification(id),2000); }
+  if(!reviewEvent) return; const event=reviewEvent, id=event.id, generation=reviewGeneration;
+  try { await api('/api/identify',{id},event.camera_id || selectedCamera); if(generation!==reviewGeneration)return; $('identification-status').textContent='Check queued…'; setTimeout(()=>{if(generation===reviewGeneration)loadIdentification(id);},2000); }
   catch(error) { $('identification-status').textContent=error.message; }
 };
 
@@ -547,7 +598,7 @@ function showReviewImage(kind = 'thumbnail') {
   const available = kind === 'frame' ? reviewEvent.best_frame : reviewEvent.thumbnail;
   const still = $('review-still'); still.classList.toggle('hidden', !available);
   if (available) {
-    const src = cameraPath(`/api/clips/${encodeURIComponent(reviewEvent.id)}/${kind === 'frame' ? 'frame' : 'thumbnail'}?selected=${reviewEvent.best_frame ? 1 : 0}`);
+    const src = eventPath(reviewEvent,`${kind === 'frame' ? 'frame' : 'thumbnail'}?selected=${reviewEvent.best_frame ? 1 : 0}`);
     if (still.getAttribute('src') !== src) still.src = src;
     still.alt = kind === 'frame' ? 'Selected event frame at full camera resolution' : reviewEvent.best_frame ? 'Full-resolution object crop from the selected event frame' : 'Temporary detection image; full-resolution selection is pending';
   } else still.removeAttribute('src');
@@ -564,7 +615,7 @@ function selectReviewVideo() {
   const analysis = $('review-quality').value === 'analysis';
   $('show-pixels').disabled = !analysis; $('show-boxes').disabled = !analysis;
   const video = $('review-video');
-  video.src = cameraPath(`/api/clips/${encodeURIComponent(reviewEvent.id)}/${analysis ? 'preview' : 'video'}`);
+  video.src = eventPath(reviewEvent,analysis ? 'preview' : 'video');
   video.load(); video.currentTime = 0;
   drawMotion();
 }
@@ -574,8 +625,9 @@ $('review-full-frame').onclick = () => showReviewImage('frame');
 $('review-quality').onchange = () => { if (reviewMode === 'video') { selectReviewVideo(); $('review-video').play().catch(() => {}); } };
 $('render-preview').onclick = async () => {
   if (!reviewEvent) return;
+  const event=reviewEvent,generation=reviewGeneration;
   $('render-preview').disabled = true;
-  try { await api('/api/render', {id: reviewEvent.id}); $('render-status').textContent = 'Queued. The full-resolution thumbnail will update when frame selection finishes.'; }
+  try { await api('/api/render', {id: event.id}, event.camera_id || selectedCamera);if(generation!==reviewGeneration)return; $('render-status').textContent = 'Queued. The full-resolution thumbnail will update when frame selection finishes.'; }
   catch (error) { $('render-status').textContent = error.message; $('render-preview').disabled = false; }
 };
 let starSession=null, starPoints=[], starSolution=null, starGeneration=0;
@@ -663,5 +715,3 @@ $('star-apply').onclick=async()=>{
 };
 
 MagiEvents.init();
-
-setInterval(refreshCameras, 4000);

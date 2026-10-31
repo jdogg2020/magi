@@ -146,6 +146,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/session':
             self.reply(200, {'csrf': session['csrf'], 'username': self.server.app.cfg.web['username']})
             return
+        if path == '/api/station/clips':
+            station = self.server.app
+            self.reply(200, station.recent_events() if hasattr(station, 'recent_events') else {'clips': station.read()['clips'], 'limit': 200})
+            return
+        if path == '/api/station/status':
+            station = self.server.app
+            self.reply(200, station.health_status() if hasattr(station, 'health_status') else station.read()['status'])
+            return
         if path == '/api/cameras':
             station = self.server.app
             if hasattr(station, 'cameras'):
@@ -254,6 +262,12 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, {'ok': True}, {'Set-Cookie': 'magi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})
             return
         try:
+            if path in ('/api/station/events/list', '/api/station/events/update'):
+                station = self.server.app
+                if not hasattr(station, 'camera'):
+                    raise ValueError('Station archive needs the station service.')
+                self.reply(200, station.event_page(body) if path.endswith('/list') else station.manage_events(body))
+                return
             if path == '/api/cameras':
                 if not hasattr(self.server.app, 'manage_camera'):
                     raise ValueError('Camera management needs the station service.')
@@ -269,5 +283,5 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.reply(200, app.request(commands[path], body))
         except (ValueError,OSError) as error:
-            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/camera/setup', '/api/events/', '/api/cameras')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
+            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/camera/setup', '/api/events/', '/api/cameras', '/api/station/events/')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
             self.reply(409, {'error': message})

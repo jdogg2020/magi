@@ -182,7 +182,7 @@ class PrototypeTests(unittest.TestCase):
         with self.request('/') as r:
             html = r.read().decode()
             self.assertIn('MAGI', html)
-            self.assertIn('Camera &amp; capture', html)
+            self.assertIn('Camera settings.', html)
         with self.assertRaises(urllib.error.HTTPError) as error:
             self.request('/api/status')
         self.assertEqual(error.exception.code, 401)

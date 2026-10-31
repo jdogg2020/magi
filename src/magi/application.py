@@ -521,7 +521,7 @@ class Application:
                 if not report and (self.cfg.identification['enabled'] or meta.get('measurement_geometry',{}).get('calibrated')) and meta['state'] in ('complete', 'interrupted'):
                     self.identifier.submit(path.parent, meta)
                 clips.append({key: meta.get(key) for key in
-                              ('id', 'camera_id', 'camera_name', 'state', 'trigger_type', 'detection_types', 'retention', 'trigger_utc', 'trigger_count',
+                              ('id', 'camera_id', 'camera_name', 'state', 'trigger_type', 'detection_types', 'retention', 'trigger_unix', 'trigger_utc', 'trigger_count',
                                'estimated_duration_seconds', 'interruption', 'pre_roll_complete', 'post_roll_complete')}
                              | {'camera_id':meta.get('camera_id',self.camera_id),'camera_name':meta.get('camera_name',self.camera_name), 'review': review, 'hq_preview': (path.parent / 'preview-substream.mp4').is_file(),
                                 'substream_preview': (path.parent / 'preview-substream.mp4').is_file(),
@@ -549,8 +549,11 @@ class Application:
             raise ReviewError('Event is unavailable or was removed by retention.')
         return directory
 
-    def event_page(self, value):
+    def event_page(self, value, *, window=None):
         f = event_filters(value)
+        # Station aggregation requests a prefix in one scan, before global paging.
+        if window is not None:
+            f['offset'], f['limit'] = window
         recorder = self.recorder
         if not recorder:
             return {'events':[], 'total':0,'offset':f['offset'],'limit':f['limit'],'message':'Waiting for the recording volume.','labels':[]}
@@ -564,7 +567,7 @@ class Application:
         except (ValueError,OSError,OverflowError):
             raise ReviewError('Invalid event date range.') from None
         deadline = time.monotonic()+5
-        rows, total, labels = [], 0, set()
+        rows, matched, labels = [], [], set()
         for path in paths:
             if time.monotonic()>deadline:
                 raise ReviewError('Archive scan took too long. Narrow the date range and try again.')
@@ -583,10 +586,16 @@ class Application:
                 reference = report.get('status','not_checked' if meta.get('state')=='not_retained' else 'pending' if self.cfg.identification['enabled'] else 'disabled')
                 if not event_matches(meta,review,reference,f):
                     continue
-                total += 1
-                if not f['offset'] < total <= f['offset']+f['limit']:
+                stamp = meta.get('trigger_unix', 0)
+                if isinstance(stamp, bool) or not isinstance(stamp, (int, float)) or not math.isfinite(stamp):
                     continue
-                row = {k:meta.get(k) for k in ('id','camera_id','camera_name','state','trigger_type','detection_types','retention','trigger_utc','estimated_duration_seconds','interruption')}
+                matched.append((stamp, path.parent.name, path, meta, review, reference))
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
+        matched.sort(key=lambda item: item[:2], reverse=f['sort']=='newest')
+        for _, _, path, meta, review, reference in matched[f['offset']:f['offset']+f['limit']]:
+            try:
+                row = {k:meta.get(k) for k in ('id','camera_id','camera_name','state','trigger_type','detection_types','retention','trigger_unix','trigger_utc','estimated_duration_seconds','interruption')}
                 media_path = path.parent/'media.json'
                 media = optional_json(media_path)
                 row.update(camera_id=meta.get('camera_id',self.camera_id),camera_name=meta.get('camera_name',self.camera_name),review=review,identification=reference,media_detail=media.get('thumbnail',{}),media_status=media.get('status','not_generated'),media_error=media.get('detail',''))
@@ -596,7 +605,7 @@ class Application:
             except (OSError, ValueError, TypeError, KeyError):
                 continue
         recorder.volume.check()
-        return {'events':rows,'total':total,'offset':f['offset'],'limit':f['limit'],'labels':sorted(labels)}
+        return {'events':rows,'total':len(matched),'offset':f['offset'],'limit':f['limit'],'labels':sorted(labels)}
 
     def manage_events(self, value):
         if not isinstance(value,dict) or set(value)-{'ids','action','changes'}:

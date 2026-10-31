@@ -21,6 +21,19 @@ class SetupError(ValueError):
     pass
 
 
+def suggested_network(local_host, camera_host=''):
+    """Suggest a bounded discovery /24 from the serving interface, then saved camera."""
+    for host in (local_host, camera_host):
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.version == 4 and any(ip in ipaddress.ip_network(block) for block in
+                                     ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')):
+                return str(ipaddress.ip_network(f'{ip}/24', strict=False))
+        except ValueError:
+            pass
+    return ''
+
+
 def xml(element):
     return ET.tostring(element, encoding='utf-8', xml_declaration=True)
 

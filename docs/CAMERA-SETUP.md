@@ -11,7 +11,11 @@ validated. Keep the camera password until live video is confirmed.
    local network. The network needs DHCP (normally your router). Magi does not
    create a DHCP server, configure Wi-Fi/cellular networking or power the camera.
 2. Open Magi Settings → Camera connection → **Set up a Reolink camera with Magi**.
-3. Enter the local subnet (for example `192.168.86.0/24`) and **Find cameras**.
+3. The search field defaults to a private IPv4 /24 based on the Pi interface serving
+   this dashboard, falling back to the saved camera IP when accessed through localhost.
+   Review or edit it (for example `192.168.86.0/24`) and click **Find cameras**.
+   Existing typed values are preserved. If no suitable address is available, enter
+   the network manually. The suggestion does not claim to detect the interface netmask.
    Choose a result, or enter the private camera IPv4 address manually. Discovery
    checks the Baichuan login-challenge protocol on TCP 9000, not just an open port.
    It does not log in or guess passwords. Only private IPv4 /24 or smaller ranges

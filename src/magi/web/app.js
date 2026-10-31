@@ -173,6 +173,7 @@ $('camera-info-read').onclick=async()=>{
 
 async function fillSettings() {
   const s = await api('/api/settings');
+  if (!$('setup-network').value.trim()) $('setup-network').value = s.camera_setup?.suggested_network || '';
   for (const key of ['host', 'port', 'username', 'mainstream_path', 'substream_path', 'api_scheme', 'api_port']) $(key).value = s.camera[key] || '';
   for (const key of ['pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds']) $(key).value = s.recording[key] ?? ({pre_roll_seconds:5, post_roll_seconds:5, max_event_seconds:120}[key]);
   $('api_scheme').value = s.camera.api_scheme || 'http'; $('api_port').value = s.camera.api_port || 80;

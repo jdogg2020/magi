@@ -11,6 +11,7 @@ import time
 from urllib.parse import urlsplit
 
 from .auth import Sessions
+from .reolink_setup import suggested_network
 
 STATIC = Path(__file__).parent / 'web'
 
@@ -138,7 +139,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/clips':
             self.reply(200, {'clips': view['clips'], 'limit': 200})
         elif path == '/api/settings':
-            self.reply(200, view['settings'])
+            self.reply(200, {**view['settings'], 'camera_setup': {
+                'suggested_network': suggested_network(self.connection.getsockname()[0], view['settings']['camera'].get('host', ''))}})
         elif path == '/api/frame.jpg':
             app = self.server.app
             data = app.frame_jpeg

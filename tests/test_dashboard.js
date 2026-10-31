@@ -62,6 +62,13 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  elements['review-video'].currentTime=17;
  await view.onclick();
  assert(!elements['review-still'].classList.contains('hidden'),'Opening an event must show its image first');
+ const networkFetch=context.fetch;
+ context.fetch=async(url,options)=>{const response=await networkFetch(url,options);if(url.endsWith('/api/settings')){const data=await response.json();return {ok:true,json:async()=>({...data,camera_setup:{suggested_network:'192.168.86.0/24'}})};}return response;};
+ elements['setup-network'].value='';await vm.runInContext('fillSettings()',context);
+ assert.equal(elements['setup-network'].value,'192.168.86.0/24');
+ elements['setup-network'].value='192.168.7.0/24';await vm.runInContext('fillSettings()',context);
+ assert.equal(elements['setup-network'].value,'192.168.7.0/24','Settings refresh must preserve the entered search network');
+ context.fetch=networkFetch;
  const savedFetch=context.fetch;
  context.fetch=async()=>({ok:true,json:async()=>({status:'disabled',measurements:{status:'available',tracks:[{track_id:'fixture',sampled_path_angle_deg:12,duration_seconds:2,mean_path_speed_deg_s:6}]}})});
  await vm.runInContext('loadIdentification(reviewEvent.id)',context);

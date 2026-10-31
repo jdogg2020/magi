@@ -92,10 +92,15 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(vm.runInContext('[...cameraTiles.entries()].some(([id,tile])=>id!==failedCamera && tile.url && !tile.img.classList.contains("hidden"))',context));
  context.fetch=liveFetch;await vm.runInContext('refreshCameras()',context);await vm.runInContext('refreshFrame()',context);
  // One bulk action can select rows from two different camera archives.
- const bulkRows=elements['all-events'].children.filter(row=>row.className==='event-row');
- const completeRows=bulkRows.filter(row=>row.children[7].textContent==='complete' || row.children[7].textContent==='interrupted');
- const pair=[completeRows.find(row=>row.dataset.cameraId==='primary'),completeRows.find(row=>row.dataset.cameraId!=='primary')];
- assert(pair.every(Boolean));
+ let pair;
+ for(let i=0;i<100;i++){
+   await vm.runInContext('MagiEvents.refresh(true)',context);
+   const completeRows=elements['all-events'].children.filter(row=>row.className==='event-row' && ['complete','interrupted'].includes(row.children[7].textContent));
+   pair=[completeRows.find(row=>row.dataset.cameraId==='primary'),completeRows.find(row=>row.dataset.cameraId!=='primary')];
+   if(pair.every(Boolean))break;
+   await new Promise(resolve=>setTimeout(resolve,150));
+ }
+ assert(pair.every(Boolean),'Both synthetic recordings must finalize before bulk review');
  for(const row of pair){const box=row.children[0].children[0];box.checked=true;box.onchange();}
  assert(elements['event-selection-count'].textContent.startsWith('2 selected'));
  elements['event-action'].value='reviewed';await elements['event-apply'].onclick();
@@ -161,21 +166,21 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  elements['star-latitude'].value='40';elements['star-longitude'].value='-98';elements['star-elevation'].value='500';
  // Operator review metadata and bulk actions round-trip through the real API.
  await view.onclick();
- const managedEventId=vm.runInContext('reviewEvent.id',context);
+ const managedEventId=vm.runInContext('reviewEvent.id',context);context.managedCamera=vm.runInContext('reviewEvent.camera_id',context);
  elements['review-labels'].value='aircraft, regression-review-label';elements['review-notes'].value='UI regression notes';elements['review-reviewed'].checked=true;
  await elements['review-save'].onclick();assert(elements['review-save-status'].textContent.includes('saved'));
- let managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label'})",context);assert(managed.events.some(e=>e.id===managedEventId && e.review.reviewed && e.review.notes==='UI regression notes'));
+ let managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label',camera_id:managedCamera})",context);assert(managed.events.some(e=>e.id===managedEventId && e.review.reviewed && e.review.notes==='UI regression notes'));
  await vm.runInContext('MagiEvents.refresh(true)',context);
- const selectManaged=()=>{const row=elements['all-events'].children.find(r=>r.dataset.eventId===managedEventId);assert(row,'Managed row should be visible');const checkbox=row.children[0].children[0];checkbox.checked=true;checkbox.onchange();};
+ const selectManaged=()=>{const row=elements['all-events'].children.find(r=>r.dataset.eventId===managedEventId && r.dataset.cameraId===context.managedCamera);assert(row,'Managed row should be visible');const checkbox=row.children[0].children[0];checkbox.checked=true;checkbox.onchange();};
  selectManaged();elements['event-action'].value='protect';await elements['event-apply'].onclick();
- managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label'})",context);assert(managed.events[0].review.protected);
+ managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label',camera_id:managedCamera})",context);assert(managed.events[0].review.protected);
  selectManaged();elements['event-action'].value='unprotect';await elements['event-apply'].onclick();
  selectManaged();elements['event-action'].value='trash';await elements['event-apply'].onclick();assert(elements['event-action-status'].textContent.includes('Updated 1 event'),elements['event-action-status'].textContent);
  elements['event-folder'].value='trash';await elements['event-filters'].onsubmit({preventDefault(){}});
- const trashed=elements['all-events'].children.find(r=>r.dataset.eventId===managedEventId);assert(trashed,'Trash folder should show the event');
+ const trashed=elements['all-events'].children.find(r=>r.dataset.eventId===managedEventId && r.dataset.cameraId===context.managedCamera);assert(trashed,'Trash folder should show the event');
  const restore=trashed.children[8].children.find(b=>b.textContent==='Restore');await restore.onclick();
  elements['event-folder'].value='active';await elements['event-filters'].onsubmit({preventDefault(){}});
- managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label'})",context);assert.equal(managed.events[0].review.trashed_at,null);
+ managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label',camera_id:managedCamera})",context);assert.equal(managed.events[0].review.trashed_at,null);
  elements['review-close'].onclick();
  for(let i=0;i<60;i++){await elements['star-refresh'].onclick();if(elements['star-event'].children.length)break;await new Promise(resolve=>setTimeout(resolve,150));}
  assert(elements['star-event'].children.length>0,'Star calibration should list full-resolution saved frames: '+elements['star-status'].textContent);

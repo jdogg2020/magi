@@ -136,16 +136,29 @@ class Updater:
             raise RuntimeError(f'{args[0]} failed (exit {result.returncode})')
         return result.stdout
 
+    def service_user_python(self, source, *arguments):
+        # PID 1 starts this short-lived check as magi. Never switch UIDs inside
+        # the hardened root helper: runuser/setuid can be denied in that context.
+        unit = 'magi-update-check-'+uuid.uuid4().hex
+        LOG.info('Running service-user check in %s.service', unit)
+        return self.command('/usr/bin/systemd-run', '--quiet', '--wait', '--pipe', '--collect',
+            '--service-type=exec', '--unit='+unit,
+            '--property=User=magi', '--property=Group=magi', '--property=WorkingDirectory=/',
+            '--property=NoNewPrivileges=yes', '--property=ProtectHome=yes',
+            '--property=ProtectSystem=strict', '--property=PrivateTmp=yes',
+            '--property=RuntimeMaxSec=45s', '--property=TimeoutStartSec=10s',
+            '--property=TimeoutStopSec=3s', '/usr/bin/env', 'PYTHONDONTWRITEBYTECODE=1',
+            'PYTHONPATH='+str(Path(source)/'src'), '/usr/bin/python3', *arguments)
+
     def read_installed_version(self):
         LOG.info('Checking installed source permissions and version…')
         repair_code_permissions(self.live)
         try:
-            return self.command('runuser', '-u', 'magi', '--', 'env', 'PYTHONDONTWRITEBYTECODE=1',
-                f'PYTHONPATH={self.live / "src"}', '/usr/bin/python3', '-c',
+            return self.service_user_python(self.live, '-c',
                 'from magi import __version__; print(__version__)').strip()
         except RuntimeError:
-            raise RuntimeError('The magi service account cannot import the installed source at '
-                               f'{self.live / "src"}; check application ownership and parent directory access. '
+            raise RuntimeError('The installed-version check could not run successfully as magi. '
+                               'Inspect the magi-update-check unit named above for the underlying error. '
                                'Recording was not stopped.') from None
 
     def preflight(self, candidate):
@@ -155,8 +168,7 @@ class Updater:
         code = ("import sys,numpy,PIL; from magi.config import Config; "
                 "from magi.application import Application; from magi.web import Server; "
                 "assert sys.version_info >= (3,11); Config.load('/etc/magi/config.json')")
-        self.command('runuser', '-u', 'magi', '--', 'env', 'PYTHONDONTWRITEBYTECODE=1',
-                     f'PYTHONPATH={candidate / "src"}', '/usr/bin/python3', '-c', code)
+        self.service_user_python(candidate, '-c', code)
         LOG.info('Checking FFmpeg and systemd unit…')
         self.command('/usr/bin/ffmpeg', '-version')
         self.command('/usr/bin/ffprobe', '-version')
@@ -188,8 +200,7 @@ class Updater:
                     if response.status != 200:
                         raise RuntimeError('dashboard unavailable')
                 # The private control socket proves the responding worker runs this release.
-                raw = self.command('runuser', '-u', 'magi', '--', 'env',
-                    f'PYTHONPATH={self.live / "src"}', '/usr/bin/python3', '-m', 'magi',
+                raw = self.service_user_python(self.live, '-m', 'magi',
                     'status', '--config', '/etc/magi/config.json')
                 if json.loads(raw).get('version') != expected:
                     raise RuntimeError('worker version differs')

@@ -1,3 +1,12 @@
+## Dashboard update service-user checks (0.15.3)
+
+Updater preflight and post-restart status checks now run as short-lived systemd
+services with `User=magi`, rather than switching identities inside the hardened
+helper with runuser. The helper's protections and root-owned code stay in place.
+A root/systemd CI probe exercises imports and clean JSON output inside the actual
+helper hardening. Older installed updaters need a one-time command-line repair;
+see [update recovery](docs/UPDATES.md#service-user-check-recovery-0153).
+
 ## Package installation without a deadline (0.15.2)
 
 Required and optional satellite package installation no longer stops after ten

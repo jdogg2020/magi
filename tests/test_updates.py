@@ -80,8 +80,35 @@ class UpdateTests(unittest.TestCase):
             with patch.object(updater,'command',side_effect=lambda *args: calls.append(args) or '1'):
                 module.Updater.preflight(updater,self.stage(root))
             self.assertIn('from magi import __version__',calls[0][-1])
+            for call in calls[:2]:
+                self.assertEqual(call[0],'/usr/bin/systemd-run')
+                self.assertIn('--property=User=magi',call)
+                self.assertIn('--property=Group=magi',call)
+                self.assertIn('--property=NoNewPrivileges=yes',call)
+                self.assertIn('--property=RuntimeMaxSec=45s',call)
+                self.assertNotIn('runuser',call)
+            self.assertIn('PYTHONPATH='+str(updater.live/'src'),calls[0])
+            self.assertIn('PYTHONPATH='+str(root/'stage/src'),calls[1])
+
             self.assertEqual((updater.live/'src').stat().st_mode&0o777,0o755)
             self.assertEqual(updater.actions,[])
+
+    def test_health_check_also_uses_service_user_units_and_parses_clean_json(self):
+        from io import BytesIO
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);updater=FakeUpdater(root)
+            observed=[]
+            class Response(BytesIO):
+                status=200
+            def service_check(*args):
+                observed.append(args)
+                return '{"version":"1"}'
+            with patch.object(module.Path,'read_text',return_value='{"web":{"port":8090}}'), \
+                 patch.object(module.urllib.request,'urlopen',side_effect=lambda *a,**k:Response()), \
+                 patch.object(module.time,'sleep'), patch.object(updater,'service_user_python',side_effect=service_check):
+                module.Updater.healthy(updater,'1')
+            self.assertEqual(len(observed),3)
+            self.assertEqual(observed[0],(updater.live,'-m','magi','status','--config','/etc/magi/config.json'))
 
     def test_release_validates_inventory_and_extracts_readable_code(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -126,7 +153,7 @@ class UpdateTests(unittest.TestCase):
                 (stage/'scripts').mkdir();(stage/'scripts/install_update_agent.py').write_text('fixture')
                 original_command=updater.command
                 def command(*args):
-                    if args[0]=='runuser':return original_command(*args)
+                    if args[0]=='/usr/bin/systemd-run':return original_command(*args)
                     self.assertIn('health-2',updater.actions)
                     self.assertEqual(args[:2],('/usr/bin/python3','-I'))
                     self.assertTrue(args[2].endswith('/scripts/install_update_agent.py'))

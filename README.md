@@ -1,3 +1,13 @@
+## Calibrated track measurements (0.12.0)
+
+Event reports now include capture-time geometry, per-sample sky bearings/rays,
+sampled angular path, net angular displacement and mean angular speed. Measurements
+work without aircraft/satellite checks when calibrated geometry was saved at capture.
+The review dialog shows a short summary and the downloadable reference report
+contains the detailed JSON. These are approximate image-track measurements:
+physical speed/distance and whole-frame uncertainty are not established. See
+[measurement limits](docs/MEASUREMENTS.md).
+
 ## Events and selective retention (0.11.0)
 
 Events now uses a filterable, paginated list with selection, manual labels/notes,
@@ -107,7 +117,7 @@ The web service refuses live-camera operation as root.
 
 ## Status
 
-Version 0.3.1 is an installable prototype, not an unattended-production release.
+Version 0.12.0 is an installable prototype, not an unattended-production release.
 The source license is still pending the owner's decision before public release.
 Live Pi/camera acceptance and a 24-hour run are not claimed as completed.
 

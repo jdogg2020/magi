@@ -153,6 +153,9 @@ class Application:
             raise ValueError('Camera is not recording yet. Check settings and SSD status.')
         result = self.recorder.trigger(kind=kind, track=track)
         if self.recorder.active:
+            self.recorder.active['meta'].setdefault('measurement_geometry', {
+                'schema': 1, 'calibrated': self.cfg.identification['calibrated'],
+                'geometry': {k:self.cfg.identification[k] for k in GEOMETRY_KEYS}})
             self.recorder.active['meta'].setdefault('retention_policy', {k:self.cfg.detection[k] for k in ('retain_aircraft_matches','retain_satellite_matches')})
             self.recorder._save(self.recorder.active)
             if self.cfg.identification['enabled'] and any(self.cfg.detection[k] is False for k in ('retain_aircraft_matches','retain_satellite_matches')):
@@ -512,7 +515,7 @@ class Application:
                     self.queue_media(path.parent, meta)
                 report_path = path.parent / 'identification.json'
                 report = optional_json(report_path)
-                if not report and self.cfg.identification['enabled'] and meta['state'] in ('complete', 'interrupted'):
+                if not report and (self.cfg.identification['enabled'] or meta.get('measurement_geometry',{}).get('calibrated')) and meta['state'] in ('complete', 'interrupted'):
                     self.identifier.submit(path.parent, meta)
                 clips.append({key: meta.get(key) for key in
                               ('id', 'state', 'trigger_type', 'detection_types', 'retention', 'trigger_utc', 'trigger_count',

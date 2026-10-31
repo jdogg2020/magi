@@ -164,11 +164,76 @@ def group_tracks(meta):
             if moment.tzinfo is None:
                 continue
             stamp = moment.timestamp()
-            if all(math.isfinite(float(row[k])) for k in ('x', 'y', 'width', 'height')) and row['width'] > 0 and row['height'] > 0:
+            if (isinstance(row.get('track_id'), (str, int)) and not isinstance(row.get('track_id'), bool)
+                    and all(not isinstance(row[k], bool) and isinstance(row[k], (int,float)) and math.isfinite(row[k]) for k in ('x', 'y', 'width', 'height'))
+                    and row['width'] > 0 and row['height'] > 0):
                 groups[row['track_id']].append({**row, 'time': stamp})
-        except (KeyError, ValueError, TypeError):
+        except (KeyError, ValueError, TypeError, AttributeError, OverflowError):
             continue
     return {key: sorted(value, key=lambda x: x['time']) for key, value in groups.items()}
+
+
+def measure_tracks(meta):
+    """Image-track angles from capture-time geometry; no distance or identity inference."""
+    snapshot = meta.get('measurement_geometry') or meta.get('camera_calibration')
+    result = {'schema': 1, 'status': 'capture_geometry_unavailable', 'tracks': [],
+              'timing_basis': 'Pi host receipt estimates; camera exposure time and clock error unverified',
+              'model': 'rectilinear pinhole; matching main/substream field of view assumed',
+              'limitations': ['Angular measurements are not physical speed or distance.',
+                              'Centroid jitter, association errors, gaps and lens distortion affect results.',
+                              'Star-fit residuals are not whole-frame uncertainty bounds.']}
+    if not isinstance(snapshot, dict) or snapshot.get('schema') != 1:
+        return result
+    try:
+        settings = validate({**snapshot['geometry'], 'calibrated': snapshot.get('calibrated', True)})
+        if not configured(settings):
+            result['status'] = 'calibration_required'
+            return result
+    except (KeyError, TypeError, ValueError):
+        return result
+    result.update(status='insufficient_track_data', geometry=snapshot['geometry'],
+                  geometry_source='capture_time_snapshot', star_fit=meta.get('camera_calibration', {}).get('fit'))
+    for identity, samples in list(group_tracks(meta).items())[:16]:
+        # Preserve time order, reject invalid image positions and duplicate timestamps.
+        clean = []
+        rejected = 0
+        for row in samples:
+            if (not 0 <= row['x'] < row['width'] or not 0 <= row['y'] < row['height']
+                    or clean and row['time'] <= clean[-1]['time']):
+                rejected += 1
+                continue
+            clean.append(row)
+        if not clean:
+            continue
+        input_count = len(clean)
+        if len(clean) > 256:
+            clean = [clean[round(i*(len(clean)-1)/255)] for i in range(256)]
+        rows = []
+        total = 0
+        for row in clean:
+            ray = pixel_direction(row, settings)
+            item = {'host_unix': row['time'], 'ray_enu': list(ray),
+                    'azimuth_deg': round(math.degrees(math.atan2(ray[0], ray[1])), 12) % 360 if math.hypot(ray[0], ray[1]) > 1e-8 else None,
+                    'elevation_deg': math.degrees(math.asin(max(-1, min(1, ray[2]))))}
+            if rows:
+                step = angular(rows[-1]['ray_enu'], ray)
+                total += step
+                item.update(step_angle_deg=step, angular_speed_deg_s=step/(row['time']-rows[-1]['host_unix']))
+            rows.append(item)
+        duration = rows[-1]['host_unix']-rows[0]['host_unix']
+        flags = ['host_timing_unverified', 'centroid_uncertainty_unquantified']
+        if rejected: flags.append('invalid_or_duplicate_samples_removed')
+        if input_count > len(rows): flags.append('sample_limit_applied')
+        gaps = [b['host_unix']-a['host_unix'] for a,b in zip(rows,rows[1:])]
+        track = {'track_id': identity, 'sample_count': len(rows), 'input_valid_sample_count': input_count,
+                 'rejected_sample_count': rejected, 'duration_seconds': duration,
+                 'sampled_path_angle_deg': total, 'net_displacement_deg': angular(rows[0]['ray_enu'],rows[-1]['ray_enu']),
+                 'mean_path_speed_deg_s': total/duration if duration else None,
+                 'max_sample_gap_seconds': max(gaps) if gaps else None,
+                 'quality_flags': flags, 'samples': rows}
+        result['tracks'].append(track)
+    if result['tracks']: result['status'] = 'available'
+    return result
 
 
 class Identifier:
@@ -379,7 +444,7 @@ class Identifier:
     def classify(self, meta):
         s = self.settings
         result = {'schema_version': 1, 'event_id': meta['id'], 'checked_utc': datetime.now(timezone.utc).isoformat(),
-                  'status': 'disabled', 'tracks': [],
+                  'status': 'disabled', 'tracks': [], 'measurements': measure_tracks(meta),
                   'limitations': ['possible correlations only; original footage is never deleted',
                                   'host receipt time and approximate rectilinear camera model',
                                   'no match only refers to evaluated reference coverage']}

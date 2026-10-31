@@ -1,3 +1,10 @@
+## Package installation without a deadline (0.15.2)
+
+Required and optional satellite package installation no longer stops after ten
+minutes. Heartbeats and Ctrl+C cancellation continue; package-list refresh and
+service-operation deadlines are unchanged. This allows slow package triggers to
+finish, but does not establish whether a particular stalled trigger is progressing.
+
 ## Stable overview status (0.15.1)
 
 Station recording and detection indicators now update only from the combined

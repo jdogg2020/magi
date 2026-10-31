@@ -1,4 +1,4 @@
-"""Bounded installer subprocesses; no shell, credentials, or captured input."""
+"""Installer subprocess supervision; heartbeat, cancellation and optional deadline."""
 import argparse
 import os
 import signal
@@ -9,7 +9,7 @@ import time
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--timeout', type=float, required=True)
+    parser.add_argument('--timeout', type=float, required=True, help='Overall time limit in seconds; 0 disables the deadline.')
     parser.add_argument('--heartbeat', type=float, default=15)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()

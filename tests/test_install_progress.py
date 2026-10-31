@@ -14,7 +14,7 @@ RUNNER = ROOT / 'scripts/install_runner.py'
 
 class InstallProgressTests(unittest.TestCase):
     def test_output_failure_and_heartbeat(self):
-        result = subprocess.run([sys.executable, str(RUNNER), '--timeout', '5',
+        result = subprocess.run([sys.executable, str(RUNNER), '--timeout', '0',
             '--heartbeat', '.1', '--', sys.executable, '-c',
             "import time; print('package output',flush=True); time.sleep(.3); exit(7)"],
             capture_output=True, text=True, timeout=10)
@@ -35,7 +35,7 @@ class InstallProgressTests(unittest.TestCase):
             self.assertFalse(sentinel.exists())
 
     def test_cancel(self):
-        process = subprocess.Popen([sys.executable, str(RUNNER), '--timeout', '30',
+        process = subprocess.Popen([sys.executable, str(RUNNER), '--timeout', '0',
             '--', sys.executable, '-c', 'import time; time.sleep(30)'],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         time.sleep(.4)

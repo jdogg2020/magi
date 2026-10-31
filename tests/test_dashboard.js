@@ -62,6 +62,13 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  elements['review-video'].currentTime=17;
  await view.onclick();
  assert(!elements['review-still'].classList.contains('hidden'),'Opening an event must show its image first');
+ const networkFetch=context.fetch;
+ context.fetch=async(url,options)=>{const response=await networkFetch(url,options);if(url.endsWith('/api/settings')){const data=await response.json();return {ok:true,json:async()=>({...data,camera_setup:{suggested_network:'192.168.86.0/24'}})};}return response;};
+ elements['setup-network'].value='';await vm.runInContext('fillSettings()',context);
+ assert.equal(elements['setup-network'].value,'192.168.86.0/24');
+ elements['setup-network'].value='192.168.7.0/24';await vm.runInContext('fillSettings()',context);
+ assert.equal(elements['setup-network'].value,'192.168.7.0/24','Settings refresh must preserve the entered search network');
+ context.fetch=networkFetch;
  const savedFetch=context.fetch;
  context.fetch=async()=>({ok:true,json:async()=>({status:'disabled',measurements:{status:'available',tracks:[{track_id:'fixture',sampled_path_angle_deg:12,duration_seconds:2,mean_path_speed_deg_s:6}]}})});
  await vm.runInContext('loadIdentification(reviewEvent.id)',context);
@@ -152,6 +159,16 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert.equal(elements['id-aircraft_provider'].value,'opensky');assert(elements['opensky-import-status'].textContent.includes('Save Settings'));
  elements['opensky-credentials-file'].files=[{size:10,text:async()=>'{bad'}];await elements['opensky-credentials-file'].onchange();assert(elements['opensky-import-status'].textContent.includes('not a valid JSON'));
  elements['id-opensky_client_id'].value='';elements['id-opensky_client_secret'].value='';
+ // Inspection validation errors must survive background status refreshes.
+ elements['setup-initialize'].checked=true;elements['setup-new-password'].value='new-camera-pass';elements['setup-confirm-password'].value='different-password';
+ await elements['setup-inspect'].onclick();
+ assert(elements['setup-status'].textContent.includes('do not match'));
+ vm.runInContext("renderCameraSetup({camera_setup:{state:'discovered',message:'Found 1 compatible setup service'}})",context);
+ assert(elements['setup-status'].textContent.includes('do not match'),'Discovery refresh must not hide inspection errors');
+ assert(elements['setup-apply'].disabled);
+ elements['setup-confirm-password'].listeners.input();
+ vm.runInContext("renderCameraSetup({camera_setup:{state:'discovered',message:'Found 1 compatible setup service'}})",context);
+ assert(elements['setup-status'].textContent.includes('Found 1'));
  // Camera mutation requires a matching inspected connection; edits invalidate Apply.
  elements.host.value='192.168.86.242';elements.username.value='admin';elements['camera-password'].value='';elements['setup-initialize'].checked=false;
  vm.runInContext("setupSignature=JSON.stringify(setupFields());renderCameraSetup({camera_setup:{state:'review',token:'test-token',host:'192.168.86.242',identity:{model:'CX820'},ports:{http:{port:80,enabled:false}}}})",context);

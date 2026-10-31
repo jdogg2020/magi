@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from xml.etree import ElementTree as ET
 
-from magi.reolink_setup import Camera, Setup, SetupError, address, aes, md5, parse, xml, xor
+from magi.reolink_setup import Camera, Setup, SetupError, address, aes, md5, parse, xml, xor, suggested_network
 
 
 class FakeCamera:
@@ -39,6 +39,14 @@ class SetupTests(unittest.TestCase):
     def inspect(self,worker,**extra):
         data={'host':'192.168.86.242','username':'admin','password':'existing-pass',**extra}
         worker.submit('inspect',data,{});return self.wait(worker)
+    def test_discovery_network_defaults_to_serving_private_interface(self):
+        self.assertEqual(suggested_network('192.168.86.182','192.168.1.20'),'192.168.86.0/24')
+        self.assertEqual(suggested_network('10.20.30.40'),'10.20.30.0/24')
+        self.assertEqual(suggested_network('172.20.1.2'),'172.20.1.0/24')
+        self.assertEqual(suggested_network('127.0.0.1','192.168.86.242'),'192.168.86.0/24')
+        for host in ('127.0.0.1','::1','0.0.0.0','8.8.8.8','camera.local','169.254.1.2'):
+            self.assertEqual(suggested_network(host),'')
+
     def test_inspect_has_no_mutations_apply_verifies_and_returns_private_connection(self):
         worker=Setup()
         with patch('magi.reolink_setup.Camera',FakeCamera):

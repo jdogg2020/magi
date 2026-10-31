@@ -24,7 +24,7 @@ async function api(path, body) {
   if (!response.ok) throw new Error(value.error || 'Request failed.');
   return value;
 }
-function loggedOut() { MagiEvents.reset(); setupSignature=setupToken=null; for(const id of ['camera-password','setup-new-password','setup-confirm-password','id-opensky_client_id','id-opensky_client_secret']) $(id).value=''; if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
+function loggedOut() { MagiEvents.reset(); setupSignature=setupToken=null; setupError=''; for(const id of ['camera-password','setup-new-password','setup-confirm-password','id-opensky_client_id','id-opensky_client_secret']) $(id).value=''; if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
 function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); if(name==='events')MagiEvents.refresh(true); }
 document.querySelectorAll('.nav').forEach(el => el.addEventListener('click', () => tab(el.dataset.tab)));
 $('open-settings').onclick = () => tab('settings');
@@ -115,14 +115,14 @@ function renderEvents(events) {
     else list.forEach(event => target.append(eventCard(event)));
   }
 }
-let setupSignature=null, setupToken=null, lastSetupState='';
+let setupSignature=null, setupToken=null, lastSetupState='', setupError='';
 function setupFields(){return {host:$('host').value.trim(),username:$('username').value.trim() || 'admin',password:$('camera-password').value,initialize:$('setup-initialize').checked,new_password:$('setup-new-password').value,confirmation:$('setup-confirm-password').value};}
 function renderCameraSetup(status){
   const s=status.camera_setup || {}, working=s.state==='working' || s.state==='saving';
-  $('setup-status').textContent=(s.message || 'Not inspected.')+(s.retry_in_seconds>0 && !working ? ` Ready for another operation in ${s.retry_in_seconds}s.`:'');
+  $('setup-status').textContent=setupError || (s.message || 'Not inspected.')+(s.retry_in_seconds>0 && !working ? ` Ready for another operation in ${s.retry_in_seconds}s.`:'');
   for(const id of ['setup-discover','setup-inspect']) $(id).disabled=working || s.retry_in_seconds>0;
   setupToken=s.state==='review' && setupSignature===JSON.stringify(setupFields()) ? s.token:null;
-  $('setup-apply').disabled=!setupToken || working || s.retry_in_seconds>0;
+  $('setup-apply').disabled=!!setupError || !setupToken || working || s.retry_in_seconds>0;
   $('setup-apply').textContent=s.initialize ? 'Create password, enable services & connect' : 'Enable services & connect';
   const review=$('setup-review');review.replaceChildren();
   if(s.identity){const p=document.createElement('p');p.textContent=`Selected camera: ${s.host} · ${s.identity.model} · ${s.identity.name || 'Unnamed'} · hardware ${s.identity.hardware || 'unknown'} · firmware ${s.identity.firmware || 'unknown'}`;review.append(p);for(const [kind,port] of Object.entries(s.ports||{})){const line=document.createElement('p');line.textContent=`${kind.toUpperCase()}: port ${port.port}, ${port.enabled?'enabled':'disabled; will enable'}`;review.append(line);}}
@@ -131,16 +131,16 @@ function renderCameraSetup(status){
   lastSetupState=s.state;
 }
 async function runCameraSetup(action){
-  try {let data={action};if(action==='discover') data.network=$('setup-network').value.trim();
+  try {setupError='';let data={action};if(action==='discover') data.network=$('setup-network').value.trim();
     if(action==='inspect'){const fields=setupFields();if(fields.initialize && fields.new_password!==fields.confirmation) throw new Error('The new camera passwords do not match.');setupSignature=JSON.stringify(fields);data={action,...fields};delete data.confirmation;}
     if(action==='apply'){if(!setupToken || setupSignature!==JSON.stringify(setupFields())) throw new Error('Inspect these connection details before applying setup.');data.token=setupToken;setupToken=null;}
     for(const id of ['setup-discover','setup-inspect','setup-apply']) $(id).disabled=true;
     const result=await api('/api/camera/setup',data);renderCameraSetup({camera_setup:result});
-  }catch(error){$('setup-status').textContent=error.message;for(const id of ['setup-discover','setup-inspect']) $(id).disabled=false;$('setup-apply').disabled=true;}
+  }catch(error){setupError=error.message;setupSignature=setupToken=null;$('setup-status').textContent=setupError;for(const id of ['setup-discover','setup-inspect']) $(id).disabled=false;$('setup-apply').disabled=true;}
 }
 $('setup-discover').onclick=()=>runCameraSetup('discover');$('setup-inspect').onclick=()=>runCameraSetup('inspect');$('setup-apply').onclick=()=>runCameraSetup('apply');
-$('setup-devices').onchange=()=>{if($('setup-devices').value){$('host').value=$('setup-devices').value;updateCameraWebLink();setupToken=null;$('setup-apply').disabled=true;}};
-for(const id of ['host','username','camera-password','setup-initialize','setup-new-password','setup-confirm-password']) $(id).addEventListener('input',()=>{setupToken=null;$('setup-apply').disabled=true;});
+$('setup-devices').onchange=()=>{if($('setup-devices').value){setupError='';$('host').value=$('setup-devices').value;updateCameraWebLink();setupToken=null;$('setup-apply').disabled=true;}};
+for(const id of ['host','username','camera-password','setup-initialize','setup-new-password','setup-confirm-password']) $(id).addEventListener('input',()=>{setupError='';setupToken=null;$('setup-apply').disabled=true;});
 
 async function refresh(){await refreshDashboard();await MagiEvents.refresh();}
 function updateCameraWebLink() {
@@ -173,6 +173,7 @@ $('camera-info-read').onclick=async()=>{
 
 async function fillSettings() {
   const s = await api('/api/settings');
+  if (!$('setup-network').value.trim()) $('setup-network').value = s.camera_setup?.suggested_network || '';
   for (const key of ['host', 'port', 'username', 'mainstream_path', 'substream_path', 'api_scheme', 'api_port']) $(key).value = s.camera[key] || '';
   for (const key of ['pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds']) $(key).value = s.recording[key] ?? ({pre_roll_seconds:5, post_roll_seconds:5, max_event_seconds:120}[key]);
   $('api_scheme').value = s.camera.api_scheme || 'http'; $('api_port').value = s.camera.api_port || 80;

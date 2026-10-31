@@ -160,11 +160,11 @@ $('update-install').onclick=()=>updateAction('install');
 $('update-reload').onclick=()=>location.reload();
 setInterval(refreshUpdates,3000);
 function renderStatus(status) {
+  // Camera settings diagnostics only. Station indicators are rendered solely
+  // from /api/cameras in refreshCameras, including while that request is pending.
   renderCameraSetup(status);
   renderCameraInfo(status);
   const buffering = status.state === 'buffering';
-  $('connection').textContent = buffering ? '● Recording' : status.state.replaceAll('_', ' ');
-  $('connection').classList.toggle('warning', !buffering);
   const analysis = status.analysis || {}, probeFailed = analysis.state === 'substream_probe_failed';
   const analysisNames = {starting:'Checking substream', connecting:'Connecting to substream', analyzing:'Detecting motion', reconnecting:'Reconnecting to substream', idle:'Detection idle'};
   $('analysis-state').textContent = probeFailed ? 'Motion detection paused' : `${analysisNames[analysis.state] || (analysis.state || 'idle').replaceAll('_', ' ')}${analysis.width ? ` · ${analysis.width}×${analysis.height} / ${number(analysis.fps, ' fps')}` : ''}`;
@@ -173,10 +173,6 @@ function renderStatus(status) {
   $('analysis-diagnostic').classList.toggle('hidden', !probeFailed);
   $('camera-status').textContent = buffering ? 'Main stream buffering continuously' : `Camera: ${status.state.replaceAll('_', ' ')}`;
   $('trigger').disabled = !buffering;
-  $('session-events').textContent = status.event_count_since_start || 0;
-  $('buffer').textContent = number(status.buffer_span_seconds, ' sec');
-  $('detection-mode').textContent = status.automatic_detection ? 'Tracking' : 'Manual';
-  $('analysis-count').textContent = `${status.analysis?.frames || 0} frames · ${status.analysis?.dropped_frames || 0} dropped`;
   $('frame-age').textContent = status.frame_age_seconds == null ? 'NO FRAME' : `${Math.round(status.frame_age_seconds)}s AGO`;
   let connectionMessage = '';
   if (connectionStartedAt) {

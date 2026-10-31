@@ -1,3 +1,10 @@
+## Stable overview status (0.15.1)
+
+Station recording and detection indicators now update only from the combined
+camera snapshot. Selected-camera diagnostics no longer briefly overwrite them
+while the next station request is pending. Live polling and genuine status
+changes continue at the existing rate.
+
 ## Dashboard updates (0.15.0)
 
 The station-wide **Updates** page checks published Magi releases and installs a

@@ -187,3 +187,24 @@ sudo journalctl -u magi-update-agent.service -n 60 --no-pager
 
 A missing helper disables the dashboard buttons and displays the bootstrap command.
 Do not enter your sudo password in the dashboard; it is never requested there.
+
+## Service-user check recovery (0.15.3)
+
+If a dashboard update stops at the installed-version probe but a normal root-shell
+`runuser -u magi` import succeeds, the failure can be the user-ID transition inside
+the helper context. The observed underlying error was `runuser: cannot set user id:
+Operation not permitted`. Changing application ownership does not address it.
+
+Version 0.15.3 asks the system manager to start fixed-purpose, short-lived checks
+as `User=magi`/`Group=magi`. This applies to installed-version detection, candidate
+imports/config checks, and post-restart control-socket/version checks. Each check
+has its own deadline and is collected afterward. The root helper and unprivileged
+camera service retain their existing protections. The updater logs each transient
+check's unit name for journal diagnostics without relaying private command output.
+
+The installed root updater must be refreshed once because an older updater would
+otherwise still run its failing preflight before activating the new release.
+Download and verify the official v0.15.3 release, extract it, run its
+`sudo bash scripts/install-updater.sh`, then use the dashboard or the command-line
+updater to install the release. Bootstrap does not stop recording. Do not run the
+full installer on an existing station merely to repair the updater.

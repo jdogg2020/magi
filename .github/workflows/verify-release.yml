@@ -28,6 +28,8 @@ jobs:
         run: sudo /usr/bin/python3 scripts/check_install_permissions.py
       - name: Verify update helper permissions and real Unix peer identities
         run: sudo /usr/bin/python3 scripts/check_update_permissions.py
+      - name: Verify service-user checks under the actual helper hardening
+        run: sudo /usr/bin/python3 scripts/check_update_systemd.py
       - run: node --check src/magi/web/app.js && node --check src/magi/web/tracks.js && node --check src/magi/web/events.js
       - run: node tests/test_tracks.js
       - name: Install Chromium for rendered dashboard checks

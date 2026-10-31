@@ -62,6 +62,13 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  elements['review-video'].currentTime=17;
  await view.onclick();
  assert(!elements['review-still'].classList.contains('hidden'),'Opening an event must show its image first');
+ const savedFetch=context.fetch;
+ context.fetch=async()=>({ok:true,json:async()=>({status:'disabled',measurements:{status:'available',tracks:[{track_id:'fixture',sampled_path_angle_deg:12,duration_seconds:2,mean_path_speed_deg_s:6}]}})});
+ await vm.runInContext('loadIdentification(reviewEvent.id)',context);
+ assert(elements['identification-detail'].textContent.includes('6.00°/s mean angular speed'),'Review should summarize calibrated measurements even with reference checks disabled');
+ assert(elements['identification-detail'].textContent.includes('uncertainty unverified'));
+ context.fetch=savedFetch;
+
  assert(elements['review-still'].src.includes('/thumbnail'),'Image should be the native-resolution thumbnail');
  assert(elements['review-video'].classList.contains('hidden'),'Video should stay hidden until Play');
  assert(!elements['review-video'].playCalls,'Opening the image must not autoplay');

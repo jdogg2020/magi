@@ -36,7 +36,7 @@ comparison when the reference documentation changes.
 | Camera make presets and connection test | Missing | Stream profiles and bounded, credential-safe diagnosis of reachability/login/decoding failures |
 | Optional solar-position schedule | Missing | Retain Always as default; optional Night uses location and explicit schedule status |
 | Pointing and lens geometry | Partial | Assisted named-star fit added in 0.9; field validation, blind recognition and distortion fitting remain |
-| Track bearings, angular speed and travelled angle | Partial | Persist calibrated per-sample measurements and uncertainty in review/export |
+| Track bearings, angular speed and travelled angle | Partial (0.12) | Capture-time geometry and sampled measurements in reference JSON; centroid/timing uncertainty and field validation remain |
 | Aircraft correlation | Partial | Existing local ADS-B/OpenSky path; validate full angular-motion agreement and coverage detail |
 | Satellite correlation | Partial | Limited catalogues and geometry exist; improve coverage, visibility context and observed/predicted speed comparison |
 | Celestial false-positive checks | Missing | Named bright stars, planets and Moon with motion relative to the star field |

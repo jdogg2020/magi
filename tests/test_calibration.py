@@ -113,6 +113,9 @@ class CalibrationStateTests(unittest.TestCase):
             trigger=lambda **kwargs:{'event_id':self.event_id,'merged':True},_save=lambda event:saved.append(event))
         self.app.trigger()
         self.assertEqual(saved[0]['meta']['camera_calibration']['source_event'],self.event_id)
+        self.assertTrue(saved[0]['meta']['measurement_geometry']['calibrated'])
+        self.assertEqual(saved[0]['meta']['measurement_geometry']['geometry']['azimuth_deg'], self.app.cfg.identification['azimuth_deg'])
+        self.assertNotIn('opensky_client_secret', saved[0]['meta']['measurement_geometry']['geometry'])
 
     def test_failed_refit_cannot_apply_an_earlier_result(self):
         token=self.loaded['token'];self.app.calibrate('calibration_solve',{'token':token,'matches':self.matches})

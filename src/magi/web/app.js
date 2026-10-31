@@ -467,7 +467,9 @@ $('show-pixels').onchange = drawMotion; $('show-boxes').onchange = drawMotion;
 async function loadIdentification(id) {
   try { const report = await api(`/api/clips/${encodeURIComponent(id)}/identification`); if(reviewEvent?.id!==id) return;
     $('identification-status').textContent = report.status.replaceAll('_',' ');
-    $('identification-detail').textContent = JSON.stringify(report, null, 2);
+    const measurements=report.measurements;
+    const summary=(measurements?.tracks || []).map(t=>`Track ${t.track_id}: ${t.sampled_path_angle_deg.toFixed(2)}° sampled path over ${t.duration_seconds.toFixed(2)}s · ${t.mean_path_speed_deg_s == null ? 'speed unavailable' : t.mean_path_speed_deg_s.toFixed(2)+'°/s mean angular speed'}`).join('\n');
+    $('identification-detail').textContent = (summary ? summary+'\nHost timing and centroid uncertainty unverified; angles do not establish physical speed or distance.\n\n' : '')+JSON.stringify(report, null, 2);
   } catch { if(reviewEvent?.id===id) $('identification-status').textContent = 'Not checked yet. Enable reference checks and configure camera geometry in Settings.'; }
 }
 $('identify-again').onclick = async () => {

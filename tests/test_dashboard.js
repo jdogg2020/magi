@@ -45,8 +45,8 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/tracks.js')
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/events.js'),'utf8'),context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'utf8'),context);
 (async()=>{
- await new Promise(resolve=>setTimeout(resolve,250));
- assert(elements.login.classList.contains('hidden')===false,'Sign-in page should appear');
+ for(let i=0;i<100 && elements.login.classList.contains('hidden');i++)await new Promise(resolve=>setTimeout(resolve,50));
+ assert(elements.login.classList.contains('hidden')===false,'Sign-in page should appear after session lookup');
  elements['login-user'].value='admin';elements['login-password'].value='demo-password-123';
  await elements['login-form'].onsubmit({preventDefault(){}});
  assert(!elements.app.classList.contains('hidden'),'Dashboard should open after login: '+elements['login-error'].textContent);

@@ -73,9 +73,11 @@ generated password. Package installation uses unattended defaults and preserves
 existing package configuration files.
 
 Press **Ctrl+C** to cancel. Allow up to 7 seconds for active subprocess cleanup.
-Package-list refresh has a 5-minute limit, each package install 10 minutes, and
-service operations 30–60 seconds. These steps stop and report a failure when
-their limit expires. Login prompts wait for you without a timeout.
+Package installation has no overall time limit, so slow font-cache and other
+package triggers can finish. Progress messages continue every 15 seconds, and
+Ctrl+C still cancels and cleans up subprocesses. Package-list refresh retains a
+5-minute limit; service operations retain their individual deadlines. Login
+prompts wait for you without a timeout.
 
 From a second SSH session, follow the exact printed log path:
 

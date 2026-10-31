@@ -1,5 +1,12 @@
 import json
+from dataclasses import replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+import shutil
 import subprocess
+import tempfile
+import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -48,3 +55,58 @@ class StreamDiagnosticsTests(unittest.TestCase):
         self.assertNotIn('-vf', args)
         self.assertNotIn('-r', args)
         self.assertIn(self.cfg.analysis_source, args)
+
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg tools required')
+    def test_real_paced_live_stream_finishes_probe_before_watchdog(self):
+        # A live input has no EOF to shortcut FFprobe's default analysis window.
+        # This fails with the old five-second-default/five-second-watchdog race.
+        with tempfile.TemporaryDirectory() as directory:
+            sample = Path(directory) / 'live.ts'
+            subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i',
+                            'testsrc2=size=640x360:rate=20', '-t', '12', '-c:v',
+                            'libx264', '-preset', 'ultrafast', '-g', '20', '-b:v',
+                            '256k', '-minrate', '256k', '-maxrate', '256k',
+                            '-bufsize', '512k', '-muxrate', '400000', '-f', 'mpegts',
+                            str(sample)], check=True, capture_output=True, timeout=15)
+            data = sample.read_bytes()
+            stop = threading.Event()
+
+            class Handler(BaseHTTPRequestHandler):
+                def log_message(self, *args): pass
+
+                def do_GET(self):
+                    self.send_response(200)
+                    self.end_headers()
+                    started = time.monotonic()
+                    try:
+                        for offset in range(0, len(data), 188 * 25):
+                            if stop.wait(max(0, started + offset / 50000 - time.monotonic())):
+                                break
+                            self.wfile.write(data[offset:offset + 188 * 25])
+                            self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+
+            server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                # HTTP supplies a paced live demuxer fixture without a camera or
+                # RTSP server. The production start/probe path is used unchanged.
+                cfg = replace(self.cfg, file_source=True,
+                              analysis_source=f'http://127.0.0.1:{server.server_port}/live.ts')
+                analysis = Analysis(cfg)
+                real_popen = subprocess.Popen
+                with patch('magi.detection.subprocess.Popen') as processes:
+                    # Only replace the long-running decoder, not the real probe.
+                    processes.side_effect = lambda args, **kwargs: Mock() if '-f' in args and 'rawvideo' in args else real_popen(args, **kwargs)
+                    with patch('magi.detection.os.set_blocking'):
+                        analysis.start()
+                self.assertTrue(analysis.geometry_confirmed, analysis.probe_error)
+                self.assertEqual([analysis.settings[k] for k in ('width', 'height', 'fps')], [640, 360, 20])
+                self.assertEqual(analysis.state, 'connecting')
+            finally:
+                stop.set()
+                server.shutdown()
+                server.server_close()
+                thread.join(3)

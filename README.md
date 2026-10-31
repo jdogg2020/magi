@@ -1,5 +1,12 @@
 ## Calibrated track measurements (0.12.0)
 
+Version 0.13.0 adds simultaneous cameras. Use **Station cameras → Add camera**
+for another stream, and the header selector to switch live view, settings and
+archive. Existing settings and recordings stay with Camera 1. Each camera has
+independent detection, calibration, reconnects, event attribution and storage
+limits. Two synthetic streams and both dashboard flows are tested; real-camera
+Pi 4 capacity still needs measurement. See [camera setup](docs/CAMERA-SETUP.md#multiple-cameras-0130).
+
 Event reports now include capture-time geometry, per-sample sky bearings/rays,
 sampled angular path, net angular displacement and mean angular speed. Measurements
 work without aircraft/satellite checks when calibrated geometry was saved at capture.

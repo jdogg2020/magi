@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 
-from .application import Application
+from .station import Station
 from .auth import password_hash
 from .config import Config
 from .storage import atomic_json
@@ -43,7 +43,7 @@ def serve(cfg, config_path, control_enabled=True):
     st = cfg.socket.parent.stat()
     if st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) & 0o077:
         raise ValueError('The control socket directory must be private.')
-    app = Application(config_path)
+    app = Station(config_path)
     web = Server(app)
     web_thread = threading.Thread(target=web.serve_forever, kwargs={'poll_interval': .2}, daemon=True)
     running = True

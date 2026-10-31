@@ -33,8 +33,9 @@ EVENT_ID = re.compile(r'^\d{8}T\d{6}-[a-f0-9]{12}$')
 
 
 class Application:
-    def __init__(self, path):
+    def __init__(self, path, *, camera_id="primary", camera_name="Camera 1"):
         self.path = Path(path)
+        self.camera_id, self.camera_name = camera_id, camera_name
         self.cfg = Config.load(path)
         self.camera_info = CameraInfo()
         self.camera_setup = Setup()
@@ -153,6 +154,8 @@ class Application:
             raise ValueError('Camera is not recording yet. Check settings and SSD status.')
         result = self.recorder.trigger(kind=kind, track=track)
         if self.recorder.active:
+            self.recorder.active['meta'].setdefault('camera_id', self.camera_id)
+            self.recorder.active['meta'].setdefault('camera_name', self.camera_name)
             self.recorder.active['meta'].setdefault('measurement_geometry', {
                 'schema': 1, 'calibrated': self.cfg.identification['calibrated'],
                 'geometry': {k:self.cfg.identification[k] for k in GEOMETRY_KEYS}})
@@ -397,7 +400,7 @@ class Application:
         event_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')+'-'+uuid.uuid4().hex[:12]
         directory = self.cfg.root/'events'/event_id
         directory.mkdir(mode=0o700)
-        atomic_json(directory/'event.json',{'schema':1,'id':event_id,'state':'not_retained','trigger_type':kind,
+        atomic_json(directory/'event.json',{'schema':1,'id':event_id,'camera_id':self.camera_id,'camera_name':self.camera_name,'state':'not_retained','trigger_type':kind,
             'detection_types':[kind],'trigger_unix':stamp,'trigger_utc':datetime.fromtimestamp(stamp,timezone.utc).isoformat(),
             'track_samples':[{'host_utc':datetime.fromtimestamp(track['sample_host_unix'],timezone.utc).isoformat(),**track}],
             'retention':{'decision':'not_retained','reason':'event_type_disabled_for_footage'},
@@ -518,9 +521,9 @@ class Application:
                 if not report and (self.cfg.identification['enabled'] or meta.get('measurement_geometry',{}).get('calibrated')) and meta['state'] in ('complete', 'interrupted'):
                     self.identifier.submit(path.parent, meta)
                 clips.append({key: meta.get(key) for key in
-                              ('id', 'state', 'trigger_type', 'detection_types', 'retention', 'trigger_utc', 'trigger_count',
+                              ('id', 'camera_id', 'camera_name', 'state', 'trigger_type', 'detection_types', 'retention', 'trigger_utc', 'trigger_count',
                                'estimated_duration_seconds', 'interruption', 'pre_roll_complete', 'post_roll_complete')}
-                             | {'review': review, 'hq_preview': (path.parent / 'preview-substream.mp4').is_file(),
+                             | {'camera_id':meta.get('camera_id',self.camera_id),'camera_name':meta.get('camera_name',self.camera_name), 'review': review, 'hq_preview': (path.parent / 'preview-substream.mp4').is_file(),
                                 'substream_preview': (path.parent / 'preview-substream.mp4').is_file(),
                                 'best_frame': (path.parent / 'best-frame.jpg').is_file(),
                                 'media_status': 'queued' if meta['id'] in self.media.protected() else media.get('status', 'not_generated'),
@@ -583,10 +586,10 @@ class Application:
                 total += 1
                 if not f['offset'] < total <= f['offset']+f['limit']:
                     continue
-                row = {k:meta.get(k) for k in ('id','state','trigger_type','detection_types','retention','trigger_utc','estimated_duration_seconds','interruption')}
+                row = {k:meta.get(k) for k in ('id','camera_id','camera_name','state','trigger_type','detection_types','retention','trigger_utc','estimated_duration_seconds','interruption')}
                 media_path = path.parent/'media.json'
                 media = optional_json(media_path)
-                row.update(review=review,identification=reference,media_detail=media.get('thumbnail',{}),media_status=media.get('status','not_generated'),media_error=media.get('detail',''))
+                row.update(camera_id=meta.get('camera_id',self.camera_id),camera_name=meta.get('camera_name',self.camera_name),review=review,identification=reference,media_detail=media.get('thumbnail',{}),media_status=media.get('status','not_generated'),media_error=media.get('detail',''))
                 for key, name in [('thumbnail','thumbnail.jpg'),('best_frame','best-frame.jpg'),('original','clip.mkv'),('preview','preview.mp4'),('substream_preview','preview-substream.mp4'),('motion','motion.jsonl.gz')]:
                     row[key] = (path.parent/name).is_file()
                 rows.append(row)
@@ -645,7 +648,7 @@ class Application:
         return {'updated':updated,'failed':failed}
 
     def _snapshot(self):
-        status = {'version': __version__, 'mode': 'continuous_24_7', 'state': 'setup_required' if not self.cfg.source else 'waiting_for_storage',
+        status = {'version': __version__, 'camera_id': self.camera_id, 'camera_name': self.camera_name, 'mode': 'continuous_24_7', 'state': 'setup_required' if not self.cfg.source else 'waiting_for_storage',
                   'uptime_seconds': round(time.monotonic() - self.started, 1), 'automatic_detection': self.cfg.detection.get('enabled', False)}
         try:
             if self.recorder:

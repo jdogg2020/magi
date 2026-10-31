@@ -29,14 +29,14 @@ const MagiEvents = (()=>{
       choose.onchange=()=>{if(choose.checked){if(selected.size>=100){el('event-action-status').textContent='Select up to 100 events at a time.';choose.checked=false;return;}selected.set(row.id,row);}else selected.delete(row.id);selection();};
       const cell=node('td');cell.append(choose);tr.append(cell);
       const image=node('td');const view=button('',()=>openReview(row),'event-row-image');view.setAttribute('aria-label',`Review event ${row.id}`);
-      if(row.thumbnail){const img=node('img');img.src=`/api/clips/${encodeURIComponent(row.id)}/thumbnail`;img.alt=row.best_frame?'Selected full-resolution event crop':'Detection thumbnail';img.loading='lazy';view.append(img);}else view.textContent='Review';image.append(view);tr.append(image);
+      if(row.thumbnail){const img=node('img');img.src=cameraPath(`/api/clips/${encodeURIComponent(row.id)}/thumbnail`);img.alt=row.best_frame?'Selected full-resolution event crop':'Detection thumbnail';img.loading='lazy';view.append(img);}else view.textContent='Review';image.append(view);tr.append(image);
       const when=node('td');when.append(button(new Date(row.trigger_utc).toLocaleString(),()=>openReview(row),'event-time'),node('small',row.id));tr.append(when);
       tr.append(node('td',row.estimated_duration_seconds!=null ? `${Number(row.estimated_duration_seconds).toFixed(1)}s`:'—'));
       const annotation=node('td');const badges=node('div',null,'event-labels');for(const label of review.labels || [])badges.append(node('span',label,'event-label'));if(!review.labels?.length)badges.append(node('span','Unlabelled','muted'));
       annotation.append(badges,node('small',`${review.reviewed?'✓ Reviewed':'Unreviewed'}${review.protected?' · Protected':''}${review.trashed_at!=null?' · In trash':''}${review.annotation_error?' · Review metadata needs repair':''}`));if(review.notes)annotation.append(node('small',review.notes.slice(0,100)));tr.append(annotation);
       tr.append(node('td',human(row.identification)));const recording=node('td',human(row.state));recording.append(node('small',(row.detection_types || [row.trigger_type]).map(human).join(', ')));if(row.retention?.reason)recording.append(node('small',human(row.retention.reason)));tr.append(recording);
       const actions=node('td',null,'event-row-actions');actions.append(button('Review',()=>openReview(row),'secondary'));
-      if(row.original){const a=node('a','Original ↓');a.href=`/api/clips/${encodeURIComponent(row.id)}/original`;actions.append(a);}
+      if(row.original){const a=node('a','Original ↓');a.href=cameraPath(`/api/clips/${encodeURIComponent(row.id)}/original`);actions.append(a);}
       if(review.trashed_at!=null)actions.append(button('Restore',()=>mutate([row.id],'restore')));
       else {actions.append(button(review.protected?'Unprotect':'Protect',()=>mutate([row.id],'update',{protected:!review.protected})));const trash=button('Trash',()=>mutate([row.id],'trash'));trash.disabled=!!review.protected;actions.append(trash);}
       tr.append(actions);body.append(tr);

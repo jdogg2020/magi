@@ -4,6 +4,7 @@ const fs = require('fs');
 const vm = require('vm');
 const assert = require('assert');
 const path = require('path');
+const cameraId = process.argv[3] || 'primary';
 const base = process.argv[2] || 'http://127.0.0.1:18790';
 class Element {
   constructor(tag='div') { this.tagName=tag; this.children=[]; this.value=''; this.textContent=''; this.checked=false; this.disabled=false; this.open=false; this.listeners={}; this.classes=new Set(); this.dataset={}; this.style={}; this.classList={add:(...n)=>n.forEach(v=>this.classes.add(v)),remove:(...n)=>n.forEach(v=>this.classes.delete(v)),toggle:(n,yes)=>{if(yes ?? !this.classes.has(n)) this.classes.add(n);else this.classes.delete(n);},contains:n=>this.classes.has(n)}; }
@@ -39,7 +40,7 @@ async function fetchWithCookies(url, options={}) {
  const setCookie=response.headers.get('set-cookie');if(setCookie) cookie=setCookie.split(';')[0];
  return response;
 }
-const context={document,fetch:fetchWithCookies,console,URL,JSON,Date,Math,Number,Error,encodeURIComponent,setInterval:()=>0,setTimeout,Promise,atob};
+const context={location:{href:base+'/?camera='+cameraId},document,fetch:fetchWithCookies,console,URL,JSON,Date,Math,Number,Error,encodeURIComponent,setInterval:()=>0,setTimeout,Promise,atob};
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/tracks.js'),'utf8'),context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/events.js'),'utf8'),context);
@@ -52,6 +53,10 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(!elements.app.classList.contains('hidden'),'Dashboard should open after login: '+elements['login-error'].textContent);
  assert(elements.login.classList.contains('hidden'));
  for(let i=0;i<100;i++){await vm.runInContext('refreshFrame()',context);if(elements['camera-frame'].src)break;await new Promise(resolve=>setTimeout(resolve,100));}
+ assert.equal(elements['camera-select'].value,cameraId,'Camera selection must follow the page URL');
+ assert(elements['camera-grid'].children.length>=2,'Station should show both camera workers');
+ assert.equal(vm.runInContext("cameraPath('/api/settings')",context),cameraId==='primary'?'/api/settings':`/api/cameras/${cameraId}/settings`);
+ assert.equal(vm.runInContext("cameraPath('/api/session')",context),'/api/session','Sign-in remains station-wide');
  assert(elements['camera-frame'].src?.startsWith('blob:'),'Live image should load');
  assert.equal(elements['detection-mode'].textContent,'Tracking');
  for(let i=0;i<100;i++){await vm.runInContext('refresh()',context);if(elements['recent-events'].children.some(card=>{const text=card.children[1]?.children[2]?.textContent||'';return text.includes('substream video')&&text.includes('native crop');}))break;await new Promise(resolve=>setTimeout(resolve,150));}await vm.runInContext('MagiEvents.refresh(true)',context);assert(elements['all-events'].children.some(el=>el.className==='event-row'),'Events should render as rows');
@@ -63,7 +68,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  await view.onclick();
  assert(!elements['review-still'].classList.contains('hidden'),'Opening an event must show its image first');
  const networkFetch=context.fetch;
- context.fetch=async(url,options)=>{const response=await networkFetch(url,options);if(url.endsWith('/api/settings')){const data=await response.json();return {ok:true,json:async()=>({...data,camera_setup:{suggested_network:'192.168.86.0/24'}})};}return response;};
+ context.fetch=async(url,options)=>{const response=await networkFetch(url,options);if(url.endsWith('/settings')){const data=await response.json();return {ok:true,json:async()=>({...data,camera_setup:{suggested_network:'192.168.86.0/24'}})};}return response;};
  elements['setup-network'].value='';await vm.runInContext('fillSettings()',context);
  assert.equal(elements['setup-network'].value,'192.168.86.0/24');
  elements['setup-network'].value='192.168.7.0/24';await vm.runInContext('fillSettings()',context);
@@ -194,7 +199,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert.equal(vm.runInContext('ignoreZones.length',context),1,'Keyboard coordinates should add a zone');
  let savedPayload;
  const originalFetch=context.fetch;
- context.fetch=async(url,options)=>{if(url==='/api/settings' && options?.method==='POST'){savedPayload=JSON.parse(options.body);return {ok:true,status:200,json:async()=>({ok:true})};}return originalFetch(url,options);};
+ context.fetch=async(url,options)=>{if(url.endsWith('/settings') && options?.method==='POST'){savedPayload=JSON.parse(options.body);return {ok:true,status:200,json:async()=>({ok:true})};}return originalFetch(url,options);};
  const submit=new Element('button');
  await elements['settings-form'].onsubmit({preventDefault(){},submitter:submit});
  assert(!elements.overview.classList.contains('hidden'),'Successful save should open camera overview');
@@ -203,12 +208,21 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(!submit.disabled);assert.equal(savedPayload.detection.ignore_zones.length,1,'Saved settings should include zones');assert.equal(savedPayload.detection.lightning_enabled,true);assert.equal(savedPayload.detection.meteor_enabled,true);assert(savedPayload.detection.retain_types.includes('meteor_candidate'));
  elements['zone-clear'].onclick();assert.equal(vm.runInContext('ignoreZones.length',context),0);
  vm.runInContext("tab('settings')",context);
- context.fetch=async(url,options)=>url==='/api/settings' && options?.method==='POST'
+ context.fetch=async(url,options)=>url.endsWith('/settings') && options?.method==='POST'
    ? {ok:false,status:400,json:async()=>({error:'Invalid camera settings'})} : originalFetch(url,options);
  await elements['settings-form'].onsubmit({preventDefault(){},submitter:submit});
  assert(!elements.settings.classList.contains('hidden'),'Failed save should stay on Settings');
  assert.equal(elements['settings-result'].textContent,'Invalid camera settings');
  assert(!submit.disabled);context.fetch=originalFetch;
+ elements['camera-name'].value='Renamed '+cameraId;
+ await elements['camera-rename'].onclick();
+ assert.equal(elements['selected-camera-name'].textContent,'Renamed '+cameraId);
+ const inventory=await vm.runInContext("api('/api/cameras')",context);
+ assert(inventory.cameras.some(c=>c.id===cameraId && c.name==='Renamed '+cameraId));
+ elements['camera-new-name'].value='New setup camera';
+ await elements['camera-add'].onclick();
+ assert(context.location.href.endsWith('#settings'),'Adding a camera should open its own setup screen');
+ assert(context.location.href.includes('/?camera=cam-'));
  await elements.logout.onclick();assert(!elements.login.classList.contains('hidden'));
- console.log('Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, image-first review, playback from zero, full-frame viewing, substream track timing, tracker toggles, detection timeline exact pixel overlay mode, assisted star selection and invalid-fit rejection, event rows, operator labels/notes, bulk protection, trash/restore, sign-out.');
+ console.log('Dashboard '+cameraId+' behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, image-first review, playback from zero, full-frame viewing, substream track timing, tracker toggles, detection timeline exact pixel overlay mode, assisted star selection and invalid-fit rejection, event rows, operator labels/notes, bulk protection, trash/restore, sign-out.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

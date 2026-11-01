@@ -88,11 +88,33 @@ const base = process.argv[2];
     await page.locator('#settings').waitFor();
     await page.waitForFunction(camera=>document.getElementById('camera-select').value===camera,event.camera);
     assert.equal(await page.locator('#camera-select').inputValue(),event.camera);
+    // Navigation keeps the hash, so a second click must explicitly reopen settings.
+    for(let attempt=0;attempt<2;attempt++){
+      await page.locator('.nav[data-tab=events]').click();
+      await page.locator('#events').waitFor();
+      await page.locator(`aside a[href="/?camera=${event.camera}#settings"]`).click();
+      await page.locator('#settings').waitFor();
+    }
     await page.locator('.nav[data-tab=overview]').click();
     await page.locator('#camera-grid img:not(.hidden)').nth(1).waitFor();
+    await page.locator(`#camera-grid a[href="/?camera=${event.camera}#settings"]`).click();
+    await page.locator('#settings').waitFor();
+    await page.locator('.nav[data-tab=overview]').click();
     await page.setViewportSize({width:390,height:844});
     await page.screenshot({path:'dist/browser/mobile.png',fullPage:true});
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Mobile overview must fit the viewport');
+    const count=await page.locator('#camera-select option').count();
+    await page.getByRole('button',{name:'Add a camera',exact:true}).click();
+    await page.locator('#camera-add-dialog').waitFor();
+    await page.locator('#camera-add-cancel').click();
+    assert.equal(await page.locator('#camera-select option').count(),count);
+    await page.getByRole('button',{name:'Add a camera',exact:true}).click();
+    await page.locator('#camera-new-name').fill('Browser setup camera');
+    await page.locator('#camera-add').click();
+    await page.waitForURL(/\/\?camera=cam-[^#]+#settings$/);
+    await page.locator('#settings').waitFor();
+    assert.equal(await page.locator('#setup-initialize').isChecked(),false);
+    await page.waitForFunction(expected=>document.querySelectorAll('#camera-select option').length===expected,count+1);
     assert.deepEqual(errors,[]);
     console.log('Chromium passed: simultaneous images, station event list, explicit camera playback, settings links, manual save, mobile layout.');
   } finally {await browser.close();}

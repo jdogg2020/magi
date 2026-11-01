@@ -1,3 +1,10 @@
+## Direct camera controls (0.15.4)
+
+The left Cameras menu now has an **Add a camera** button. Enter a name and submit
+to open the new camera's connection settings. Cancel creates no camera. Settings
+links for the selected camera switch views immediately, including when the URL
+already ends in `#settings`; overview tile links use the same behavior.
+
 ## Dashboard update service-user checks (0.15.3)
 
 Updater preflight and post-restart status checks now run as short-lived systemd

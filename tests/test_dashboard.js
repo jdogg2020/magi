@@ -305,8 +305,24 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert.equal(elements['selected-camera-name'].textContent,'Renamed '+cameraId);
  const inventory=await vm.runInContext("api('/api/cameras')",context);
  assert(inventory.cameras.some(c=>c.id===cameraId && c.name==='Renamed '+cameraId));
+ // Reopening the selected camera must work even while the URL already has #settings.
+ context.location.hash='settings';
+ vm.runInContext("tab('events')",context);
+ const settingsLink=elements['camera-links'].children.find(link=>link.href==='/?camera='+cameraId+'#settings');
+ let prevented=false;settingsLink.onclick({preventDefault(){prevented=true;}});
+ assert(prevented);assert(!elements.settings.classList.contains('hidden'));
+ elements['sidebar-camera-add'].onclick();assert(elements['camera-add-dialog'].open);
+ elements['camera-add-cancel'].onclick();assert(!elements['camera-add-dialog'].open);
+ assert.equal((await vm.runInContext("api('/api/cameras')",context)).cameras.length,inventory.cameras.length);
+ elements['sidebar-camera-add'].onclick();
+ context.fetch=async(url,options)=>url==='/api/cameras' && options?.method==='POST'
+   ? {ok:false,status:400,json:async()=>({error:'Cannot add camera'})} : originalFetch(url,options);
  elements['camera-new-name'].value='New setup camera';
- await elements['camera-add'].onclick();
+ await elements['camera-add-form'].onsubmit({preventDefault(){}});
+ assert(elements['camera-add-dialog'].open);assert.equal(elements['camera-add-status'].textContent,'Cannot add camera');
+ assert(!elements['camera-add'].disabled);context.fetch=originalFetch;
+ await elements['camera-add-form'].onsubmit({preventDefault(){}});
+ assert(!elements['camera-add-dialog'].open);
  assert(context.location.href.endsWith('#settings'),'Adding a camera should open its own setup screen');
  assert(context.location.href.includes('/?camera=cam-'));
  await elements.logout.onclick();assert(!elements.login.classList.contains('hidden'));

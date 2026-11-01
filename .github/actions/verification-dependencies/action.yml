@@ -1,0 +1,59 @@
+name: Verification dependencies
+description: Cache Python wheels and Chromium; optionally warm caches without system packages.
+inputs:
+  python:
+    required: true
+    description: Python version
+  cache-only:
+    default: 'false'
+    description: Warm download caches without installing system dependencies
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v6
+      id: python
+      with:
+        python-version: '${{ inputs.python }}'
+        cache: pip
+        cache-dependency-path: |
+          requirements-dev.lock
+          requirements-identification.lock
+    - name: Install Python verification dependencies
+      if: inputs.cache-only != 'true' || steps.python.outputs.cache-hit != 'true'
+      shell: bash
+      run: python -m pip install -r requirements-dev.lock -r requirements-identification.lock
+    - name: Reuse installed FFmpeg or install it
+      if: inputs.cache-only != 'true'
+      shell: bash
+      run: |
+        if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+          sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends ffmpeg
+        fi
+    - uses: actions/cache@v4
+      if: inputs.python == '3.11'
+      id: browser
+      with:
+        path: |
+          /tmp/magi-browser/node_modules
+          ~/.cache/ms-playwright
+        key: magi-browser-${{ runner.os }}-${{ runner.arch }}-ubuntu24-playwright-1.56.1-v1
+    - name: Download pinned Playwright and Chromium on cache miss
+      if: inputs.python == '3.11' && steps.browser.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        npm install --prefix /tmp/magi-browser --no-package-lock playwright@1.56.1
+        /tmp/magi-browser/node_modules/.bin/playwright install chromium --only-shell
+    - name: Install missing Chromium system libraries
+      if: inputs.python == '3.11' && inputs.cache-only != 'true'
+      shell: bash
+      run: |
+        # Probe the cached browser, including its dynamic libraries. A cache
+        # stores downloads, not system packages on a fresh hosted runner.
+        if ! NODE_PATH=/tmp/magi-browser/node_modules node -e '
+          (async()=>{const browser=await require("playwright").chromium.launch({headless:true});await browser.close();})()
+            .catch(error=>{console.error(error.message);process.exit(1);});
+        '; then
+          export DEBIAN_FRONTEND=noninteractive
+          /tmp/magi-browser/node_modules/.bin/playwright install-deps chromium
+        fi

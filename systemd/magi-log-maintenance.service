@@ -1,0 +1,12 @@
+[Unit]
+Description=Bound completed Magi install and update logs
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/lib/magi/maintain_logs.py
+User=root
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=-/var/log/magi

@@ -16,7 +16,7 @@ catalogue magnitudes of named stars brighter than magnitude 4.
   exact source SHA-256, provenance and approximation that proper motion is not applied.
 
 This attribution concerns the catalogue data. Magi's own software licence remains
-the owner's separate, pending decision. No IAU endorsement is implied.
+Apache-2.0. No IAU endorsement is implied.
 
 ## Yale Bright Star Catalogue (automatic star matching)
 

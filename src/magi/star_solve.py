@@ -207,7 +207,7 @@ def _tangent_coords(directions):
     return np.column_stack((directions @ e1 / denom, directions @ e2 / denom))
 
 
-def _build_quad_index(anchors, radius_deg, neighbors_k):
+def _build_quad_index(anchors, radius_deg, neighbors_k, deadline=None, cancel_event=None):
     """Hash catalog quads for one anchor tier. Returns (index, quad_count)."""
     dirs = np.array([a['direction'] for a in anchors])
     cosines = np.clip(dirs @ dirs.T, -1, 1)
@@ -215,6 +215,7 @@ def _build_quad_index(anchors, radius_deg, neighbors_k):
     index = {}
     seen = set()
     for i, anchor in enumerate(anchors):
+        _check_deadline(deadline, cancel_event)
         order = np.argsort(separations[i])
         neighbors = [int(j) for j in order if j != i and separations[i][j] <= radius_deg][:neighbors_k]
         for combo in itertools.combinations(neighbors, 3):
@@ -331,6 +332,14 @@ def _refine_candidate(points, directions):
     return basis, scales, rms
 
 
+def verified_residuals(points, directions, basis, scales):
+    """Recheck every correspondence after refitting, including excluded stars."""
+    errors = _angular_errors(rays_from_points(points, basis, scales), directions)
+    if not len(errors) or not np.all(np.isfinite(errors)) or np.sqrt(np.mean(errors ** 2)) > 0.2 or np.max(errors) > 0.4:
+        return None
+    return errors
+
+
 def _select_fit_subset(matched, max_points=20):
     """Well-spread, low-residual subset for the rigorous final fit."""
     pool = [m for m in matched if m['residual_deg'] < 0.2]
@@ -365,7 +374,9 @@ def _select_winner(verified):
         for group in groups:
             other = group[0]
             angle = math.degrees(math.acos(max(-1, min(1, float(np.dot(candidate['basis'][:, 2], other['basis'][:, 2]))))))
-            if angle < 1.0:
+            orientation = np.degrees(np.arccos(np.clip(np.sum(candidate['basis'] * other['basis'], axis=0), -1, 1)))
+            fov_delta = np.max(np.abs(np.degrees(2*np.arctan(candidate['scales'])) - np.degrees(2*np.arctan(other['scales']))))
+            if angle < 1.0 and np.max(orientation) < 1.0 and fov_delta < 1.0:
                 group.append(candidate)
                 placed = True
                 break
@@ -397,6 +408,8 @@ def solve(detections, visible, width, height, deadline=None, cancel_event=None, 
     Returns a solved or failed result dict; never raises for bad input
     except SolverTimeout, which is converted to a failed result.
     """
+    if deadline is None:
+        deadline = time.monotonic() + DEFAULT_DEADLINE_SECONDS
     opts = {'tol_px_factor': 0.0015, 'tol_px_min': 4.0, **(options or {})}
     tol_px = max(opts['tol_px_min'], opts['tol_px_factor'] * width)
     visible = [star for star in visible if star['magnitude'] <= SOLVE_MAG_LIMIT]
@@ -418,7 +431,7 @@ def solve(detections, visible, width, height, deadline=None, cancel_event=None, 
             if len(anchors) < 20:
                 diagnostics['tiers'].append({'mag_limit': mag_limit, 'anchors': len(anchors), 'skipped': True})
                 continue
-            index, quad_count = _build_quad_index(anchors, radius_deg, NEIGHBORS_PER_ANCHOR)
+            index, quad_count = _build_quad_index(anchors, radius_deg, NEIGHBORS_PER_ANCHOR, deadline, cancel_event)
             quads = _detected_quads(detections, top_n, width, height)
             tier_verified = 0
             for quad in quads:
@@ -531,8 +544,11 @@ def solve(detections, visible, width, height, deadline=None, cancel_event=None, 
                     'verification_count': winner['verification_count'], 'diagnostics': diagnostics}
         all_points = np.array([[m['x'], m['y']] for m in winner['matched']])
         all_dirs = np.array([by_id[m['catalog_id']]['direction'] for m in winner['matched']])
-        predicted = rays_from_points(all_points, basis, scales)
-        errors = _angular_errors(predicted, all_dirs)
+        errors = verified_residuals(all_points, all_dirs, basis, scales)
+        if errors is None:
+            return {**result_base, 'status': 'failed', 'reason': 'final_verification_rejected',
+                    'detail': 'Refitted geometry failed verification against all matched stars.',
+                    'diagnostics': diagnostics}
         for match, err in zip(winner['matched'], errors):
             match['residual_deg'] = float(err)
         subset_ids = {m['catalog_id'] for m in subset}

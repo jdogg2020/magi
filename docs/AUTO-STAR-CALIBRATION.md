@@ -35,7 +35,7 @@ reach the same geometry, through review and an explicit apply step.
    the image and matched to detections. A candidate verifies only
    with at least 8 matches on stars *not* in the proposing quad, RMS
    <= 0.2 degrees, and maximum error <= 0.4 degrees. Distinct
-   pointings that verify almost equally well (second verification
+   orientations or fields of view that verify almost equally well (second verification
    count >= 80% of the best) reject the solve as ambiguous.
 5. **Fit.** The verified matches are reduced to at most 20
    well-spread, low-residual stars and passed to
@@ -43,7 +43,8 @@ reach the same geometry, through review and an explicit apply step.
    manual path uses. The reported geometry therefore satisfies the
    manual path's gates (RMS <= 0.2, maximum <= 0.4, held-out check
    <= 0.5 degrees). Full-set residuals and held-out residuals are
-   reported alongside the fit.
+   reported alongside the fit. The refitted result must again pass the
+   full-set RMS <= 0.2 and maximum <= 0.4 degree gates.
 6. **Review and apply.** Solving writes a candidate record and never
    touches live settings. The operator reviews the matched-star
    overlay (see below) and applies explicitly. Applying reuses the
@@ -69,7 +70,11 @@ reach the same geometry, through review and an explicit apply step.
 * Detection capped at 400 stars; quad formation uses the brightest
   40 (bright tier) or 100 (faint tier); at most 200 candidates are
   verified per tier. One solve is bounded by a deadline (default
-  600 seconds) and, for the CLI, by an RSS cap (default 2048 MB).
+  600 seconds). Dashboard jobs run in a separate, low-priority process
+  with one BLAS thread and a 1 GiB address-space limit. This is not an
+  RSS measurement. CLI `--rss-mb` is also an address-space limit despite
+  the legacy flag name. Crowded frames are rejected before building
+  large pixel sets.
   On timeout or cancellation, no candidate is written and the
   previous calibration is untouched.
 
@@ -113,7 +118,7 @@ Nightly (systemd timer):
 systemctl enable --now magi-auto-calibration.timer
 ```
 
-The timer runs `magi star-solve --latest` at about 03:30 nightly.
+The optional timer runs the isolated worker with `--latest` at about 03:30 nightly.
 It solves the most recent event with a full-resolution frame and
 writes the candidate and status records. It never applies.
 
@@ -124,12 +129,12 @@ magi star-solve --latest --config /etc/magi/config.json
 magi star-solve --event-id 20261030T010101-abcdef123456 --config /etc/magi/config.json
 ```
 
-Dashboard API (no button yet; the API is curl-ready):
+Dashboard API (also used by the Settings controls):
 
 ```text
 POST /api/auto-calibration/start   {"id": "<event id>"} or {}
-GET  /api/auto-calibration/status
-POST /api/auto-calibration/apply   {}
+POST /api/auto-calibration/status  {}
+POST /api/auto-calibration/apply   {"created_unix": <reviewed candidate timestamp>}
 POST /api/auto-calibration/cancel  {}
 ```
 
@@ -152,21 +157,23 @@ service never fights a second writer over the config file.
 * Failure reasons: `insufficient_detections`,
   `insufficient_visible_stars`, `no_verified_solution`, `ambiguous`,
   `insufficient_spread`, `final_fit_rejected`,
-  `final_fit_inconsistent`, `timeout`, `cancelled`. Each failed job
-  records its reason in `status.json`; the previous solution and
+  `final_fit_inconsistent`, `timeout`, `cancelled`. Solver outcomes are recorded in `status.json`; process failures and
+  cancellation are shown in the dashboard job status; the previous solution and
   previous candidate are untouched.
-* Movement: a new solution pointing more than 0.5 degrees from the
-  applied solution, or changing either field of view by more than
+* Movement: a new solution rotating any camera basis axis more than 0.5 degrees from the
+  applied solution (including roll), or changing either field of view by more than
   1 degree, marks the applied solution *suspect* in `status.json`.
   It does not clear or replace the applied solution, because
   flagging must not restart capture. The operator reviews the new
-  candidate and applies it, which clears the flag.
+  candidate and applies it, which clears the flag. Failed and repeated solves preserve the applied
+  baseline and any existing warning.
 * Timing is estimated host receipt, not verified camera exposure
   time. Serial GNSS timing is coarse and chrony may select network
   time; a wrong clock shifts star positions and can reject a solve,
-  which is the safe direction.
-* Multiple cameras: each camera worker solves and applies
-  independently. Station sensors (location, time) are shared; every
+  but a wrong time or location can also yield a good fit with wrong
+  terrestrial pointing. Residuals cannot independently validate them.
+* Multiple cameras: each camera has its own candidates and applies independently.
+  Dashboard solves are serialized across cameras. Station sensors (location, time) are shared; every
   calibration record is keyed by camera ID, and a candidate for one
   camera cannot apply to another.
 
@@ -199,3 +206,32 @@ service never fights a second writer over the config file.
 * `src/magi/cli.py`: `star-solve` and `star-apply` commands.
 * `systemd/magi-auto-calibration.service`,
   `systemd/magi-auto-calibration.timer`: nightly job.
+
+## Dashboard and optional scheduling (v0.19)
+
+In Settings → Calibrate with stars, find saved frames, select one, and choose
+**Find stars automatically**. Use **Check solve status** to recover a candidate
+after a page reload. Review the star overlay, geometry and residuals, check the
+review box, then apply. Applying reconnects capture using the normal settings
+path. No failed solve replaces the applied calibration. A previous candidate
+can remain available after a newer failure; its own frame date is displayed.
+Settings changes, camera removal and shutdown terminate a running worker.
+
+Fresh installs install the optional timer units but do not enable them. Existing
+installations can install/update these units explicitly:
+
+```bash
+sudo python3 /opt/magi/scripts/install_auto_calibration.py
+sudo systemctl daemon-reload
+```
+
+Only if scheduled solving is wanted, enable `magi-auto-calibration.timer`.
+It solves the latest primary-camera event; it does not capture a fresh frame,
+check whether stars are visible, or apply a candidate. The generated unit uses
+paths from `/etc/magi/config.json`, so it works with microSD or mounted storage.
+Do not copy the `.service` template directly: its path placeholders must be
+rendered by the installer. It does not own/remove the main runtime directory.
+The timer adds a 768 MiB memory limit and 25% CPU quota; hard limits can cause a
+solve to fail safely on expensive images. Other cameras use on-demand solving.
+
+No real sky-frame or Pi throughput claim is made by synthetic verification.

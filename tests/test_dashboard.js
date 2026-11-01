@@ -9,6 +9,7 @@ const base = process.argv[2] || 'http://127.0.0.1:18790';
 class Element {
   constructor(tag='div') { this.tagName=tag; this.children=[]; this.value=''; this.textContent=''; this.checked=false; this.disabled=false; this.open=false; this.listeners={}; this.classes=new Set(); this.dataset={}; this.style={}; this.classList={add:(...n)=>n.forEach(v=>this.classes.add(v)),remove:(...n)=>n.forEach(v=>this.classes.delete(v)),toggle:(n,yes)=>{if(yes ?? !this.classes.has(n)) this.classes.add(n);else this.classes.delete(n);},contains:n=>this.classes.has(n)}; }
   append(...children) { for(const child of children){if(child && typeof child==='object'){if(child.parentNode)child.parentNode.children=child.parentNode.children.filter(item=>item!==child);child.parentNode=this;}this.children.push(child);} }
+  remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(child=>child!==this);}
   replaceChildren(...children) { this.children=[...children]; }
   addEventListener(name, callback) { this.listeners[name]=callback; }
   setAttribute(name,value) { this[name]=value; }
@@ -22,6 +23,8 @@ class Element {
   play(){this.playCalls=(this.playCalls||0)+1;return Promise.resolve();}
   pause(){}
   load(){}
+  focus(){this.focused=true;}
+  scrollIntoView(){this.scrolled=true;}
 }
 const html = fs.readFileSync(path.join(__dirname,'../src/magi/web/index.html'),'utf8');
 const elements={};
@@ -30,7 +33,7 @@ for (const match of html.matchAll(/<([a-z][a-z0-9]*)\b([^>]*\bid="([^"]+)"[^>]*)
  const classes=attributes.match(/class="([^"]*)"/); if(classes) classes[1].split(' ').forEach(c=>el.classList.add(c));
  const value=attributes.match(/value="([^"]*)"/); if(value) el.value=value[1]; el.checked=/\bchecked\b/.test(attributes);elements[el.id]=el;
 }
-const tabs=['overview','events','settings','updates'].map(id=>elements[id]);
+const tabs=['overview','events','settings','storage','updates'].map(id=>elements[id]);
 const nav=tabs.map(tab=>{const el=new Element('button');el.dataset.tab=tab.id;return el;});
 const document={getElementById:id=>{assert(elements[id],`Missing HTML ID: ${id}`);return elements[id];},querySelectorAll:selector=>selector==='.tab'?tabs:selector==='.nav'?nav:[],createElement:tag=>new Element(tag),hidden:false};
 let cookie='';
@@ -104,6 +107,11 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  context.fetch=updateFetch;await vm.runInContext('refreshUpdates(true)',context);
  assert(elements['update-check'].disabled,'A missing privileged helper must disable dashboard installs');
 
+ await vm.runInContext('refreshStorage()',context);
+ assert(elements['storage-status'].textContent.includes('Removed-camera archives:'));
+ assert(elements['storage-cameras'].children.length>=2);
+ assert.equal(elements['storage-volumes'].children.length,1,'Shared disk must appear once');
+ assert.equal(Number(elements['cleanup_gb'].value),0);assert.equal(Number(elements['trash_days'].value),7);
  assert(elements['recent-events'].children.includes(elements['event-browser']),'Overview should host the shared event list');
  assert(!elements['event-filter-panel'].open,'Filters should start collapsed');
  for(let i=0;i<100;i++){await vm.runInContext('refresh()',context);await vm.runInContext('MagiEvents.refresh(true)',context);if(elements['all-events'].children.some(row=>row.className==='event-row'))break;await new Promise(resolve=>setTimeout(resolve,150));}
@@ -175,6 +183,11 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  elements['setup-network'].value='192.168.7.0/24';await vm.runInContext('fillSettings()',context);
  assert.equal(elements['setup-network'].value,'192.168.7.0/24','Settings refresh must preserve the entered search network');
  context.fetch=networkFetch;
+ for(let attempt=0;attempt<50;attempt++){await vm.runInContext('loadIdentification(reviewEvent.id)',context);if(!elements['radio-report'].classList.contains('hidden'))break;await new Promise(resolve=>setTimeout(resolve,100));}
+ assert(elements['radio-status'].textContent.includes('aircraft recorded'));
+ const radioEvidence=await vm.runInContext("api(eventPath(reviewEvent,'radio'))",context);
+ assert.equal(radioEvidence.source,'local_readsb');
+ assert(radioEvidence.snapshots.some(f=>f.aircraft.some(a=>a.hex==='abc123' && a.gs===120 && a.alt_geom===undefined)),'Radio fields without geometric altitude should survive event download');
  const savedFetch=context.fetch;
  context.fetch=async()=>({ok:true,json:async()=>({status:'disabled',measurements:{status:'available',tracks:[{track_id:'fixture',sampled_path_angle_deg:12,duration_seconds:2,mean_path_speed_deg_s:6}]}})});
  await vm.runInContext('loadIdentification(reviewEvent.id)',context);
@@ -247,6 +260,15 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(elements['star-apply'].disabled,'A collinear/misidentified star fit must not be applied');
  assert(elements['star-status'].textContent.includes('Spread'),'Rejected fit should explain how to improve it');
  elements['star-clear'].onclick();assert.equal(elements['star-points'].children.length,0);
+ await elements['auto-star-refresh'].onclick();
+ assert(elements['auto-star-status'].textContent.includes('never_run'));
+ assert(elements['auto-star-apply'].disabled,'Cannot apply an unreviewed automatic result');
+ await elements['auto-star-start'].onclick();
+ for(let i=0;i<100;i++){await new Promise(r=>setTimeout(r,100));await elements['auto-star-refresh'].onclick();if(!vm.runInContext('autoStarRunning',context))break;}
+ assert(!vm.runInContext('autoStarRunning',context),'Synthetic frame solve must finish or fail');
+ assert(elements['auto-star-apply'].disabled,'Failed solve must not permit apply');
+ assert(elements['auto-star-status'].textContent.includes('Previous calibration kept') || elements['auto-star-status'].textContent.includes('failed'));
+
  vm.runInContext("renderStatus({state:'buffering', health:{}, analysis:{state:'substream_probe_failed',width:320,height:180,fps:8,probe_error:'Camera did not answer in time.',retry_in_seconds:7}})",context);
  assert.equal(elements['analysis-state'].textContent,'Motion detection paused');
  assert(elements['analysis-diagnostic'].textContent.includes('in 7 seconds'));
@@ -341,6 +363,26 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(!elements['camera-add-dialog'].open);
  assert(context.location.href.endsWith('#settings'),'Adding a camera should open its own setup screen');
  assert(context.location.href.includes('/?camera=cam-'));
+ const addedId=new URL(context.location.href,base).searchParams.get('camera');
+ await vm.runInContext('refreshCameras()',context);
+ context.confirm=()=>false;
+ await elements['camera-remove'].onclick();
+ assert((await vm.runInContext("api('/api/cameras')",context)).cameras.some(c=>c.id===addedId),'Cancel must keep camera');
+ await vm.runInContext("api('/api/cameras',"+JSON.stringify({action:'remove',id:addedId})+")",context);
+ await vm.runInContext('refreshCameras()',context);
+ const removedInventory=await vm.runInContext("api('/api/cameras')",context);
+ assert(!removedInventory.cameras.some(c=>c.id===addedId));
+ assert(removedInventory.archived_cameras.some(c=>c.id===addedId));
+ assert(elements['event-camera'].children.some(c=>c.value===addedId && c.textContent.includes('(removed)')));
+ assert(!vm.runInContext('cameraTiles.has('+JSON.stringify(addedId)+')',context));
+ assert(removedInventory.cameras.some(c=>c.id===cameraId),'Other cameras must remain active');
+ await vm.runInContext('purgeStorage('+JSON.stringify(addedId)+',"remove_archive")',context);
+ assert(elements['storage-purge-status'].textContent.includes('Cancelled'));
+ assert((await vm.runInContext("api('/api/cameras')",context)).archived_cameras.some(c=>c.id===addedId));
+ context.confirm=()=>true;
+ await vm.runInContext('purgeStorage('+JSON.stringify(addedId)+',"remove_archive")',context);
+ assert(elements['storage-purge-status'].textContent.includes('Archived camera removed'));
+ assert(!(await vm.runInContext("api('/api/cameras')",context)).archived_cameras.some(c=>c.id===addedId));
  await elements.logout.onclick();assert(!elements.login.classList.contains('hidden'));
  console.log('Dashboard '+cameraId+' behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, image-first review, playback from zero, full-frame viewing, substream track timing, tracker toggles, detection timeline exact pixel overlay mode, assisted star selection and invalid-fit rejection, event rows, operator labels/notes, bulk protection, trash/restore, sign-out.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

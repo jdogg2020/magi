@@ -204,8 +204,8 @@ class AmbiguityTests(unittest.TestCase):
     def _candidate(self, azimuth_deg, count, rms=0.1):
         geometry = {'azimuth_deg': azimuth_deg, 'elevation_deg': 45.0, 'roll_deg': 0.0,
                     'horizontal_fov_deg': 90.0, 'vertical_fov_deg': 50.0}
-        basis, _ = geometry_to_basis_scales(geometry)
-        return {'basis': basis, 'verification_count': count, 'rms_deg': rms}
+        basis, scales = geometry_to_basis_scales(geometry)
+        return {'basis': basis, 'scales': scales, 'verification_count': count, 'rms_deg': rms}
 
     def test_distinct_equal_solutions_rejected(self):
         with self.assertRaises(StarSolveError):

@@ -9,12 +9,12 @@ const cameraTiles = new Map();
 let stationCameras = [], cameraRefreshBusy = false, cameraAddBusy = false;
 const eventKey = row => `${row.camera_id || selectedCamera}:${row.id}`;
 const eventPath = (row, part) => `/api/cameras/${encodeURIComponent(row.camera_id || selectedCamera)}/clips/${encodeURIComponent(row.id)}/${part}`;
-function cameraSettingsLink(camera, label){
+function cameraSettingsLink(camera, label, storage=false){
   const link=document.createElement('a');
-  link.href='/?camera='+encodeURIComponent(camera.id)+'#settings';link.textContent=label;
+  link.href='/?camera='+encodeURIComponent(camera.id)+(storage?'#storage-limits':'#settings');link.textContent=label;
   link.onclick=event=>{
     if(camera.id===selectedCamera && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && !event.button){
-      event.preventDefault();tab('settings');location.hash='settings';refreshFrame();
+      event.preventDefault();tab('settings');location.hash=storage?'storage-limits':'settings';if(storage)focusStorageLimits();refreshFrame();
     }
   };
   return link;
@@ -26,8 +26,11 @@ async function refreshCameras() {
     const result = await api('/api/cameras');
     if (!csrf) return;
     stationCameras = result.cameras;
+    if(result.cameras.length && !result.cameras.some(c=>c.id===selectedCamera) && !(result.archived_cameras || []).some(c=>c.id===selectedCamera)){
+      location.href='/?camera='+encodeURIComponent(result.cameras[0].id)+'#overview';return;
+    }
     const select = $('camera-select'), grid = $('camera-grid');
-    const signature = JSON.stringify(result.cameras.map(c=>[c.id,c.name]));
+    const signature = JSON.stringify([result.cameras.map(c=>[c.id,c.name]),result.archived_cameras || []]);
     if (select.dataset.signature !== signature) {
       select.replaceChildren();$('camera-links').replaceChildren();
       const filter = $('event-camera'), previous = filter.value || 'all';filter.replaceChildren();
@@ -37,13 +40,17 @@ async function refreshCameras() {
         const choice=document.createElement('option');choice.value=camera.id;choice.textContent=camera.name;filter.append(choice);
         $('camera-links').append(cameraSettingsLink(camera,camera.name+' settings'));
       }
+      for(const camera of result.archived_cameras || []){const choice=document.createElement('option');choice.value=camera.id;choice.textContent=camera.name+' (removed)';filter.append(choice);}
       filter.value=previous;select.value=selectedCamera;select.dataset.signature=signature;
       const current=result.cameras.find(c=>c.id===selectedCamera);
       if(current){$('camera-name').value=current.name;$('selected-camera-name').textContent=current.name;}
     }
     $('sidebar-camera-add').disabled=$('camera-add').disabled=cameraAddBusy || result.cameras.length >= result.max_cameras;
     $('sidebar-camera-add').title=result.cameras.length >= result.max_cameras?'Camera limit reached':'';
-    $('camera-rename').disabled=$('camera-restart').disabled=result.max_cameras===1;
+    const selectedActive=result.cameras.some(c=>c.id===selectedCamera);
+    $('camera-remove').disabled=!selectedActive;
+    $('camera-rename').disabled=$('camera-restart').disabled=result.max_cameras===1 || !selectedActive;
+    for(const [id,tile] of cameraTiles){if(!result.cameras.some(c=>c.id===id)){if(tile.url)URL.revokeObjectURL(tile.url);tile.card.remove();cameraTiles.delete(id);}}
     for (const camera of result.cameras) {
       let tile=cameraTiles.get(camera.id);
       if(!tile){
@@ -120,6 +127,16 @@ $('camera-restart').onclick=async()=>{
   catch(error){$('camera-management-status').textContent=error.message;}
   finally{$('camera-restart').disabled=false;}
 };
+$('camera-remove').onclick=async()=>{
+  const camera=stationCameras.find(c=>c.id===selectedCamera);
+  if(!camera || !confirm('Remove '+camera.name+'? Capture will stop. Recordings and private archive configuration will be kept.'))return;
+  $('camera-remove').disabled=true;
+  try{
+    await api('/api/cameras',{action:'remove',id:selectedCamera});
+    const result=await api('/api/cameras');
+    location.href='/?camera='+encodeURIComponent(result.cameras[0]?.id || 'primary')+'#overview';
+  }catch(error){$('camera-management-status').textContent=error.message;$('camera-remove').disabled=false;}
+};
 let connectionStartedAt = 0;
 let ignoreZones = [], zoneStart = null, zoneDraft = null, zoneFrameURL = null, zoneFrameReady = false;
 let updateBusy=false, updateInProgress=false;
@@ -146,14 +163,14 @@ async function api(path, body, identity = selectedCamera) {
   return value;
 }
 function loggedOut() { if(updateInProgress)$('login-error').textContent='Magi is updating or has restarted. Sign in again to see the update result.'; if(frameURL){URL.revokeObjectURL(frameURL);frameURL=null;$('camera-frame').removeAttribute('src');}for(const tile of cameraTiles.values()){if(tile.url)URL.revokeObjectURL(tile.url);}cameraTiles.clear();stationCameras=[];$('camera-grid').replaceChildren();MagiEvents.reset(); setupSignature=setupToken=null; setupError=''; for(const id of ['camera-password','setup-new-password','setup-confirm-password','id-opensky_client_id','id-opensky_client_secret']) $(id).value=''; if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
-function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); MagiEvents.mount(name);if(name==='updates')refreshUpdates(true);if(name==='events' || name==='overview')MagiEvents.refresh(true); }
+function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); MagiEvents.mount(name);if(name==='updates')refreshUpdates(true);if(name==='storage')refreshStorage();if(name==='events' || name==='overview')MagiEvents.refresh(true); }
 document.querySelectorAll('.nav').forEach(el => el.addEventListener('click', () => tab(el.dataset.tab)));
 $('open-settings').onclick = () => tab('settings');
 $('camera-settings-link').onclick = event => { event.preventDefault(); tab('settings'); }; $('view-all').onclick = () => tab('events');
 async function signedIn() {
   const session = await api('/api/session'); csrf = session.csrf;
   $('login').classList.add('hidden'); $('app').classList.remove('hidden');
-  settingsLoaded = false; clipSignature = ''; await refreshCameras(); await refresh(); await refreshUpdates(true); if(typeof location !== 'undefined' && new URL(location.href).hash==='#settings')tab('settings');
+  settingsLoaded = false; clipSignature = ''; await refreshCameras(); await refresh(); await refreshUpdates(true); if(typeof location !== 'undefined' && ['#settings','#storage-limits'].includes(new URL(location.href).hash)){tab('settings');if(location.hash==='#storage-limits')focusStorageLimits();}
 }
 $('login-form').onsubmit = async event => { event.preventDefault(); $('login-error').textContent = ''; try { await api('/api/login', {username: $('login-user').value, password: $('login-password').value}); $('login-password').value = ''; await signedIn(); } catch (error) { $('login-error').textContent = error.message; } };
 $('opensky-credentials-file').onchange=async()=>{
@@ -325,7 +342,7 @@ async function fillSettings() {
   $('api_scheme').value = s.camera.api_scheme || 'http'; $('api_port').value = s.camera.api_port || 80;
   updateCameraWebLink();
   $('camera-password').placeholder = s.camera.has_password ? 'Saved — leave blank to keep' : 'Enter the camera password';
-  $('max_gb').value = s.storage.max_bytes / 1e9; $('free_gb').value = s.storage.min_free_bytes / 1e9; $('retention_days').value = s.storage.retention_days;
+  $('max_gb').value = s.storage.max_bytes / 1e9; $('free_gb').value = s.storage.min_free_bytes / 1e9; $('retention_days').value = s.storage.retention_days; $('cleanup_gb').value = (s.storage.cleanup_margin_bytes || 0) / 1e9; $('trash_days').value = s.storage.trash_days ?? 7;
   for (const key of ['threshold', 'min_pixels', 'min_seconds', 'min_travel']) $(key).value = s.detection[key];
   $('enabled').checked = s.detection.enabled;
   for(const key of ['lightning_enabled','meteor_enabled','retain_aircraft_matches','retain_satellite_matches']) $(key).checked=s.detection[key] ?? true;
@@ -384,7 +401,7 @@ $('settings-form').onsubmit = async event => { event.preventDefault(); const sub
   identification.aircraft_local_file=$('id-aircraft_local_file').checked;
   if(identification.location_source==='gnss'){ delete identification.latitude; delete identification.longitude; if(latestSensors?.effective_location?.altitude_effective_source==='gnss_gga_wgs84')delete identification.elevation_m; }
   identification.aircraft_feed_url = $('id-aircraft_feed_url').value.trim(); identification.satellite_group = $('id-satellite_group').value; identification.aircraft_provider = $('id-aircraft_provider').value; identification.opensky_client_id = $('id-opensky_client_id').value; identification.opensky_client_secret = $('id-opensky_client_secret').value;
-  try { await api('/api/settings', {camera, recording, detection, identification, storage: {max_bytes:Math.round(Number($('max_gb').value)*1e9), min_free_bytes:Math.round(Number($('free_gb').value)*1e9), retention_days:Number($('retention_days').value)}}); $('camera-password').value = ''; $('id-opensky_client_id').value = ''; $('id-opensky_client_secret').value = ''; $('opensky-import-status').textContent='Credentials saved locally on the Pi.'; $('settings-result').textContent = 'Saved. Reconnecting camera…'; settingsLoaded = false; connectionStartedAt = Date.now(); tab('overview');
+  try { await api('/api/settings', {camera, recording, detection, identification, storage: {max_bytes:Math.round(Number($('max_gb').value)*1e9), min_free_bytes:Math.round(Number($('free_gb').value)*1e9), retention_days:Number($('retention_days').value), cleanup_margin_bytes:Math.round(Number($('cleanup_gb').value)*1e9), trash_days:Number($('trash_days').value)}}); $('camera-password').value = ''; $('id-opensky_client_id').value = ''; $('id-opensky_client_secret').value = ''; $('opensky-import-status').textContent='Credentials saved locally on the Pi.'; $('settings-result').textContent = 'Saved. Reconnecting camera…'; settingsLoaded = false; connectionStartedAt = Date.now(); tab('overview');
     globalThis.scrollTo?.({top: 0, behavior: 'smooth'});
     notice('Settings saved. Connecting to your camera… The live preview will appear here automatically.');
     await refresh(); await refreshFrame(); } catch (error) { $('settings-result').textContent = error.message; } finally { submit.disabled = false; }
@@ -477,6 +494,7 @@ async function openReview(event, imageKind = 'thumbnail') {
   const generation = ++reviewGeneration; reviewEvent = event; MagiEvents.updateReview(event); reviewFrames = []; reviewMeta = null; reviewTracks=[]; reviewColorTracks=[]; reviewTimelineAttempted=false;
   $('review-title').textContent = `${event.camera_name || 'Camera 1'} · ${new Date(event.trigger_utc).toLocaleString()}`;
   $('motion-info').textContent = event.motion ? 'Loading motion data…' : 'Motion data unavailable for this older event.';
+  $('radio-report').classList.add('hidden'); $('radio-status').textContent='';
   $('track-report').classList.add('hidden'); $('identification-detail').textContent = ''; $('identification-status').textContent = 'Loading reference check…';
   updateReviewAvailability(event);
   $('review-quality').value = event.substream_preview ? 'substream' : 'analysis';
@@ -640,6 +658,9 @@ async function loadIdentification(id) {
   try { const report = await api(eventPath(reviewEvent,'identification')); if(generation!==reviewGeneration || !reviewEvent || eventKey(reviewEvent)!==key) return;
     $('identification-status').textContent = report.status.replaceAll('_',' ');
     $('track-report').href=eventPath(reviewEvent,'identification'); $('track-report').classList.remove('hidden');
+    const radio=report.radio_evidence;
+    $('radio-status').textContent=radio ? `Local radio: ${radio.aircraft_count || 0} aircraft recorded · ${radio.coverage} coverage · ${radio.association==='assessed'?'association assessed':'association not assessed'}. Nearby traffic alone does not identify the object.` : 'No saved radio evidence for this event.';
+    $('radio-report').classList.toggle('hidden',!radio);if(radio)$('radio-report').href=eventPath(reviewEvent,'radio');
     const measurements=report.measurements;
     const summary=(measurements?.tracks || []).map(t=>`Track ${t.track_id}: ${t.sampled_path_angle_deg.toFixed(2)}° sampled path over ${t.duration_seconds.toFixed(2)}s · ${t.mean_path_speed_deg_s == null ? 'speed unavailable' : t.mean_path_speed_deg_s.toFixed(2)+'°/s mean angular speed'}`).join('\n');
     $('identification-detail').textContent = (summary ? summary+'\nHost timing and centroid uncertainty unverified; angles do not establish physical speed or distance.\n\n' : '')+JSON.stringify(report, null, 2);
@@ -794,3 +815,122 @@ function setLocationMode(){
   if(!automatic)$('id-elevation_m').readOnly=false;
 }
 $('id-location_source').onchange=()=>{setLocationMode();if(latestSensors)renderSensors(latestSensors);};
+
+let storageBusy = false;
+async function refreshStorage() {
+  if(storageBusy) return;
+  storageBusy=true; $('storage-refresh').disabled=true;
+  $('storage-status').textContent='Measuring storage…';
+  try {
+    const result=await api('/api/station/storage');
+    $('storage-cameras').replaceChildren();$('storage-volumes').replaceChildren();
+    if(result.busy){$('storage-status').textContent='A storage scan is already running. Try again shortly.';return;}
+    $('storage-status').textContent=`${result.partial?'Partial inventory — some usage is unavailable. ':''}Active cameras: ${bytes(result.active_bytes)} · Removed-camera archives: ${bytes(result.archived_bytes)}. Measured ${new Date(result.measured_at*1000).toLocaleTimeString()}. Results cached for 30 seconds.`;
+    for(const volume of result.volumes){
+      const line=document.createElement('p');
+      line.textContent=`Disk: ${bytes(volume.free_bytes)} free of ${bytes(volume.total_bytes)} · ${volume.camera_ids.length} camera entries`;
+      $('storage-volumes').append(line);
+    }
+    for(const camera of result.cameras){
+      const card=document.createElement('article');card.className='panel form-panel';
+      const title=document.createElement('h2');title.textContent=camera.name+(camera.archived?' (removed)':'');
+      const info=document.createElement('p');
+      info.textContent=camera.error || `${bytes(camera.used_bytes)} used · ${camera.archived?'Automatic cleanup disabled':`Cap ${bytes(camera.max_bytes)} · Free-space floor ${bytes(camera.min_free_bytes)} · Cleanup headroom ${bytes(camera.cleanup_margin_bytes)} · Retention ${camera.retention_days} days · Trash ${camera.trash_days} days`}`;
+      card.append(title,info);
+      if(camera.state==='storage_blocked'){const warning=document.createElement('p');warning.textContent='Capture paused: the camera cap or free-space floor cannot be satisfied. Check protected/in-use footage and other disk users.';card.append(warning);}
+      if(!camera.archived)card.append(cameraSettingsLink(camera,'Edit storage limits',true));
+      const actions=document.createElement('div');actions.className='update-actions';
+      for(const [mode,label] of [['unprotected','Purge unprotected events'],['trash','Empty trash'],...(camera.archived?[['remove_archive','Delete archived camera']]:[])]){
+        const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent=label;button.onclick=()=>purgeStorage(camera.id,mode);actions.append(button);
+      }
+      card.append(actions);$('storage-cameras').append(card);
+    }
+  } catch(error){$('storage-status').textContent=error.message;}
+  finally {storageBusy=false;$('storage-refresh').disabled=false;}
+}
+$('storage-refresh').onclick=refreshStorage;
+
+function focusStorageLimits(){
+  $('storage-limits').scrollIntoView({block:'start',behavior:'smooth'});
+  $('max_gb').focus({preventScroll:true});
+}
+let purgeBusy=false;
+async function purgeStorage(camera,mode){
+  if(purgeBusy)return;
+  purgeBusy=true;
+  const status=$('storage-purge-status');status.textContent='Preparing deletion preview…';
+  try {
+    const preview=await api('/api/station/storage/purge',{action:'preview',camera_id:camera,mode});
+    if(!preview.count && mode!=='remove_archive'){await api('/api/station/storage/purge',{action:'cancel',token:preview.token});status.textContent='No eligible events to purge.';return;}
+    const message=`${preview.scope}: permanently delete ${preview.count} unprotected events (about ${bytes(preview.estimated_bytes)} of files)? This includes originals, previews, notes and metadata. ${preview.retained} protected/unfinished/unreadable entries retained. Events in use will be rechecked and skipped. ${mode==='remove_archive'?'The removed camera will also disappear from Storage and Events; its leftover buffers will be deleted. ':''}This cannot be undone. File size is not guaranteed reclaimed space.`;
+    if(!confirm(message)){await api('/api/station/storage/purge',{action:'cancel',token:preview.token});status.textContent='Cancelled. No files deleted.';return;}
+    let step=0,result;
+    do {
+      result=await api('/api/station/storage/purge',{action:'confirm',token:preview.token,step});
+      step=result.step;
+      status.textContent=`Deleted ${result.deleted} events; ${result.failed} skipped or failed. Working…`;
+    } while(!result.done && csrf);
+    status.textContent=`Deleted ${result.deleted} events. ${result.failed} skipped or failed; ${result.retained} retained.${result.removed?' Archived camera removed.':''}${result.error?' '+result.error:''}`;
+    await refreshStorage();await refreshCameras();await MagiEvents.refresh(true);
+  }catch(error){status.textContent='Deletion stopped: '+error.message+' Refresh before retrying; completed deletions are permanent.';}
+  finally{purgeBusy=false;}
+}
+$('storage-purge-all').onclick=()=>purgeStorage('all','unprotected');
+$('storage-empty-trash').onclick=()=>purgeStorage('all','trash');
+
+// Automatic solving is isolated from capture and never applies without review.
+let autoStarCandidate=null, autoStarBusy=false, autoStarRunning=false, autoStarImageReady=false;
+const autoStarImage=document.createElement('img');
+function autoStarApplyState(){
+  $('auto-star-apply').disabled=autoStarBusy || autoStarRunning || !autoStarImageReady || !autoStarCandidate || autoStarCandidate.status!=='candidate' || !$('auto-star-reviewed').checked;
+}
+autoStarImage.onload=()=>{
+  const canvas=$('auto-star-canvas'),ctx=canvas.getContext('2d');
+  canvas.width=autoStarImage.naturalWidth;canvas.height=autoStarImage.naturalHeight;
+  ctx.drawImage(autoStarImage,0,0);ctx.strokeStyle='#ffdc00';ctx.fillStyle='#ffdc00';ctx.lineWidth=3;ctx.font='18px sans-serif';
+  for(const match of autoStarCandidate?.matches || []){
+    const x=match.x*canvas.width,y=match.y*canvas.height;ctx.beginPath();ctx.arc(x,y,10,0,Math.PI*2);ctx.stroke();ctx.fillText(match.catalog_id,x+12,y);
+  }
+  autoStarImageReady=true;autoStarApplyState();
+};
+autoStarImage.onerror=()=>{autoStarImageReady=false;autoStarApplyState();$('auto-star-status').textContent='Candidate frame is unavailable. Choose another saved frame and solve again.';};
+async function refreshAutoStars(){
+  if(!csrf || autoStarBusy)return;
+  autoStarBusy=true;autoStarApplyState();
+  try{
+    const data=await api('/api/auto-calibration/status',{}),candidate=data.candidate;
+    autoStarRunning=!!data.job?.running;
+    $('auto-star-cancel').disabled=!autoStarRunning;
+    $('auto-star-start').disabled=autoStarRunning;
+    const outcome=data.job?.error || data.job?.reason || data.status.reason || data.status.status;
+    $('auto-star-status').textContent=(autoStarRunning?'Solving locally; recording continues.':`Latest solve: ${outcome || 'not run'}.`)+(data.status.movement_suspect?' Camera movement suspected: review and recalibrate.':'');
+    if(candidate?.created_unix!==autoStarCandidate?.created_unix || candidate?.status!==autoStarCandidate?.status){
+      autoStarCandidate=candidate;autoStarImageReady=false;$('auto-star-reviewed').checked=false;
+      $('auto-star-review').classList.toggle('hidden',!candidate);
+      if(candidate){
+        const g=candidate.geometry,v=candidate.verification || {},r=candidate.residuals_deg || {};
+        $('auto-star-fit').textContent=`Candidate from ${new Date(candidate.image_timestamp_unix*1000).toLocaleString()}\nAzimuth ${g.azimuth_deg.toFixed(3)}° · elevation ${g.elevation_deg.toFixed(3)}° · roll ${g.roll_deg.toFixed(3)}°\nField of view ${g.horizontal_fov_deg.toFixed(3)}° × ${g.vertical_fov_deg.toFixed(3)}°\n${v.matched_count || 0} matched stars · ${v.verification_count || 0} additional verification stars\nAll-star RMS ${r.all_rms_deg?.toFixed(3) ?? '?'}° · maximum ${r.all_max_deg?.toFixed(3) ?? '?'}°\nPinhole model; lens distortion is not fitted. Host time is not verified camera exposure time.\n${candidate.status==='applied'?'Already applied.':'This candidate remains unchanged if a later solve fails.'}`;
+        autoStarImage.src=cameraPath(`/api/clips/${encodeURIComponent(candidate.source_event)}/frame?auto=${candidate.created_unix}`);
+      }
+    }
+  }catch(error){$('auto-star-status').textContent=error.message;}
+  finally{autoStarBusy=false;autoStarApplyState();}
+}
+$('auto-star-refresh').onclick=refreshAutoStars;
+$('auto-star-reviewed').onchange=autoStarApplyState;
+$('auto-star-start').onclick=async()=>{
+  if(autoStarBusy)return;autoStarBusy=true;autoStarApplyState();
+  try{const id=$('star-event').value;if(!id)throw new Error('Find saved frames and select a clear frame first.');await api('/api/auto-calibration/start',{id});autoStarRunning=true;}
+  catch(error){$('auto-star-status').textContent=error.message;return;}
+  finally{autoStarBusy=false;autoStarApplyState();}
+  await refreshAutoStars();
+};
+$('auto-star-cancel').onclick=async()=>{try{await api('/api/auto-calibration/cancel',{});await refreshAutoStars();}catch(error){$('auto-star-status').textContent=error.message;}};
+$('auto-star-apply').onclick=async()=>{
+  if($('auto-star-apply').disabled)return;autoStarBusy=true;autoStarApplyState();
+  try{await api('/api/auto-calibration/apply',{created_unix:autoStarCandidate.created_unix});await fillSettings();}
+  catch(error){$('auto-star-status').textContent=error.message;return;}
+  finally{autoStarBusy=false;autoStarApplyState();}
+  await refreshAutoStars();
+};
+setInterval(()=>{if(autoStarRunning)refreshAutoStars();},3000);

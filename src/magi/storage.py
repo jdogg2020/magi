@@ -1,4 +1,4 @@
-"""SSD guard, atomic manifests, and bounded storage."""
+"""Recording volume guard, atomic manifests, and bounded storage."""
 
 import json
 import os
@@ -77,7 +77,11 @@ class Volume:
     def prune(self, protected=(), reserve=0):
         """Delete only owned, finished event directories, oldest first."""
         used, free = self.usage()
-        cutoff = time.time() - self.cfg.retention_days * 86400
+        now = time.time()
+        cutoff = now - self.cfg.retention_days * 86400
+        pressure = used + reserve >= self.cfg.max_bytes or free - reserve < self.cfg.min_free
+        target_used = self.cfg.max_bytes - (self.cfg.cleanup_margin if pressure else 0)
+        target_free = self.cfg.min_free + (self.cfg.cleanup_margin if pressure else 0)
         events = []
         for directory in (self.cfg.root / "events").iterdir():
             if directory.name in protected or not directory.is_dir():
@@ -93,7 +97,7 @@ class Volume:
             except (OSError, ValueError, KeyError, TypeError):
                 continue
         for _, created, directory, trashed_at in sorted(events):
-            if (trashed_at is not None and trashed_at < time.time()-7*86400) or created < cutoff or used + reserve >= self.cfg.max_bytes or free - reserve < self.cfg.min_free:
+            if (trashed_at is not None and trashed_at < now-self.cfg.trash_days*86400) or created < cutoff or (pressure and (used + reserve >= target_used or free - reserve < target_free)):
                 self.check()
                 shutil.rmtree(directory)
                 used, free = self.usage()

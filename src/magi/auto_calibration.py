@@ -4,7 +4,7 @@ This module is the seam between the blind solver and the running
 service. It deliberately does not run inside the recorder loop: solving
 takes tens of seconds, so it runs either as the ``magi star-solve`` CLI
 (used by the nightly systemd timer and by an operator on demand) or in
-one daemon thread started by Application.auto_calibration_start. Both
+one isolated child process started by Application.auto_calibration_start. Both
 paths share solve_event here and write the same records.
 
 Records, under <station root>/auto-calibration/:
@@ -33,6 +33,10 @@ import math
 from pathlib import Path
 import re
 import threading
+import os
+import subprocess
+import sys
+import io
 import time
 
 from PIL import Image, ImageDraw
@@ -42,7 +46,7 @@ from .identification import validate as validate_identification
 from .sensors import effective as sensor_effective
 from .star_catalog import ensure_catalog, visible_catalog_stars
 from .star_detection import detect_stars
-from .star_solve import SOLVER_VERSION
+from .star_solve import SOLVER_VERSION, geometry_to_basis_scales, _check_deadline
 from .star_solve import solve as blind_solve
 from .storage import atomic_json
 
@@ -65,7 +69,13 @@ def status_path(root):
 
 def read_json_file(path):
     try:
-        return json.loads(Path(path).read_text())
+        path = Path(path)
+        if path.is_symlink() or path.stat().st_size > 8*1024*1024:
+            raise ValueError("Invalid report file")
+        value = json.loads(path.read_text())
+        if not isinstance(value, dict):
+            raise ValueError("Invalid report object")
+        return value
     except (OSError, ValueError) as exc:
         raise AutoCalibrationError(f'Cannot read {Path(path).name}: {exc}') from exc
 
@@ -94,8 +104,11 @@ def check_movement(new_geometry, current_geometry):
     angle = math.degrees(math.acos(max(-1, min(1, sum(x * y for x, y in zip(a, b))))))
     dh = abs(new_geometry['horizontal_fov_deg'] - current_geometry['horizontal_fov_deg'])
     dv = abs(new_geometry['vertical_fov_deg'] - current_geometry['vertical_fov_deg'])
-    moved = angle > MOVEMENT_BORESIGHT_DEG or dh > MOVEMENT_FOV_DEG or dv > MOVEMENT_FOV_DEG
-    return moved, angle, {'horizontal_fov_deg': dh, 'vertical_fov_deg': dv}
+    a_basis, _ = geometry_to_basis_scales(new_geometry)
+    b_basis, _ = geometry_to_basis_scales(current_geometry)
+    axes = [math.degrees(math.acos(max(-1, min(1, float(sum(a_basis[:,i]*b_basis[:,i])))))) for i in range(3)]
+    moved = max(axes) > MOVEMENT_BORESIGHT_DEG or dh > MOVEMENT_FOV_DEG or dv > MOVEMENT_FOV_DEG
+    return moved, angle, {'horizontal_fov_deg': dh, 'vertical_fov_deg': dv, 'orientation_deg': max(axes)}
 
 
 def _ensure_status_dir(root):
@@ -115,6 +128,7 @@ def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=N
     """
     if not re.fullmatch(r'\d{8}T\d{6}-[a-f0-9]{12}', event_id or ''):
         raise AutoCalibrationError('Invalid event ID.')
+    _check_deadline(deadline, cancel_event)
     directory = Path(cfg.root) / 'events' / event_id
     if directory.is_symlink() or not directory.resolve().is_relative_to(Path(cfg.root).resolve()):
         raise AutoCalibrationError('Invalid event path.')
@@ -133,6 +147,8 @@ def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=N
     width, height = thumbnail['native_width'], thumbnail['native_height']
     frame_path = directory / 'best-frame.jpg'
     try:
+        if frame_path.is_symlink() or frame_path.stat().st_size > 32*1024*1024:
+            raise AutoCalibrationError("Invalid frame file.")
         image_bytes = frame_path.read_bytes()
     except OSError as exc:
         raise AutoCalibrationError(f'Cannot read the full-resolution frame: {exc}') from exc
@@ -153,13 +169,15 @@ def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=N
     cache = ensure_catalog(cache_path)
     visible = visible_catalog_stars(cache, stamp, latitude, longitude, elevation)
     try:
-        image = Image.open(frame_path)
+        image = Image.open(io.BytesIO(image_bytes))
+        if image.size != (width, height):
+            raise AutoCalibrationError("Frame dimensions differ from its metadata. Regenerate the frame.")
         image.load()
     except (OSError, ValueError) as exc:
         raise AutoCalibrationError(f'Cannot decode the full-resolution frame: {exc}') from exc
     if cancel_event is not None and cancel_event.is_set():
         raise AutoCalibrationError('Solve cancelled before detection.')
-    detections = detect_stars(image)
+    detections = detect_stars(image, deadline=deadline, cancel_event=cancel_event)
     result = blind_solve(detections, visible, width, height, deadline=deadline,
                          cancel_event=cancel_event, options=options)
     record = {'schema': 1, 'camera_id': camera_id, 'source_event': event_id,
@@ -188,15 +206,22 @@ def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=N
     else:
         record['status'] = 'failed'
     status_file = status_path(cfg.root)
-    if result['status'] == 'solved' and status_file.is_file():
-        try:
-            previous = json.loads(status_file.read_text())
-        except (OSError, ValueError):
-            previous = {}
-        current = previous.get('applied_geometry')
-        if isinstance(current, dict):
-            moved, angle, deltas = check_movement(result['geometry'], current)
-            status['movement_suspect'] = moved
+    previous = read_status(cfg.root)
+    current = previous.get('applied_geometry')
+    if cfg.identification.get('calibrated'):
+        from .calibration import GEOMETRY_KEYS
+        effective = sensor_effective(cfg.identification, sensors)
+        if all(effective.get(k) is not None for k in GEOMETRY_KEYS):
+            current = {k: effective[k] for k in GEOMETRY_KEYS}
+    if isinstance(current, dict):
+        status['applied_geometry'] = current
+    status['movement_suspect'] = previous.get('movement_suspect', False)
+    status['movement'] = previous.get('movement')
+    if result['status'] == 'solved' and isinstance(current, dict):
+        moved, angle, deltas = check_movement(result['geometry'], current)
+        # A new solve cannot clear a warning: only explicit apply acknowledges it.
+        status['movement_suspect'] = status['movement_suspect'] or moved
+        if moved:
             status['movement'] = {'boresight_deg': round(angle, 4), 'fov_deltas_deg': deltas}
     _ensure_status_dir(cfg.root)
     atomic_json(status_file, status)
@@ -288,35 +313,74 @@ def render_overlay(image_path, matches, output_path):
 
 
 class AutoCalibrationJob:
-    """One bounded background solve, run in a daemon thread."""
+    """One low-priority, memory-limited child; capture never runs the solver."""
+    gate = threading.Lock()
 
     def __init__(self, app, event_id):
-        self.app = app
-        self.event_id = event_id
-        self.cancel = threading.Event()
+        self.app, self.event_id = app, event_id
         self.done = threading.Event()
+        self.process = None
         self.result = None
         self.error = None
-        self.thread = threading.Thread(target=self._run, name='magi-auto-calibration', daemon=True)
-
-    def _run(self):
-        try:
-            self.result = solve_event(self.app.cfg, self.event_id, camera_id=self.app.camera_id,
-                                      cancel_event=self.cancel,
-                                      deadline=time.monotonic() + 600)
-        except (AutoCalibrationError, CalibrationError, OSError, ValueError) as exc:
-            self.error = str(exc)
-        finally:
-            self.done.set()
+        self.deadline = 0
+        self.owns_gate = False
 
     def start(self):
-        self.thread.start()
+        if not self.gate.acquire(blocking=False):
+            raise AutoCalibrationError('Another camera is solving. Wait for it to finish.')
+        self.owns_gate = True
+        env = {**os.environ, 'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1'}
+        try:
+            self.process = subprocess.Popen([sys.executable, '-m', 'magi.star_worker',
+                str(self.app.path), self.event_id, self.app.camera_id],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+        except OSError:
+            self._finish('Could not start the star solver.')
+            raise AutoCalibrationError(self.error) from None
+        self.deadline = time.monotonic() + 600
         return {'started': True, 'event_id': self.event_id}
 
+    def _finish(self, error=None):
+        self.error = error
+        self.done.set()
+        if self.owns_gate:
+            self.gate.release()
+            self.owns_gate = False
+
+    def poll(self):
+        if self.done.is_set() or self.process is None:
+            return
+        if time.monotonic() > self.deadline:
+            self.close('Solve exceeded its time budget; previous calibration kept.')
+        elif self.process.poll() is not None:
+            try:
+                output = self.process.stdout.read(8193)
+                self.result = json.loads(output) if len(output) <= 8192 else {}
+                if not isinstance(self.result, dict) or self.result.get('status') not in ('candidate', 'failed'):
+                    raise ValueError()
+                self._finish(self.result.get('error'))
+            except (ValueError, OSError):
+                self._finish('Star solver stopped unexpectedly or reached its resource limit; previous calibration kept.')
+            finally:
+                self.process.stdout.close()
+
+    def close(self, reason='Solve cancelled; previous calibration kept.'):
+        if self.done.is_set():
+            return
+        if self.process:
+            if self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=.2)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=2)
+            self.process.stdout.close()
+        self._finish(reason)
+
     def state(self):
+        self.poll()
         if not self.done.is_set():
             return {'running': True, 'event_id': self.event_id}
-        if self.error is not None:
-            return {'running': False, 'event_id': self.event_id, 'error': self.error}
-        return {'running': False, 'event_id': self.event_id, 'status': self.result['status'],
-                'reason': self.result['result'].get('reason')}
+        return {'running': False, 'event_id': self.event_id, 'error': self.error,
+                'status': (self.result or {}).get('status'), 'reason': (self.result or {}).get('reason')}

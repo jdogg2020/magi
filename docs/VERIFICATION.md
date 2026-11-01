@@ -367,3 +367,26 @@ No Pi installer timeouts, settings, credentials or recordings change.
 
 Group related small changes in a single PR/version where practical. A workflow
 change alone does not need an application version bump or a separate Pi update.
+
+## 0.17.0 storage management
+
+Adds threshold/headroom, trash age, protected/in-use preservation, archive usage,
+shared volume and hardlink accounting, bounded scan failure and log-maintenance
+tests. Dashboard and Chromium checks cover Storage navigation and settings.
+These are local synthetic checks, not a Pi soak test.
+
+## 0.17.1 explicit storage deletion
+
+Tests cover preview cancellation/expiry, repeated confirmation, bounded batches,
+new and replaced events, protection changes and calibration use between preview
+and execution, damaged annotations, original-camera forgetting across restart,
+other-camera preservation and secondary config removal. Dashboard/Chromium tests
+exercise storage deep links and cancellation/confirmation of archive deletion.
+These remain synthetic checks; no remote Pi access is used.
+
+## 0.18.0 radio evidence
+
+Synthetic local receiver fixtures cover missing altitude/position, outages,
+bounded history/event size, restart reuse, bearing motion/time rejection and
+ambiguous/weak candidates. Two-camera dashboard and Chromium tests download
+persisted partial aircraft records without real sensor access.

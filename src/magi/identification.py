@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 import queue
+import shutil
 import threading
 import time
 import urllib.request
@@ -243,7 +244,8 @@ def measure_tracks(meta):
 
 
 class Identifier:
-    def __init__(self, cfg):
+    def __init__(self, cfg, radio=None):
+        self.radio = radio
         self.cfg = cfg
         self.settings = cfg.identification
         self.pending = queue.Queue(maxsize=4)
@@ -297,6 +299,8 @@ class Identifier:
             return False
 
     def _refresh_aircraft(self):
+        if getattr(self,'radio',None) is not None and not self.settings['aircraft_feed_url']:
+            return  # Shared station collector; saved event evidence drives local matching.
         s = self.settings
         if s['aircraft_provider'] != 'local_adsb' or (not s['aircraft_feed_url'] and not s['aircraft_local_file']) or time.monotonic() < self.next_aircraft:
             return
@@ -365,7 +369,10 @@ class Identifier:
             self.opensky_backoff = now + 60
             return 'reference_unavailable'
 
-    def _aircraft(self, samples, rays):
+    def _aircraft(self, samples, rays, evidence=None):
+        if evidence is not None and self.settings['aircraft_provider']=='local_adsb' and not self.settings['aircraft_feed_url']:
+            from .radio import match
+            return match(evidence,samples,rays,self.settings)
         source = self.settings['aircraft_provider']
         if source == 'opensky':
             reason = self._opensky(samples)
@@ -457,13 +464,16 @@ class Identifier:
         except Exception:
             return {'status': 'reference_unavailable', 'source': 'celestrak', 'reason': 'catalog_or_propagation_unavailable'}
 
-    def classify(self, meta):
+    def classify(self, meta, evidence=None):
         s = self.settings
         result = {'schema_version': 1, 'event_id': meta['id'], 'checked_utc': datetime.now(timezone.utc).isoformat(),
                   'status': 'disabled', 'tracks': [], 'measurements': measure_tracks(meta),
-                  'limitations': ['possible correlations only; original footage is never deleted',
+                  'limitations': ['possible correlations only; footage retention is configured separately',
                                   'host receipt time and approximate rectilinear camera model',
                                   'no match only refers to evaluated reference coverage']}
+        if evidence is not None:
+            result['radio_evidence'] = {k:evidence.get(k) for k in ('source','coverage','aircraft_count','truncated','requested_start_unix','requested_end_unix')}
+            result['radio_evidence']['association'] = 'not_assessed'
         if not s['enabled']:
             return result
         if not configured(s):
@@ -488,7 +498,9 @@ class Identifier:
             if len(samples) > 24:
                 samples = [samples[round(i * (len(samples) - 1) / 23)] for i in range(24)]
             rays = [pixel_direction(row, s) for row in samples]
-            plane = self._aircraft(samples, rays)
+            if angular(rays[0],rays[-1])<.05:
+                continue
+            plane = self._aircraft(samples, rays, evidence)
             satellite = self._satellites(samples, rays)
             result['tracks'].append({'track_id': identity, 'aircraft': plane, 'satellite': satellite})
         result['status'] = 'insufficient_track_data'
@@ -498,14 +510,19 @@ class Identifier:
                 for kind in ('aircraft', 'satellite'):
                     if row[kind]['status'] == 'possible_match':
                         matches.add(kind)
-            if len(matches) > 1:
+            aircraft_candidates = {candidate['id'] for row in result['tracks'] for candidate in row['aircraft'].get('candidates',[])}
+            if len(matches) > 1 or len(aircraft_candidates)>1:
                 result['status'] = 'ambiguous_possible_matches'
             elif matches:
                 result['status'] = 'possible_' + next(iter(matches))
+                if result['status']=='possible_aircraft' and any(c.get('basis')=='bearing_only' for row in result['tracks'] for c in row['aircraft'].get('candidates',[])):
+                    result['status']='possible_aircraft_bearing_only'
             else:
                 kinds = (['aircraft'] if s['aircraft_feed_url'] or s['aircraft_local_file'] or s['aircraft_provider']=='opensky' else []) + (['satellite'] if s['satellites'] else [])
                 states = [row[k]['status'] for row in result['tracks'] for k in kinds]
                 result['status'] = 'no_match_in_checked_data' if states and all(state == 'no_match' for state in states) else 'reference_coverage_incomplete'
+        if evidence is not None:
+            result['radio_evidence']['association'] = 'assessed' if any(row['aircraft'].get('source')=='saved_local_adsb' and row['aircraft'].get('evaluated_objects',0)>0 for row in result['tracks']) else 'not_assessed'
         return result
 
     def _run(self):
@@ -516,7 +533,28 @@ class Identifier:
             except queue.Empty:
                 continue
             try:
-                result = self.classify(meta)
+                evidence = None
+                if getattr(self,'radio',None) is not None and (meta.get('radio_evidence_requested') or (directory/'radio.json').exists()):
+                    from .sensors import bounded_json
+                    if (directory/'radio.json').exists():
+                        try:
+                            if (directory/'radio.json').is_symlink():raise ValueError('Unsafe sidecar')
+                            evidence=bounded_json(directory/'radio.json',600000)
+                            if not isinstance(evidence,dict) or evidence.get('schema')!=1 or evidence.get('event_id')!=meta['id']:
+                                raise ValueError('Invalid sidecar')
+                        except (OSError,ValueError):
+                            evidence={'source':'saved_local_adsb','coverage':'unreadable','snapshots':[],'aircraft_count':0}
+                    elif directory.is_dir() and self._volume_safe():
+                        evidence=self.radio.window(meta)
+                        if not self.settings['aircraft_local_file']:
+                            evidence.update(snapshots=[],coverage='disabled',aircraft_count=0)
+                        free=shutil.disk_usage(directory).free
+                        if free<self.cfg.min_free+4096:
+                            raise OSError('No evidence write headroom')
+                        if free<self.cfg.min_free+512000:
+                            evidence.update(snapshots=[],coverage='storage_pressure',aircraft_count=0,truncated=True)
+                        atomic_json(directory/'radio.json',evidence)
+                result = self.classify(meta, evidence)
                 # Do not recreate an event that retention or a missing volume removed.
                 if not self.stop.is_set() and directory.is_dir() and self._volume_safe():
                     atomic_json(directory / 'identification.json', result)

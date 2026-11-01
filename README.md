@@ -1,3 +1,14 @@
+## Camera removal (0.16.5)
+
+Use **Remove camera** in the selected camera’s settings to stop its capture and
+remove it from active camera controls. Confirmation is required. Existing events
+remain in Events, including a camera filter marked “removed,” and can still be
+reviewed and exported after restart. Recordings and private archive configuration
+are retained; removal does not delete footage. Archived footage still occupies
+shared storage and no longer undergoes that camera’s automatic retention.
+The dashboard remains available
+even when all cameras are removed, and Add a camera can start a new setup.
+
 ## Direct camera controls (0.15.4)
 
 The left Cameras menu now has an **Add a camera** button. Enter a name and submit

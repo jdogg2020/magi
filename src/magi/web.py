@@ -158,6 +158,10 @@ class Handler(BaseHTTPRequestHandler):
             station = self.server.app
             self.reply(200, station.recent_events() if hasattr(station, 'recent_events') else {'clips': station.read()['clips'], 'limit': 200})
             return
+        if path == '/api/station/storage':
+            station = self.server.app
+            self.reply(200, station.storage_status() if hasattr(station, 'storage_status') else {'cameras': [], 'volumes': [], 'partial': True})
+            return
         if path == '/api/station/status':
             station = self.server.app
             self.reply(200, station.health_status() if hasattr(station, 'health_status') else station.read()['status'])
@@ -191,17 +195,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.headers_out(200, 'image/jpeg', len(data))
                 self.wfile.write(data)
         else:
-            match = re.fullmatch(r'/api/clips/([^/]+)/(original|preview|thumbnail|metadata|motion|identification|video|frame|media|timeline)', path)
+            match = re.fullmatch(r'/api/clips/([^/]+)/(original|preview|thumbnail|metadata|motion|identification|video|frame|media|timeline|radio)', path)
             if match:
                 try:
                     file = app.clip_path(*match.groups())
-                    self.send_file(file, match[2])
+                    self.send_file(file, match[2], app.camera_id)
                 except (OSError, ValueError):
                     self.reply(404, {'error': 'File unavailable.'})
             else:
                 self.reply(404, {'error': 'Not found.'})
 
-    def send_file(self, path, kind):
+    def send_file(self, path, kind, camera_id="primary"):
         with path.open('rb') as source:
             size = path.stat().st_size
             start, end = 0, size - 1
@@ -223,11 +227,12 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 status = 206
                 extra['Content-Range'] = f'bytes {start}-{end}/{size}'
-            mime = {'video': 'video/mp4', 'frame': 'image/jpeg', 'media': 'application/json', 'timeline': 'application/json', 'preview': 'video/mp4', 'original': 'video/x-matroska', 'thumbnail': 'image/jpeg', 'metadata': 'application/json', 'motion': 'application/x-ndjson', 'identification': 'application/json'}[kind]
+            mime = {'radio': 'application/json', 'video': 'video/mp4', 'frame': 'image/jpeg', 'media': 'application/json', 'timeline': 'application/json', 'preview': 'video/mp4', 'original': 'video/x-matroska', 'thumbnail': 'image/jpeg', 'metadata': 'application/json', 'motion': 'application/x-ndjson', 'identification': 'application/json'}[kind]
             if kind == 'motion':
                 extra['Content-Encoding'] = 'gzip'
-            if kind in ('original', 'metadata', 'identification', 'media'):
-                extra['Content-Disposition'] = f'attachment; filename="{path.parent.name}-{path.name}"'
+            if kind in ('original', 'metadata', 'identification', 'media', 'radio'):
+                prefix = camera_id+'-' if kind=='radio' else ''
+                extra['Content-Disposition'] = f'attachment; filename="{prefix}{path.parent.name}-{path.name}"'
             length = end - start + 1
             self.headers_out(status, mime, length, extra)
             source.seek(start)
@@ -270,6 +275,9 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, {'ok': True}, {'Set-Cookie': 'magi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})
             return
         try:
+            if path == '/api/station/storage/purge':
+                self.reply(200, self.server.app.purges.request(body))
+                return
             if path == '/api/station/update':
                 if body.get('action') not in ('check','install'):
                     raise ValueError('Choose Check for updates or Install update.')
@@ -298,5 +306,5 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.reply(200, app.request(commands[path], body))
         except (ValueError,OSError) as error:
-            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/auto-calibration/', '/api/camera/setup', '/api/events/', '/api/cameras', '/api/station/events/', '/api/station/update')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
+            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/auto-calibration/', '/api/camera/setup', '/api/events/', '/api/cameras', '/api/station/events/', '/api/station/update', '/api/station/storage/')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
             self.reply(409, {'error': message})

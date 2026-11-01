@@ -14,6 +14,7 @@ x = (px + 0.5) / width and y = (py + 0.5) / height. This matches
 magi.identification.pixel_direction and magi.calibration.solve_geometry.
 """
 import numpy as np
+from .star_solve import _check_deadline
 
 DEFAULTS = {'sigma_factor': 5.0, 'window': 7, 'max_detections': 400,
             'min_neighbor_fraction': 0.2, 'max_elongation': 0.6,
@@ -34,7 +35,7 @@ def _to_grayscale(image):
     raise DetectionError('Frame must be a grayscale or RGB image.')
 
 
-def _local_maxima(gray, threshold):
+def _local_maxima(gray, threshold, deadline=None, cancel_event=None):
     """Pixels at least as bright as all eight neighbors and above threshold.
 
     Bright stars saturate in JPEG frames, so a star core is a flat
@@ -52,11 +53,16 @@ def _local_maxima(gray, threshold):
             if dx == 0 and dy == 0:
                 continue
             mask &= inner >= gray[1 + dy:gray.shape[0] - 1 + dy, 1 + dx:gray.shape[1] - 1 + dx]
+    _check_deadline(deadline, cancel_event)
+    if np.count_nonzero(mask) > 50000:
+        raise DetectionError("Too many bright pixels; choose a darker, clearer frame.")
     ys, xs = np.nonzero(mask)
     points = {(int(x) + 1, int(y) + 1) for x, y in zip(xs, ys)}
     visited = set()
     out_x, out_y = [], []
-    for x, y in zip(xs, ys):
+    for index, (x, y) in enumerate(zip(xs, ys)):
+        if index % 256 == 0:
+            _check_deadline(deadline, cancel_event)
         px, py = int(x) + 1, int(y) + 1
         if (px, py) in visited:
             continue
@@ -81,7 +87,7 @@ def _local_maxima(gray, threshold):
     return np.array(out_x), np.array(out_y)
 
 
-def detect_stars(image, options=None):
+def detect_stars(image, options=None, *, deadline=None, cancel_event=None):
     """Detect stars and return them sorted by flux, brightest first.
 
     Each detection carries normalized x/y, flux (background-subtracted
@@ -91,13 +97,14 @@ def detect_stars(image, options=None):
     the list bounds the matching search.
     """
     opts = {**DEFAULTS, **(options or {})}
+    _check_deadline(deadline, cancel_event)
     gray = _to_grayscale(image)
     if gray.shape[0] < 16 or gray.shape[1] < 16:
         raise DetectionError('Frame too small to detect stars.')
     background = float(np.median(gray))
     sigma = float(1.4826 * np.median(np.abs(gray - background))) or 1.0
     threshold = background + opts['sigma_factor'] * sigma
-    xs, ys = _local_maxima(gray, threshold)
+    xs, ys = _local_maxima(gray, threshold, deadline, cancel_event)
     if len(xs) == 0:
         return []
     order = np.argsort(gray[ys, xs])[::-1]
@@ -105,6 +112,7 @@ def detect_stars(image, options=None):
     height, width = gray.shape
     detections = []
     for index in order:
+        _check_deadline(deadline, cancel_event)
         px, py = int(xs[index]), int(ys[index])
         if not (half <= px < width - half and half <= py < height - half):
             continue

@@ -38,6 +38,8 @@ if [[ "$EUID" -ne 0 ]]; then echo "Run the reviewed installer with sudo." >&2; e
 # Save diagnostics without terminal input or setup credentials.
 install -d -m 0750 /var/log/magi
 log_file="$(mktemp /var/log/magi/install-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX.log)"
+exec 9>"$log_file.lock"
+flock -x 9
 exec 3>&1 4>&2
 exec > >(tee -a "$log_file") 2>&1
 current_step="initial checks"
@@ -156,6 +158,7 @@ install -m 0755 "$source_dir/scripts/magi-update" /usr/local/bin/magi-update
 install -m 0755 "$source_dir/scripts/magi-update-github" /usr/local/bin/magi-update-github
 /usr/bin/python3 "$source_dir/scripts/install_update_agent.py" --source "$source_dir"
 install -m 0644 "$source_dir/systemd/magi.service" /etc/systemd/system/magi.service
+/usr/bin/python3 "$source_dir/scripts/install_auto_calibration.py" --source "$source_dir"
 run_step 30 "Step 7/7: Reload service configuration" systemctl daemon-reload
 run_step 60 "Step 7/7: Enable and start Magi" systemctl enable --now magi.service
 current_step="Step 7/7: Wait for dashboard health"

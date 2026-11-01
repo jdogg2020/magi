@@ -87,7 +87,30 @@ const MagiEvents = (()=>{
     el('event-clear-selection').onclick=()=>{selected.clear();render();};
     el('event-prev').onclick=()=>{offset=Math.max(0,offset-25);requestVersion++;refresh(true);};el('event-next').onclick=()=>{offset+=25;requestVersion++;refresh(true);};el('event-refresh').onclick=()=>refresh(true);
     el('event-apply').onclick=()=>{const action=el('event-action').value;const changes={reviewed:{reviewed:true},unreviewed:{reviewed:false},labels:{labels:labels(el('event-bulk-labels').value)},protect:{protected:true},unprotect:{protected:false}};return mutate([...selected.values()],action==='trash'||action==='restore'?action:'update',changes[action]);};
-    el('event-export').onclick=()=>{const data={exported_utc:new Date().toISOString(),events:[...selected.values()]};const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const a=node('a');a.href=url;a.download='magi-selected-events.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+    el('event-export').onclick=async()=>{
+      const chosen=[...selected.values()];
+      if(!chosen.length || mutating)return;
+      mutating=true;selection();
+      try {
+        const events=[];
+        for(const row of chosen){
+          const metadata=await api('/api/clips/'+encodeURIComponent(row.id)+'/metadata',undefined,row.camera_id || selectedCamera);
+          events.push({...row,...metadata,camera_id:row.camera_id,camera_name:row.camera_name,review:row.review});
+        }
+        const exported=new Date().toISOString();
+        const suffix=Array.from(crypto.getRandomValues(new Uint8Array(8)),v=>v.toString(16).padStart(2,'0')).join('');
+        const data={exported_utc:exported,events};
+        const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+        const a=node('a');a.href=url;
+        const cameras=new Set(chosen.map(row=>row.camera_id || selectedCamera));
+        const safe=value=>String(value || '').replace(/[^a-zA-Z0-9_-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60);
+        const camera=cameras.size===1 ? [safe(chosen[0].camera_name),safe(chosen[0].camera_id || selectedCamera)].filter(Boolean).join('-') : 'multiple-cameras';
+        a.download='magi-events-'+camera+'-'+exported.replace(/[:.]/g,'-')+'-'+suffix+'.json';
+        a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+        el('event-action-status').textContent=`Exported ${events.length} event(s) with full metadata.`;
+      }catch(error){el('event-action-status').textContent='Export failed: '+error.message;}
+      finally{mutating=false;selection();}
+    };
     el('review-save').onclick=async()=>{if(!reviewEvent)return;el('review-save').disabled=true;const event=reviewEvent;try {const result=await api('/api/station/events/update',{targets:[{id:event.id,camera_id:event.camera_id || selectedCamera}],action:'update',changes:{labels:labels(el('review-labels').value),notes:el('review-notes').value,reviewed:el('review-reviewed').checked,protected:el('review-protected').checked}});el('review-save-status').textContent=result.failed.length?result.failed[0].error:'Review saved.';if(result.updated.length){lastRefresh=0;clipSignature='';await refresh(true);await refreshDashboard();}}catch(error){el('review-save-status').textContent=error.message;}finally{el('review-save').disabled=false;}};
     el('review-event-prev').onclick=()=>navigate(reviewEvent,-1);el('review-event-next').onclick=()=>navigate(reviewEvent,1);
   }

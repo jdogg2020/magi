@@ -301,7 +301,8 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  await elements['settings-form'].onsubmit({preventDefault(){},submitter:submit});
  assert(!elements.overview.classList.contains('hidden'),'Successful save should open camera overview');
  assert(elements.settings.classList.contains('hidden'));
- assert(/Recording is active|Connecting to your camera/.test(elements.notice.textContent),'Overview should show connection outcome');
+ assert(!elements.notice.textContent.includes('next, try Save an event'),'Successful connection should not show the event tutorial');
+ assert(elements['camera-status'].textContent.includes('buffering') || /Connecting to your camera/.test(elements.notice.textContent),'Recording status or connection progress should remain visible');
  assert(!submit.disabled);assert.equal(savedPayload.detection.ignore_zones.length,1,'Saved settings should include zones');assert.equal(savedPayload.detection.lightning_enabled,true);assert.equal(savedPayload.detection.meteor_enabled,true);assert(savedPayload.detection.retain_types.includes('meteor_candidate'));
  elements['zone-clear'].onclick();assert.equal(vm.runInContext('ignoreZones.length',context),0);
  vm.runInContext("tab('settings')",context);

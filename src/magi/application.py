@@ -65,6 +65,7 @@ class Application:
         self.last_error = None
         self.event_count = 0
         self.skipped_tracks = {}
+        self.motion_continuation = None
         self.next_reference_retention = 0
         self.reference_retention_pending = set()
         self.last_trigger_error = None
@@ -177,12 +178,12 @@ class Application:
         self._snapshot()
         return {'saved': True, 'message': 'Settings saved. Camera reconnecting.'}
 
-    def trigger(self, kind='manual', track=None):
+    def trigger(self, kind='manual', track=None, continuation=None):
         if not self.recorder:
             raise ValueError('Camera is not recording yet. Check settings and SSD status.')
         sensors = sensor_snapshot()
         geometry = sensor_effective(self.cfg.identification, sensors)
-        result = self.recorder.trigger(kind=kind, track=track)
+        result = self.recorder.trigger(kind=kind, track=track, continuation=continuation)
         if self.recorder.active:
             self.recorder.active['meta'].setdefault('radio_evidence_requested', True)
             self.recorder.active['meta'].setdefault('camera_id', self.camera_id)
@@ -201,9 +202,9 @@ class Application:
                 self.reference_retention_pending.add(result['event_id'])
         if self.substream:
             if self.substream.active and self.substream.active['meta']['id'] != result['event_id']:
-                self.substream._finish_event('main_event_ended')
+                self.substream._finish_event(None if continuation else 'main_event_ended')
             try:
-                self.substream.trigger(kind=kind, event_id=result['event_id'])
+                self.substream.trigger(kind=kind, event_id=result['event_id'], continuation=continuation)
             except ValueError:
                 # A missing substream must never prevent saving the original.
                 LOG.warning('substream preview unavailable for event %s', result['event_id'])
@@ -250,9 +251,9 @@ class Application:
                     task['result'] = self.calibrate(task['command'], task['value'])
                 elif task['command'].startswith('auto_calibration_'):
                     task['result'] = self.auto_calibrate(task['command'], task['value'])
-                elif task['command'] == 'render':
+                elif task['command'] in ('render', 'full_video'):
                     path = self.clip_path(task['value'].get('id', ''), 'metadata')
-                    if not self.queue_media(path.parent, json.loads(path.read_text()), force=True):
+                    if not self.queue_media(path.parent, json.loads(path.read_text()), force=True, full_quality=task['command'] == 'full_video'):
                         raise ValueError('Review render is waiting for space or an available worker.')
                     task['result'] = {'queued': True}
                 elif task['command'] == 'identify':
@@ -267,7 +268,7 @@ class Application:
                     task['error'] = str(error)
                 elif task['command'].startswith('calibration_'):
                     task['error'] = 'Star calibration unavailable. Check the selected event, location and astronomy packages.'
-                elif task['command'] == 'render':
+                elif task['command'] in ('render', 'full_video'):
                     task['error'] = 'Review rendering needs free recording space and an available worker. Try again after current jobs finish.'
                 else:
                     task['error'] = 'Action unavailable. Check the camera configuration, SSD, or recording status.'
@@ -308,11 +309,29 @@ class Application:
                 protected = self.previews.protected() | self.identifier.protected() | self.media.protected() | self.calibration_protected()
                 self.recorder.extra_protected = protected | set(self.substream._protected())
                 self.substream.extra_protected = protected | set(self.recorder._protected())
+                frames = self.analysis.poll()
+                # Observe motion before recorder.tick can finish a due event.
+                # Objects have already passed ignore-zone, size and broad-change
+                # suppression, but need not qualify as another trigger.
+                if self.cfg.detection['enabled']:
+                    for timestamp, _frame, objects, _events, _motion in frames:
+                        if objects and self.recorder.extend_motion(timestamp):
+                            if self.substream.active and self.substream.active['meta']['id'] == self.recorder.active['meta']['id']:
+                                self.substream.extend_motion(timestamp)
+                previous = self.recorder.active
                 self.recorder.tick()
                 self.substream.tick()
+                if (previous and self.recorder.active is None
+                        and previous['meta'].get('interruption') is None
+                        and previous['meta'].get('state') in ('assembling', 'complete')
+                        and not previous['meta'].get('failure')
+                        and previous['deadline'] == previous['limit']
+                        and previous.get('last_motion', float('-inf')) + self.cfg.post > previous['limit']):
+                    self.motion_continuation = previous
                 if not self.recorder.active and self.previews.active:
                     self.previews.finish()
-                for timestamp, frame, objects, events, motion in self.analysis.poll():
+                self._continue_motion()
+                for timestamp, frame, objects, events, motion in frames:
                     self.previews.frame(timestamp, frame, objects, motion)
                     if self.cfg.detection['enabled']:
                         for track in events[:4]:
@@ -344,6 +363,28 @@ class Application:
         if now >= self.next_status:
             self.next_status = now + 1
             self._snapshot()
+
+    def _continue_motion(self):
+        previous = self.motion_continuation
+        if not previous:
+            return
+        if self.recorder.active or not self.cfg.detection['enabled']:
+            self.motion_continuation = None
+            return
+        # Do not bridge reconnects, storage failures, or an expired ring buffer.
+        if (self.recorder.state != 'buffering' or self.recorder.session != previous['meta']['session_id']
+                or not self.recorder.segments or self.recorder.segments[0]['start'] > previous['limit']):
+            self.motion_continuation = None
+            return
+        try:
+            kind = previous['meta']['trigger_type']
+            result = self.trigger(kind, continuation=previous)
+            previous['meta']['continued_by'] = result['event_id']
+            previous['meta']['end_reason'] = 'maximum_duration_split'
+            self.recorder._save(previous)
+            self.motion_continuation = None
+        except ValueError:
+            self.last_trigger_error = 'Continuing motion seen while event queue is busy; retrying from buffered footage.'
 
     def calibration_protected(self):
         protected = {self.calibration_report['source_event']} if self.calibration_report else set()
@@ -579,7 +620,7 @@ class Application:
                         continue
                     meta.update(recording_state=meta['state'],state='not_retained',retention={'decision':'not_retained','reason':status+'_excluded','cleanup_pending':True})
                     atomic_json(path,meta)
-                for name in ('clip.mkv','preview.mp4','preview-substream.mp4','preview-hq.mp4','best-frame.jpg','thumbnail.jpg','motion.jsonl.gz','media.json','substream.json'):
+                for name in ('clip.mkv','preview.mp4','preview-substream.mp4','preview-hq.mp4','full-video.mp4','full-video.json','best-frame.jpg','thumbnail.jpg','motion.jsonl.gz','media.json','substream.json'):
                     self.recorder.volume.check()
                     target = path.parent/name
                     if target.is_symlink():
@@ -592,14 +633,14 @@ class Application:
         except (OSError,ValueError,TypeError):
             LOG.warning('Reference retention deferred; event storage unavailable or metadata invalid')
 
-    def queue_media(self, directory, meta, force=False):
+    def queue_media(self, directory, meta, force=False, full_quality=False):
         if not self.recorder or len(self.media.protected()) >= 4 or meta['id'] in self.media.protected():
             return False
         used, free = self.recorder.volume.usage()
-        reserve = self.media.budget(meta) + self.media.reserved()
+        reserve = self.media.budget(meta, directory, full_quality) + self.media.reserved()
         if used + reserve >= self.cfg.max_bytes or free - reserve < self.cfg.min_free:
             return False
-        return self.media.submit(directory, meta, force)
+        return self.media.submit(directory, meta, force, full_quality=full_quality)
 
     def list_clips(self):
         if not self.recorder:
@@ -640,6 +681,7 @@ class Application:
                                'estimated_duration_seconds', 'interruption', 'pre_roll_complete', 'post_roll_complete')}
                              | {'camera_id':meta.get('camera_id',self.camera_id),'camera_name':meta.get('camera_name',self.camera_name), 'review': review, 'hq_preview': (path.parent / 'preview-substream.mp4').is_file(),
                                 'substream_preview': (path.parent / 'preview-substream.mp4').is_file(),
+                                'full_video': (path.parent / 'full-video.mp4').is_file(),
                                 'best_frame': (path.parent / 'best-frame.jpg').is_file(),
                                 'media_status': 'queued' if meta['id'] in self.media.protected() else media.get('status', 'not_generated'),
                                 'media_detail': media.get('thumbnail', {}),
@@ -721,7 +763,7 @@ class Application:
                 media_path = path.parent/'media.json'
                 media = optional_json(media_path)
                 row.update(camera_id=meta.get('camera_id',self.camera_id),camera_name=meta.get('camera_name',self.camera_name),review=review,identification=reference,media_detail=media.get('thumbnail',{}),media_status=media.get('status','not_generated'),media_error=media.get('detail',''))
-                for key, name in [('thumbnail','thumbnail.jpg'),('best_frame','best-frame.jpg'),('original','clip.mkv'),('preview','preview.mp4'),('substream_preview','preview-substream.mp4'),('motion','motion.jsonl.gz')]:
+                for key, name in [('full_video','full-video.mp4'),('thumbnail','thumbnail.jpg'),('best_frame','best-frame.jpg'),('original','clip.mkv'),('preview','preview.mp4'),('substream_preview','preview-substream.mp4'),('motion','motion.jsonl.gz')]:
                     row[key] = (path.parent/name).is_file()
                 rows.append(row)
             except (OSError, ValueError, TypeError, KeyError):
@@ -830,7 +872,7 @@ class Application:
             self.recorder.volume.check()
         elif self.cfg.require_mount and not os.path.ismount(self.cfg.mount):
             raise ValueError('Recording volume is not mounted.')
-        names = {'original': 'clip.mkv', 'preview': 'preview.mp4', 'thumbnail': 'thumbnail.jpg', 'metadata': 'event.json', 'motion': 'motion.jsonl.gz', 'identification': 'identification.json', 'video': 'preview-substream.mp4', 'frame': 'best-frame.jpg', 'media': 'media.json', 'timeline': 'substream.json', 'radio': 'radio.json'}
+        names = {'full-video': 'full-video.mp4', 'full-video-status': 'full-video.json', 'original': 'clip.mkv', 'preview': 'preview.mp4', 'thumbnail': 'thumbnail.jpg', 'metadata': 'event.json', 'motion': 'motion.jsonl.gz', 'identification': 'identification.json', 'video': 'preview-substream.mp4', 'frame': 'best-frame.jpg', 'media': 'media.json', 'timeline': 'substream.json', 'radio': 'radio.json'}
         if kind not in names:
             raise ValueError('Unknown file.')
         base = self.cfg.root / 'events'
@@ -840,6 +882,7 @@ class Application:
         return path
 
     def stop_capture(self):
+        self.motion_continuation = None
         if self.substream:
             self.substream.extra_protected = self.media.protected() | self.identifier.protected() | self.calibration_protected() | (set(self.recorder._protected()) if self.recorder else set()) | (self.previews.protected() if self.previews else set())
             try:

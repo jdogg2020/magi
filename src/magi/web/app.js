@@ -512,7 +512,8 @@ async function openReview(event, imageKind = 'thumbnail') {
   $('radio-report').classList.add('hidden'); $('radio-status').textContent='';
   $('track-report').classList.add('hidden'); $('identification-detail').textContent = ''; $('identification-status').textContent = 'Loading reference check…';
   updateReviewAvailability(event);
-  $('review-quality').value = event.substream_preview ? 'substream' : 'analysis';
+  $('review-video-status').textContent = '';
+  $('review-quality').value = event.substream_preview ? 'substream' : event.preview ? 'analysis' : 'full';
   showReviewImage(imageKind);
   $('review').showModal(); drawMotion();
   loadIdentification(event.id);
@@ -529,6 +530,7 @@ async function openReview(event, imageKind = 'thumbnail') {
   }
 }
 function currentTracks() {
+  if ($('review-quality').value === 'full') return []; // Substream timing cannot align main-stream video.
   return $('review-quality').value === 'analysis' ? reviewTracks : reviewColorTracks;
 }
 function pathStroke(context, points, project, color, scale, dashed) {
@@ -611,7 +613,7 @@ function drawMotion() {
   const analysis=$('review-quality').value==='analysis', tracks=currentTracks();
   $('show-tracker').disabled=!tracks.length;
   canvas.width=reviewMeta?.width||640; canvas.height=reviewMeta?.height||360;
-  let note=analysis ? 'Detection replay' : 'Camera substream · estimated track timing';
+  let note=$('review-quality').value === 'full' ? 'Full-quality main camera recording' : analysis ? 'Detection replay' : 'Camera substream · estimated track timing';
   if(analysis&&reviewMeta&&reviewFrames.length) {
     const index=Math.min(reviewFrames.length-1,Math.max(0,Math.floor(($('review-video').currentTime||0)*reviewMeta.fps)));
     const sample=reviewFrames[index];
@@ -688,9 +690,13 @@ $('identify-again').onclick = async () => {
 };
 
 function updateReviewAvailability(event) {
+  $('review-full-video').disabled = !event.original;
+  $('quality-full').disabled = !event.full_video;
+  $('review-original').classList.toggle('hidden', !event.original);
+  if(event.original) $('review-original').href = eventPath(event,'original');
   if(reviewMeta&&event.substream_preview&&!reviewTimelineAttempted) loadReviewTimeline(event.id,reviewGeneration);
   $('quality-substream').disabled = !event.substream_preview; $('quality-analysis').disabled = !event.preview;
-  $('review-play').disabled = !(event.substream_preview || event.preview);
+  $('review-play').disabled = !(event.full_video || event.substream_preview || event.preview);
   $('review-full-frame').disabled = !event.best_frame;
   $('render-preview').disabled = !event.original || event.media_status === 'queued';
   const video = event.substream_preview ? 'Camera substream recording ready.' : 'Substream recording pending or unavailable; older events may only have detection replay.';
@@ -723,11 +729,44 @@ function selectReviewVideo() {
   const analysis = $('review-quality').value === 'analysis';
   $('show-pixels').disabled = !analysis; $('show-boxes').disabled = !analysis;
   const video = $('review-video');
-  video.src = eventPath(reviewEvent,analysis ? 'preview' : 'video');
+  video.src = eventPath(reviewEvent,$('review-quality').value === 'full' ? 'full-video' : analysis ? 'preview' : 'video');
   video.load(); video.currentTime = 0;
   drawMotion();
 }
 $('review-play').onclick = () => { selectReviewVideo(); $('review-video').play().catch(() => {}); };
+$('review-video').addEventListener('error', () => {
+  if(reviewMode === 'video') $('review-video-status').textContent = 'This video could not be played. Try Download original and open it in VLC, or choose Camera substream.';
+});
+$('review-full-video').onclick = async () => {
+  if(!reviewEvent) return;
+  const event=reviewEvent, generation=reviewGeneration;
+  $('review-full-video').disabled=true;
+  try {
+    if(!event.full_video) {
+      await api('/api/full-video', {id:event.id}, event.camera_id || selectedCamera);
+      if(generation!==reviewGeneration)return;
+      $('review-video-status').textContent='Preparing full-quality playback…';
+      let ready=false;
+      for(let attempt=0;attempt<150;attempt++) {
+        await new Promise(resolve=>setTimeout(resolve,1000));
+        if(generation!==reviewGeneration)return;
+        let status;
+        try { status=await api(eventPath(event,'full-video-status')); } catch { continue; }
+        if(generation!==reviewGeneration)return;
+        if(status.status==='failed') throw new Error(status.detail || 'Preparation failed. Download the original instead.');
+        if(status.status==='ready') {ready=true;break;}
+      }
+      if(!ready) throw new Error('Preparation is still pending. Try again shortly, or download the original.');
+      reviewEvent.full_video=true;
+    }
+    if(generation!==reviewGeneration)return;
+    $('quality-full').disabled=false; $('review-quality').value='full';
+    $('review-play').disabled=false;
+    $('review-video-status').textContent='Full camera quality. If playback is unsupported, download the original and open it in VLC.';
+    selectReviewVideo(); $('review-video').play().catch(()=>{});
+  } catch(error) { if(generation===reviewGeneration) $('review-video-status').textContent=error.message; }
+  finally { if(generation===reviewGeneration) $('review-full-video').disabled=!reviewEvent?.original; }
+};
 $('review-photo').onclick = () => showReviewImage();
 $('review-full-frame').onclick = () => showReviewImage('frame');
 $('review-quality').onchange = () => { if (reviewMode === 'video') { selectReviewVideo(); $('review-video').play().catch(() => {}); } };

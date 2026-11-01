@@ -195,7 +195,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.headers_out(200, 'image/jpeg', len(data))
                 self.wfile.write(data)
         else:
-            match = re.fullmatch(r'/api/clips/([^/]+)/(original|preview|thumbnail|metadata|motion|identification|video|frame|media|timeline|radio)', path)
+            match = re.fullmatch(r'/api/clips/([^/]+)/(full-video|full-video-status|original|preview|thumbnail|metadata|motion|identification|video|frame|media|timeline|radio)', path)
             if match:
                 try:
                     file = app.clip_path(*match.groups())
@@ -227,7 +227,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 status = 206
                 extra['Content-Range'] = f'bytes {start}-{end}/{size}'
-            mime = {'radio': 'application/json', 'video': 'video/mp4', 'frame': 'image/jpeg', 'media': 'application/json', 'timeline': 'application/json', 'preview': 'video/mp4', 'original': 'video/x-matroska', 'thumbnail': 'image/jpeg', 'metadata': 'application/json', 'motion': 'application/x-ndjson', 'identification': 'application/json'}[kind]
+            mime = {'full-video': 'video/mp4', 'full-video-status': 'application/json', 'radio': 'application/json', 'video': 'video/mp4', 'frame': 'image/jpeg', 'media': 'application/json', 'timeline': 'application/json', 'preview': 'video/mp4', 'original': 'video/x-matroska', 'thumbnail': 'image/jpeg', 'metadata': 'application/json', 'motion': 'application/x-ndjson', 'identification': 'application/json'}[kind]
             if kind == 'motion':
                 extra['Content-Encoding'] = 'gzip'
             if kind in ('original', 'metadata', 'identification', 'media', 'radio'):
@@ -300,11 +300,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/events/list':
                 self.reply(200, app.event_page(body))
                 return
-            commands = {'/api/events/list': 'events_list', '/api/events/update': 'events_update', '/api/camera/setup': 'camera_setup', '/api/camera/info': 'camera_info', '/api/trigger': 'trigger', '/api/settings': 'settings', '/api/reconnect': 'reconnect', '/api/identify': 'identify', '/api/render': 'render', '/api/calibration/load': 'calibration_load', '/api/calibration/search': 'calibration_search', '/api/calibration/solve': 'calibration_solve', '/api/calibration/apply': 'calibration_apply', '/api/auto-calibration/start': 'auto_calibration_start', '/api/auto-calibration/status': 'auto_calibration_status', '/api/auto-calibration/apply': 'auto_calibration_apply', '/api/auto-calibration/cancel': 'auto_calibration_cancel'}
+            commands = {'/api/events/list': 'events_list', '/api/events/update': 'events_update', '/api/camera/setup': 'camera_setup', '/api/camera/info': 'camera_info', '/api/trigger': 'trigger', '/api/settings': 'settings', '/api/reconnect': 'reconnect', '/api/identify': 'identify', '/api/render': 'render', '/api/full-video': 'full_video', '/api/calibration/load': 'calibration_load', '/api/calibration/search': 'calibration_search', '/api/calibration/solve': 'calibration_solve', '/api/calibration/apply': 'calibration_apply', '/api/auto-calibration/start': 'auto_calibration_start', '/api/auto-calibration/status': 'auto_calibration_status', '/api/auto-calibration/apply': 'auto_calibration_apply', '/api/auto-calibration/cancel': 'auto_calibration_cancel'}
             if path not in commands:
                 self.reply(404, {'error': 'Not found.'})
                 return
             self.reply(200, app.request(commands[path], body))
         except (ValueError,OSError) as error:
-            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/auto-calibration/', '/api/camera/setup', '/api/events/', '/api/cameras', '/api/station/events/', '/api/station/update', '/api/station/storage/')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
+            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/full-video', '/api/calibration/', '/api/auto-calibration/', '/api/camera/setup', '/api/events/', '/api/cameras', '/api/station/events/', '/api/station/update', '/api/station/storage/')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
             self.reply(409, {'error': message})

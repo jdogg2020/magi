@@ -74,6 +74,16 @@ class MediaTests(unittest.TestCase):
                 self.assertFalse((directory/'preview-hq.mp4').exists())
                 self.assertFalse((directory/'preview-substream.mp4').exists(),'Thumbnail worker must not encode video')
                 self.assertFalse(media.submit(directory,meta),'Successful renders are not queued repeatedly')
+                self.assertTrue(media.submit(directory,meta,force=True,full_quality=True))
+                deadline=time.monotonic()+20
+                while media.protected() and time.monotonic()<deadline:time.sleep(.05)
+                full=json.loads((directory/'full-video.json').read_text())
+                self.assertEqual(full['status'],'ready',full)
+                def frames(path):
+                    return subprocess.check_output(['ffmpeg','-v','error','-i',str(path),'-map','0:v:0','-f','framemd5','-'],timeout=20)
+                self.assertEqual(frames(original),frames(directory/'full-video.mp4'), 'Full quality must preserve every decoded pixel and timestamp')
+                self.assertEqual(hashlib.sha256(original.read_bytes()).hexdigest(),before)
+                self.assertEqual(json.loads((directory/'media.json').read_text()),status,'Full video must not overwrite thumbnail metadata')
                 self.assertGreater(media.budget(meta),(directory/'best-frame.jpg').stat().st_size)
             finally:media.close()
 

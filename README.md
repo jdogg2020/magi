@@ -125,7 +125,8 @@ run the installer, open `http://PI-IP:8090`, sign in and configure the camera.
 - Automatic frame-difference motion detection and bounded object tracking on
   the camera's native-resolution, native-frame-rate substream. Continuous operation, day and night.
 - Main-stream SSD ring buffer; original H.264/H.265 event recordings via stream-copy.
-- Configurable pre/post-roll; overlapping event merging and maximum event length.
+- Configurable pre/post-roll. Fresh detected motion keeps an active recording open, and post-roll starts after the last motion observation. Ignored areas and suppressed broad changes do not extend recordings. Sustained motion crossing the maximum event length continues in linked clips while buffered footage and storage remain available.
+- Event review offers **Play full quality** and **Download original** beside the preview controls. Full-quality playback repackages the saved main-camera video on demand without resizing or re-encoding; it uses extra disk space and retains the camera codec. If the browser cannot decode it, download the original and open it in VLC. Main-camera playback does not use the substream detection overlay because their timelines can differ.
 - Event list (latest 200), thumbnails, playable low-resolution MP4 review copies,
   original Matroska downloads and metadata with track samples.
 - Camera settings, recording limits, retention and basic sensitivity controls in

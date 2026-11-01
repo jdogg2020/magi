@@ -127,6 +127,25 @@ class RecorderTests(unittest.TestCase):
         original = set(packets(self.sample))
         self.assertTrue(set(expected).issubset(original), "buffering must preserve camera/file video packets")
 
+    def test_observed_motion_keeps_original_until_motion_stops(self):
+        self.warm()
+        identity = self.rec.trigger('meteor_candidate')['event_id']
+        until = time.monotonic() + 3
+        while time.monotonic() < until:
+            self.rec.extend_motion(time.monotonic())
+            self.rec.tick()
+            self.assertIsNotNone(self.rec.active)
+            self.assertEqual(self.rec.active['meta']['id'], identity)
+            time.sleep(.04)
+        last_motion = self.rec.active['meta']['last_motion_unix']
+        self.until(lambda: not self.rec.active and not self.rec.jobs)
+        meta = self.event_meta(identity)
+        self.assertEqual(meta['state'], 'complete')
+        self.assertEqual(meta['trigger_count'], 1)
+        self.assertGreaterEqual(meta['requested_end_unix'], last_motion + self.cfg.post - .01)
+        self.assertGreaterEqual(meta['estimated_duration_seconds'], 4)
+        self.assertTrue(meta['post_roll_complete'])
+
     def test_substream_preview_preserves_native_encoded_packets(self):
         cfg = dataclasses.replace(self.cfg, analysis_source=str(self.sample))
         companion = Recorder(cfg, companion_volume=self.rec.volume)

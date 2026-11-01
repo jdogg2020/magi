@@ -8,6 +8,7 @@ import csv
 from dataclasses import replace
 import fcntl
 import json
+import math
 import logging
 import os
 import shutil
@@ -190,7 +191,26 @@ class Recorder:
                         "host_end_unix": segment["end"] + self.wall_offset})
         self._save(event)
 
-    def trigger(self, kind='manual', track=None, event_id=None):
+    def extend_motion(self, timestamp):
+        """Keep an existing event open for fresh, unsuppressed motion samples.
+
+        This is not a new trigger. Segment pinning persists the in-memory
+        deadline, avoiding a metadata write for every analyzed frame.
+        """
+        event = self.active
+        now = time.monotonic()
+        if (not event or self.state != 'buffering' or not math.isfinite(timestamp)
+                or timestamp > now or now - timestamp > max(1, self.cfg.post)
+                or timestamp < event['start']
+                or timestamp <= event.get('last_motion', float('-inf'))):
+            return False
+        event['last_motion'] = timestamp
+        event['deadline'] = min(event['limit'], max(event['deadline'], timestamp + self.cfg.post))
+        event['meta']['last_motion_unix'] = timestamp + self.wall_offset
+        event['meta']['requested_end_unix'] = event['deadline'] + self.wall_offset
+        return True
+
+    def trigger(self, kind='manual', track=None, event_id=None, continuation=None):
         now = time.monotonic()
         if self.state != "buffering" or not self.segments or now - self.last_closed > self.cfg.stall:
             raise ValueError("camera is not buffering; wait for completed segments")
@@ -223,6 +243,18 @@ class Recorder:
                           "timing_basis": "estimated_host_receipt; not camera exposure time",
                           "recording": "video_only_stream_copy", "segments": [],
                           "interruption": None}}
+        if continuation is not None:
+            # Include the split boundary even with zero configured pre-roll.
+            event['start'] = min(event['start'], continuation['limit'])
+            event['limit'] = event['start'] + self.cfg.max_event
+            event['last_motion'] = continuation['last_motion']
+            event['deadline'] = min(event['limit'], event['last_motion'] + self.cfg.post)
+            event['meta']['continuation_of'] = continuation['meta']['id']
+            event['meta']['detection_types'] = list(continuation['meta'].get('detection_types', [kind]))
+            if 'detection_settings' in continuation['meta']:
+                event['meta']['detection_settings'] = dict(continuation['meta']['detection_settings'])
+            event['meta']['last_motion_unix'] = event['last_motion'] + self.wall_offset
+            event['meta']['requested_end_unix'] = event['deadline'] + self.wall_offset
         self.active = event
         self._track(event, kind, track)
         self._save(event)

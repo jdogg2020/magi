@@ -158,6 +158,10 @@ class Handler(BaseHTTPRequestHandler):
             station = self.server.app
             self.reply(200, station.recent_events() if hasattr(station, 'recent_events') else {'clips': station.read()['clips'], 'limit': 200})
             return
+        if path == '/api/station/storage':
+            station = self.server.app
+            self.reply(200, station.storage_status() if hasattr(station, 'storage_status') else {'cameras': [], 'volumes': [], 'partial': True})
+            return
         if path == '/api/station/status':
             station = self.server.app
             self.reply(200, station.health_status() if hasattr(station, 'health_status') else station.read()['status'])

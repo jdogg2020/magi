@@ -1,0 +1,8 @@
+[Unit]
+Description=Daily Magi log retention
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=15m
+[Install]
+WantedBy=timers.target

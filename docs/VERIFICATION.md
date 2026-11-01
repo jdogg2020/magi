@@ -367,3 +367,10 @@ No Pi installer timeouts, settings, credentials or recordings change.
 
 Group related small changes in a single PR/version where practical. A workflow
 change alone does not need an application version bump or a separate Pi update.
+
+## 0.17.0 storage management
+
+Adds threshold/headroom, trash age, protected/in-use preservation, archive usage,
+shared volume and hardlink accounting, bounded scan failure and log-maintenance
+tests. Dashboard and Chromium checks cover Storage navigation and settings.
+These are local synthetic checks, not a Pi soak test.

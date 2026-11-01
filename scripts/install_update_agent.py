@@ -7,6 +7,9 @@ import subprocess
 import tempfile
 
 FILES = {
+    'scripts/maintain_logs.py': ('usr/local/lib/magi/maintain_logs.py', 0o644),
+    'systemd/magi-log-maintenance.service': ('etc/systemd/system/magi-log-maintenance.service', 0o644),
+    'systemd/magi-log-maintenance.timer': ('etc/systemd/system/magi-log-maintenance.timer', 0o644),
     'scripts/update_agent.py': ('usr/local/lib/magi/update_agent.py', 0o644),
     'scripts/update.py': ('usr/local/lib/magi/update.py', 0o644),
     'scripts/fetch_release.py': ('usr/local/lib/magi/fetch_release.py', 0o644),
@@ -46,6 +49,7 @@ def install(source, prefix=Path('/'), runner=subprocess.run):
         finally:
             Path(temporary).unlink(missing_ok=True)
     runner(['systemctl', 'daemon-reload'], check=True, timeout=30)
+    runner(['systemctl', 'enable', '--now', 'magi-log-maintenance.timer'], check=True, timeout=30)
     # Enabling a socket never restarts an in-flight helper or camera recorder.
     runner(['systemctl', 'enable', '--now', 'magi-update-agent.socket'], check=True, timeout=30)
 

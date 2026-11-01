@@ -98,8 +98,9 @@ class Application:
         camera['substream_path'] = camera['substream_path'] or '/h264Preview_01_sub'
         camera['has_password'] = bool(raw.get('camera', {}).get('password'))
         return {'camera': camera, 'recording': raw.get('recording', {}),
-                'storage': {key: raw.get('storage', {}).get(key) for key in
-                            ('max_bytes', 'min_free_bytes', 'retention_days')},
+                'storage': {'max_bytes': self.cfg.max_bytes, 'min_free_bytes': self.cfg.min_free,
+                            'retention_days': self.cfg.retention_days, 'cleanup_margin_bytes': self.cfg.cleanup_margin,
+                            'trash_days': self.cfg.trash_days},
                 'detection': self.cfg.detection,
                 'effective_location': {k: sensor_effective(self.cfg.identification)[k] for k in ('latitude','longitude','elevation_m','location_effective_source','altitude_effective_source')},
                 'star_calibration': self.calibration_report, 'identification': {**{k: v for k, v in self.cfg.identification.items() if k not in ('opensky_client_secret', 'opensky_client_id')},
@@ -116,7 +117,7 @@ class Application:
         allowed = {
             'camera': {'host', 'port', 'username', 'password', 'mainstream_path', 'substream_path', 'api_scheme', 'api_port'},
             'recording': {'pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds'},
-            'storage': {'max_bytes', 'min_free_bytes', 'retention_days'},
+            'storage': {'max_bytes', 'min_free_bytes', 'retention_days', 'cleanup_margin_bytes', 'trash_days'},
             'detection': {'enabled', 'threshold', 'min_pixels', 'max_pixels', 'min_hits', 'min_seconds', 'min_travel', 'ignore_zones','lightning_enabled','meteor_enabled','retain_types','retain_aircraft_matches','retain_satellite_matches'},
             'identification': set(identification_defaults())
         }

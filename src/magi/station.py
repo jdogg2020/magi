@@ -18,6 +18,7 @@ from .application import Application
 from .config import Config
 from .event_review import ID as EVENT_ID, ReviewError, changes as review_changes, filters as event_filters
 from .storage import atomic_json
+from .storage_report import report
 
 CAMERA_ID = re.compile(r'^(primary|cam-[a-f0-9]{12})$')
 MAX_CAMERAS = 8
@@ -70,6 +71,9 @@ class Station:
         self.lock = threading.RLock()
         self.workers = {}
         self.closed = False
+        self.storage_scan_lock = threading.Lock()
+        self.storage_cache = None
+        self.storage_cache_at = 0
         # Validate the existing private config before creating any workers/files.
         Config.load(self.path)
         if self.registry_path.exists():
@@ -168,6 +172,23 @@ class Station:
             status = worker.app.read()['status']
             return {key: status.get(key) for key in ('health', 'disk_free_bytes', 'uptime_seconds', 'version')}
         return {'health': {}, 'version': __version__}
+
+    def storage_status(self):
+        # Explicit UI request only. Never scan archives in camera loops/polling.
+        if not self.storage_scan_lock.acquire(blocking=False):
+            return {'busy': True, 'cameras': [], 'volumes': [], 'partial': True}
+        try:
+            if self.storage_cache is not None and time.monotonic()-self.storage_cache_at < 30:
+                return copy.deepcopy(self.storage_cache)
+            with self.lock:
+                entries = [(dict(item), worker.app.cfg if worker.app else None,
+                            worker.app.read()['status']['state'] if worker.app else 'worker_failed')
+                           for item in self.registry['cameras'] for worker in [self.workers[item['id']]]]
+            self.storage_cache = report(entries)
+            self.storage_cache_at = time.monotonic()
+            return copy.deepcopy(self.storage_cache)
+        finally:
+            self.storage_scan_lock.release()
 
     def event_page(self, value):
         if not isinstance(value, dict):
@@ -280,6 +301,8 @@ class Station:
             raw.setdefault('detection', {})['ignore_zones'] = []
             raw['storage']['directory'] = str(self.cfg.root / 'cameras' / identity)
             raw['storage']['max_bytes'] = min(self.cfg.max_bytes, 10_000_000_000)
+            if raw['storage'].get('cleanup_margin_bytes', 0) >= raw['storage']['max_bytes']:
+                raw['storage']['cleanup_margin_bytes'] = 0
             Config.from_dict(raw)
             if self.config_directory.is_symlink():
                 raise ValueError('Camera config directory cannot be a symlink.')

@@ -105,6 +105,11 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  context.fetch=updateFetch;await vm.runInContext('refreshUpdates(true)',context);
  assert(elements['update-check'].disabled,'A missing privileged helper must disable dashboard installs');
 
+ await vm.runInContext('refreshStorage()',context);
+ assert(elements['storage-status'].textContent.includes('Removed-camera archives:'));
+ assert(elements['storage-cameras'].children.length>=2);
+ assert.equal(elements['storage-volumes'].children.length,1,'Shared disk must appear once');
+ assert.equal(Number(elements['cleanup_gb'].value),0);assert.equal(Number(elements['trash_days'].value),7);
  assert(elements['recent-events'].children.includes(elements['event-browser']),'Overview should host the shared event list');
  assert(!elements['event-filter-panel'].open,'Filters should start collapsed');
  for(let i=0;i<100;i++){await vm.runInContext('refresh()',context);await vm.runInContext('MagiEvents.refresh(true)',context);if(elements['all-events'].children.some(row=>row.className==='event-row'))break;await new Promise(resolve=>setTimeout(resolve,150));}

@@ -168,3 +168,17 @@ Keyboard shortcuts while the review dialog is open:
 Shortcuts ignore held-key repeats, modifier keys and editable fields. Native
 video controls keep their keyboard behavior; Space on a focused button activates
 that button. Review status does not itself protect footage from retention.
+
+### Quick categories
+
+The review image has quick category buttons above it: **Ignore**, **Plane**,
+**Bird / insect**, **Lightning**, **Cloud / weather**, **Meteor**, **Satellite**,
+and **Unknown**. A selected category is highlighted with a check mark. Click
+again to remove it; multiple categories can coexist. Labels save immediately,
+including any edits in the Labels field, while unsaved notes and review/protection
+checkbox changes remain in the form.
+
+Plane uses the existing `aircraft` label and Cloud / weather uses `weather`,
+so the label filter continues to find those categories. Ignore is the `ignore`
+label; it never trashes an event or changes reviewed status, protection, detector
+settings, or retention rules. Trashed events must be restored before labelling.

@@ -3,7 +3,8 @@ const MagiEvents = (()=>{
   const el=id=>document.getElementById(id), selected=new Map();
   let rows=[], total=0, offset=0, loaded=false, loading=false, lastRefresh=0, requestVersion=0, mutating=false, currentFilters=null;
   let neighbors={previous:null,next:null}, navigationVersion=0, reviewBusy=false;
-  const presets=['aircraft','satellite','meteor','bird','insect','drone','star or planet','weather','lightning','artifact','unknown','interesting'];
+  const quickLabels=[['ignore','Ignore'],['aircraft','Plane'],['bird/insect','Bird / insect'],['lightning','Lightning'],['weather','Cloud / weather'],['meteor','Meteor'],['satellite','Satellite'],['unknown','Unknown']];
+  const presets=['ignore','bird/insect','aircraft','satellite','meteor','bird','insect','drone','star or planet','weather','lightning','artifact','unknown','interesting'];
   const human=value=>(value || 'unknown').replaceAll('_',' ');
   const labels=value=>value.split(',').map(v=>v.trim()).filter(Boolean);
   function selection(){
@@ -81,6 +82,7 @@ const MagiEvents = (()=>{
     el('review-keep').textContent=review.protected?'Remove protection':'Keep / protect';
     el('review-trash').textContent=review.trashed_at!=null?'Restore from trash':'Move to trash (Delete)';
     for(const id of ['review-mark','review-keep','review-save'])el(id).disabled=busy || review.trashed_at!=null || !!review.annotation_error;
+    for(const [label] of quickLabels){const item=el('review-label-'+label.replace('/','-'));item.disabled=busy || review.trashed_at!=null || !!review.annotation_error;item.setAttribute('aria-pressed',String((review.labels || []).includes(label)));}
     el('review-trash').disabled=busy || !!review.annotation_error || (review.trashed_at==null && !!review.protected);
   }
   function order(a,b){
@@ -132,7 +134,9 @@ const MagiEvents = (()=>{
       event.review={...event.review,...(action==='update'?changes:{trashed_at:action==='trash'?Date.now()/1000:null})};
       reviewEvent=event;
       // Preserve unsaved labels/notes when using a quick action.
-      el('review-reviewed').checked=!!event.review.reviewed;el('review-protected').checked=!!event.review.protected;
+      if(action==='update' && changes.labels)el('review-labels').value=changes.labels.join(', ');
+      if(action==='update' && 'reviewed' in changes)el('review-reviewed').checked=!!event.review.reviewed;
+      if(action==='update' && 'protected' in changes)el('review-protected').checked=!!event.review.protected;
       el('review-save-status').textContent=action==='trash'?'Moved to trash. Use Restore from trash to undo; retention or storage pressure may remove trash.':action==='restore'?'Event restored.':'Review saved.';
       const message=el('review-save-status').textContent;await loadNeighbors(event);lastRefresh=0;clipSignature='';await refresh(true);if(reviewEvent && eventKey(reviewEvent)===key)el('review-save-status').textContent=message;
     }catch(error){if(reviewEvent && eventKey(reviewEvent)===key)el('review-save-status').textContent=error.message;}
@@ -141,6 +145,17 @@ const MagiEvents = (()=>{
   function init(){
     mount('overview');
     setOptions([]);
+    for(const [label,title] of quickLabels){
+      const item=el('review-label-'+label.replace('/','-'));
+      item.onclick=()=>{
+        if(item.disabled || !reviewEvent)return;
+        const current=[...new Set(labels(el('review-labels').value).map(value=>value.toLowerCase()))];
+        const next=current.includes(label)?current.filter(value=>value!==label):[...current,label];
+        if(next.length>8){el('review-save-status').textContent='Up to eight labels per event. Remove a label before adding another.';return;}
+        return saveReview('update',{labels:next});
+      };
+      item.title=`Add or remove ${title.toLowerCase()}; saves labels immediately`;
+    }
     el('event-filters').onsubmit=event=>{event.preventDefault();return applyFilters();};
     el('event-reset').onclick=()=>{for(const id of ['event-search','event-label-filter','event-start','event-end'])el(id).value='';for(const id of ['event-reviewed','event-protected','event-state','event-reference','event-type'])el(id).value='all';el('event-camera').value='all';el('event-folder').value='active';el('event-sort').value='newest';applyFilters();};
     el('event-select-page').onchange=()=>{for(const row of rows){if(el('event-select-page').checked && selected.size<100)selected.set(eventKey(row),row);else if(!el('event-select-page').checked)selected.delete(eventKey(row));}render();};

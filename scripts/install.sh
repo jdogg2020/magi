@@ -6,14 +6,19 @@ skip_dependencies=false
 lan=false
 identification=false
 require_mounted_ssd=false
+sensor_options=()
 for argument in "$@"; do
   case "$argument" in
     --dry-run) dry_run=true ;;
     --skip-dependencies) skip_dependencies=true ;;
     --lan) lan=true ;;
     --identification) identification=true ;;
+    --gnss-port=*) sensor_options+=(--gnss-port "${argument#*=}") ;;
+    --nmea-port=*) sensor_options+=(--nmea-port "${argument#*=}") ;;
+    --adsb-serial=*) sensor_options+=(--adsb-serial "${argument#*=}") ;;
+    --gnss-time) sensor_options+=(--gnss-time) ;;
     --require-mounted-ssd) require_mounted_ssd=true ;;
-    *) echo "Usage: $0 [--dry-run] [--skip-dependencies] [--lan] [--identification] [--require-mounted-ssd]" >&2; exit 2 ;;
+    *) echo "Usage: $0 [--dry-run] [--skip-dependencies] [--lan] [--identification] [--require-mounted-ssd] [--gnss-port=PATH] [--nmea-port=PATH] [--adsb-serial=SERIAL] [--gnss-time]" >&2; exit 2 ;;
   esac
 done
 source_dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -26,6 +31,7 @@ if "$dry_run"; then
   if "$lan"; then echo "LAN dashboard explicitly enabled on port 8090."; else echo "Dashboard binds to localhost unless existing config says otherwise."; fi
   if "$identification"; then echo "Would also install OS-managed python3-skyfield for satellite propagation."; fi
   if "$require_mounted_ssd"; then echo "Mounted-SSD requirement explicitly enabled."; else echo "New directory installs use a storage cap up to 10 GB and reserve 2 GB free."; fi
+  if [[ ${#sensor_options[@]} -gt 0 ]]; then echo "Would provision explicitly selected GNSS/ADS-B sensors and optional chrony using setup_sensors.py."; fi
   exit 0
 fi
 if [[ "$EUID" -ne 0 ]]; then echo "Run the reviewed installer with sudo." >&2; exit 1; fi
@@ -115,11 +121,13 @@ if [[ -d /opt/magi ]]; then
   if [[ -f /etc/systemd/system/magi.service ]]; then
     run_step 45 "Stop previous Magi service" systemctl stop magi.service
   fi
-  mv /opt/magi "/opt/magi.previous.$(date -u +%Y%m%dT%H%M%SZ).$$"
+  previous_app="/opt/magi.previous.$(date -u +%Y%m%dT%H%M%SZ).$$"
+  mv /opt/magi "$previous_app"
 fi
 current_step="Step 5/7: Install application files"
 progress "$current_step"
 install -d -m 0755 /opt/magi
+if [[ -n "${previous_app:-}" && -d "$previous_app/deps" ]]; then cp -a "$previous_app/deps" /opt/magi/deps; fi
 cp -R "$source_dir/src" "$source_dir/docs" "$source_dir/scripts" "$source_dir/systemd" /opt/magi/
 cp "$source_dir/README.md" "$source_dir/START-HERE.md" "$source_dir/config.example.json" /opt/magi/
 # Source extraction may leave private directories/files (installer umask is 077).
@@ -168,6 +176,11 @@ PY
 done
 if ! "$ready"; then
   echo "Service did not become healthy. Check: sudo journalctl -u magi.service -n 40" >&2; exit 1
+fi
+if [[ ${#sensor_options[@]} -gt 0 ]]; then
+  run_step 0 "Provision optional station sensors" /usr/bin/python3 /opt/magi/scripts/setup_sensors.py "${sensor_options[@]}"
+elif [[ -f /etc/systemd/system/magi-sensors.service ]]; then
+  systemctl try-restart magi-sensors.service
 fi
 echo "Magi is running. Open http://PI-IP:8090 if LAN access is enabled."
 echo "Otherwise use http://localhost:8090 on the Pi, or an SSH tunnel."

@@ -189,7 +189,23 @@ $('update-check').onclick=()=>updateAction('check');
 $('update-install').onclick=()=>updateAction('install');
 $('update-reload').onclick=()=>location.reload();
 setInterval(refreshUpdates,3000);
+let latestSensors = null;
+function renderSensors(data) {
+  if(!data || !$('sensor-status')) return;
+  latestSensors=data;
+  const gps=data.gnss || {}, clock=data.clock || {}, aircraft=data.aircraft || {}, loc=data.effective_location || {};
+  $('sensor-status').textContent='GPS: '+(data.station_location?.movement_detected ? 'station moved — reset location and recalibrate' : (gps.state || 'unavailable').replaceAll('_',' '))+(gps.utc?' · Fix UTC '+gps.utc:'')+(data.age_seconds!=null?' · Status age '+data.age_seconds+'s':'');
+  $('sensor-location').textContent='Location: '+(loc.location_effective_source || 'unknown').replaceAll('_',' ')+' · '+(loc.latitude ?? '—')+', '+(loc.longitude ?? '—')+(gps.altitude_msl_m!=null?' · GPS altitude '+gps.altitude_msl_m+' m above mean sea level':'')+' · WGS84 elevation: '+(loc.altitude_effective_source || 'manual').replaceAll('_',' ');
+  $('sensor-clock').textContent='Pi clock: '+(clock.state || 'unknown')+' · Source: '+(clock.source || 'unknown')+' · Serial GPS time is coarse, not PPS precision';
+  $('sensor-aircraft').textContent='Local aircraft: '+(aircraft.state || 'unavailable').replaceAll('_',' ')+' · '+(aircraft.aircraft ?? 0)+' tracked · '+(aircraft.usable_positions ?? 0)+' usable geometric positions'+(aircraft.age_seconds!=null?' · Feed age '+aircraft.age_seconds+'s':'');
+  if(settingsLoaded && $('id-location_source').value==='gnss') {
+    for(const key of ['latitude','longitude']) { $('id-'+key).value=loc[key] ?? ''; if($('star-'+key).value==='' && loc[key]!=null) $('star-'+key).value=loc[key]; }
+    if(loc.altitude_effective_source==='gnss_gga_wgs84'){ $('id-elevation_m').value=loc.elevation_m; if($('star-elevation').value==='')$('star-elevation').value=loc.elevation_m; }
+    $('id-elevation_m').readOnly=loc.altitude_effective_source==='gnss_gga_wgs84';
+  }
+}
 function renderStatus(status) {
+  renderSensors(status.sensors);
   // Camera settings diagnostics only. Station indicators are rendered solely
   // from /api/cameras in refreshCameras, including while that request is pending.
   renderCameraSetup(status);
@@ -307,12 +323,16 @@ async function fillSettings() {
   ignoreZones = (s.detection.ignore_zones || []).map(zone => ({...zone}));
   renderZoneList(); drawZones(); loadZoneImage();
   const id = s.identification || {};
-  for (const key of ['latitude','longitude','elevation_m','azimuth_deg','elevation_deg','roll_deg','horizontal_fov_deg','vertical_fov_deg','tolerance_deg','aircraft_feed_url','satellite_group','aircraft_provider']) $('id-'+key).value = id[key] ?? '';
+  for (const key of ['latitude','longitude','elevation_m','azimuth_deg','elevation_deg','roll_deg','horizontal_fov_deg','vertical_fov_deg','tolerance_deg','aircraft_feed_url','satellite_group','aircraft_provider','location_source']) $('id-'+key).value = id[key] ?? '';
   for (const [field,key] of [['star-latitude','latitude'],['star-longitude','longitude'],['star-elevation','elevation_m']]) $(field).value=id[key] ?? '';
   if(s.star_calibration) $('star-status').textContent=`Saved star calibration · ${s.star_calibration.matches.length} stars · RMS ${s.star_calibration.fit.rms_deg.toFixed(3)}° · source event retained · recalibrate after moving the camera.`;
   for (const key of ['enabled','calibrated','satellites']) $('id-'+key).checked = !!id[key];
   $('id-opensky_client_id').placeholder = id.has_opensky_credentials ? 'Saved — leave blank to keep' : 'Your OpenSky API client ID';
+  $('id-aircraft_local_file').checked=id.aircraft_local_file !== false;
+  $('id-location_source').value=id.location_source || 'manual';
+  setLocationMode();
   settingsLoaded = true;
+  if(latestSensors)renderSensors(latestSensors);
 }
 async function refreshDashboard() {
   if (!csrf || busy) return; busy = true;
@@ -350,6 +370,9 @@ $('settings-form').onsubmit = async event => { event.preventDefault(); const sub
   const identification = {};
   for(const key of ['latitude','longitude','elevation_m','azimuth_deg','elevation_deg','roll_deg','horizontal_fov_deg','vertical_fov_deg','tolerance_deg']) identification[key] = $('id-'+key).value === '' ? null : Number($('id-'+key).value);
   for(const key of ['enabled','calibrated','satellites']) identification[key] = $('id-'+key).checked;
+  identification.location_source=$('id-location_source').value;
+  identification.aircraft_local_file=$('id-aircraft_local_file').checked;
+  if(identification.location_source==='gnss'){ delete identification.latitude; delete identification.longitude; if(latestSensors?.effective_location?.altitude_effective_source==='gnss_gga_wgs84')delete identification.elevation_m; }
   identification.aircraft_feed_url = $('id-aircraft_feed_url').value.trim(); identification.satellite_group = $('id-satellite_group').value; identification.aircraft_provider = $('id-aircraft_provider').value; identification.opensky_client_id = $('id-opensky_client_id').value; identification.opensky_client_secret = $('id-opensky_client_secret').value;
   try { await api('/api/settings', {camera, recording, detection, identification, storage: {max_bytes:Math.round(Number($('max_gb').value)*1e9), min_free_bytes:Math.round(Number($('free_gb').value)*1e9), retention_days:Number($('retention_days').value)}}); $('camera-password').value = ''; $('id-opensky_client_id').value = ''; $('id-opensky_client_secret').value = ''; $('opensky-import-status').textContent='Credentials saved locally on the Pi.'; $('settings-result').textContent = 'Saved. Reconnecting camera…'; settingsLoaded = false; connectionStartedAt = Date.now(); tab('overview');
     globalThis.scrollTo?.({top: 0, behavior: 'smooth'});
@@ -754,3 +777,10 @@ $('star-apply').onclick=async()=>{
 };
 
 MagiEvents.init();
+
+function setLocationMode(){
+  const automatic=$('id-location_source').value==='gnss';
+  for(const key of ['latitude','longitude']) $('id-'+key).readOnly=automatic;
+  if(!automatic)$('id-elevation_m').readOnly=false;
+}
+$('id-location_source').onchange=()=>{setLocationMode();if(latestSensors)renderSensors(latestSensors);};

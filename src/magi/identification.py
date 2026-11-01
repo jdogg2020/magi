@@ -20,11 +20,17 @@ def defaults():
             'horizontal_fov_deg': 93.2, 'vertical_fov_deg': 48.2,
             'calibrated': False, 'tolerance_deg': 2, 'aircraft_feed_url': '',
             'satellites': False, 'satellite_group': 'visual', 'aircraft_provider': 'local_adsb',
-            'opensky_client_id': '', 'opensky_client_secret': ''}
+            'opensky_client_id': '', 'opensky_client_secret': '', 'location_source': 'manual',
+            'aircraft_local_file': True}
 
 
 def validate(settings):
     out = defaults(); out.update(settings)
+    # Preserve existing manually configured stations on upgrade.
+    if 'location_source' not in settings:
+        out['location_source'] = 'manual' if settings.get('latitude') is not None else 'gnss'
+    if out['location_source'] not in ('manual', 'gnss') or not isinstance(out['aircraft_local_file'], bool):
+        raise ValueError('invalid sensor source')
     limits = {'latitude': (-90, 90), 'longitude': (-180, 180), 'elevation_m': (-500, 9000),
               'azimuth_deg': (0, 360), 'elevation_deg': (-90, 90), 'roll_deg': (-180, 180),
               'horizontal_fov_deg': (1, 170), 'vertical_fov_deg': (1, 170), 'tolerance_deg': (.1, 10)}
@@ -260,6 +266,15 @@ class Identifier:
         self.thread = threading.Thread(target=self._run, name='magi-reference-matcher', daemon=True)
         self.thread.start()
 
+    @property
+    def settings(self):
+        from .sensors import effective
+        return effective(self._settings) if self._settings.get('location_source') == 'gnss' else self._settings
+
+    @settings.setter
+    def settings(self, value):
+        self._settings = value
+
     def protected(self):
         with self.lock:
             return set(self.ids)
@@ -283,11 +298,12 @@ class Identifier:
 
     def _refresh_aircraft(self):
         s = self.settings
-        if s['aircraft_provider'] != 'local_adsb' or not s['enabled'] or not configured(s) or not s['aircraft_feed_url'] or time.monotonic() < self.next_aircraft:
+        if s['aircraft_provider'] != 'local_adsb' or (not s['aircraft_feed_url'] and not s['aircraft_local_file']) or time.monotonic() < self.next_aircraft:
             return
         self.next_aircraft = time.monotonic() + 2
         try:
-            stamp, rows = parse_aircraft(fetch_json(s['aircraft_feed_url']))
+            from .sensors import AIRCRAFT, bounded_json
+            stamp, rows = parse_aircraft(fetch_json(s['aircraft_feed_url']) if s['aircraft_feed_url'] else bounded_json(AIRCRAFT))
             if abs(time.time() - stamp) > 10:
                 raise ValueError('stale feed')
             self.feed_time = stamp
@@ -355,7 +371,7 @@ class Identifier:
             reason = self._opensky(samples)
             if reason:
                 return {'status': 'reference_unavailable', 'source': 'opensky', 'reason': reason}
-        elif not self.settings['aircraft_feed_url']:
+        elif not self.settings['aircraft_feed_url'] and not self.settings['aircraft_local_file']:
             return {'status': 'not_configured', 'source': 'local_adsb'}
         if self.aircraft_status != 'available' or not self.feed_time or time.time() - self.feed_time > 10:
             return {'status': 'reference_unavailable', 'source': source, 'reason': self.aircraft_status}
@@ -487,7 +503,7 @@ class Identifier:
             elif matches:
                 result['status'] = 'possible_' + next(iter(matches))
             else:
-                kinds = (['aircraft'] if s['aircraft_feed_url'] or s['aircraft_provider']=='opensky' else []) + (['satellite'] if s['satellites'] else [])
+                kinds = (['aircraft'] if s['aircraft_feed_url'] or s['aircraft_local_file'] or s['aircraft_provider']=='opensky' else []) + (['satellite'] if s['satellites'] else [])
                 states = [row[k]['status'] for row in result['tracks'] for k in kinds]
                 result['status'] = 'no_match_in_checked_data' if states and all(state == 'no_match' for state in states) else 'reference_coverage_incomplete'
         return result

@@ -52,6 +52,20 @@ class FakeUpdater(module.Updater):
 
 
 class UpdateTests(unittest.TestCase):
+    def test_hardware_dependency_survives_update_and_rollback(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            updater = FakeUpdater(root)
+            dependency = updater.live/'deps/readsb/readsb'
+            dependency.parent.mkdir(parents=True)
+            dependency.write_bytes(b'verified hardware binary')
+            dependency.chmod(0o755)
+            updater.apply(self.stage(root), '2')
+            self.assertEqual(dependency.read_bytes(), b'verified hardware binary')
+            self.assertEqual(dependency.stat().st_mode & 0o777, 0o755)
+            updater.restore(json.loads(updater.previous.read_text()))
+            self.assertEqual(dependency.read_bytes(), b'verified hardware binary')
+
     def test_private_installed_source_is_repaired_without_touching_secrets(self):
         with tempfile.TemporaryDirectory() as folder:
             app=Path(folder)/'app';source=app/'src/magi';source.mkdir(parents=True)

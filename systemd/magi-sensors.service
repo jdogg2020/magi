@@ -1,0 +1,28 @@
+[Unit]
+Description=Magi station GNSS and time monitor
+After=chrony.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+Environment=PYTHONPATH=/opt/magi/src
+ExecStart=/usr/bin/python3 -m magi.sensor_service
+RuntimeDirectory=magi-sensors
+RuntimeDirectoryMode=0755
+StateDirectory=magi-sensors
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/run/magi-sensors /var/lib/magi-sensors
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -19,6 +19,7 @@ from .config import Config
 from .camera_info import CameraInfo
 from .reolink_setup import Setup, SetupError
 from .calibration import CalibrationError, GEOMETRY_KEYS, active_report, source_fingerprint, frame_time, visible_stars, solve_geometry
+from .auto_calibration import AutoCalibrationError, AutoCalibrationJob, apply_candidate, latest_event_with_frame, read_candidate, read_status
 from .detection import Analysis
 from .health import metrics, cpu_counters
 from .event_review import ReviewError, read as read_review, changes as review_changes, filters as event_filters, matches as event_matches, optional_json
@@ -41,6 +42,7 @@ class Application:
         self.camera_info = CameraInfo()
         self.camera_setup = Setup()
         self.calibration_session = None
+        self._auto_job = None
         self.calibration_report = active_report(json.loads(self.path.read_text()), self.cfg)
         self.recorder = self.substream = self.analysis = self.previews = None
         self.queue = queue.Queue(maxsize=16)
@@ -226,6 +228,8 @@ class Application:
                     task['result'] = {'reconnecting': True}
                 elif task['command'].startswith('calibration_'):
                     task['result'] = self.calibrate(task['command'], task['value'])
+                elif task['command'].startswith('auto_calibration_'):
+                    task['result'] = self.auto_calibrate(task['command'], task['value'])
                 elif task['command'] == 'render':
                     path = self.clip_path(task['value'].get('id', ''), 'metadata')
                     if not self.queue_media(path.parent, json.loads(path.read_text()), force=True):
@@ -239,7 +243,7 @@ class Application:
                 else:
                     raise ValueError('Unknown command.')
             except (OSError, ValueError) as error:
-                if isinstance(error, (CalibrationError, SetupError, ReviewError)):
+                if isinstance(error, (CalibrationError, AutoCalibrationError, SetupError, ReviewError)):
                     task['error'] = str(error)
                 elif task['command'].startswith('calibration_'):
                     task['error'] = 'Star calibration unavailable. Check the selected event, location and astronomy packages.'
@@ -402,6 +406,46 @@ class Application:
             location_source = 'gnss' if self.cfg.identification['location_source'] == 'gnss' and all(geometry[k] == effective[k] for k in ('latitude','longitude','elevation_m')) else 'manual'
             return self.update_settings({'identification':{**geometry,'calibrated':True,'location_source':location_source}},calibration=report)
         raise CalibrationError('Solve and inspect a valid star fit before applying it.')
+
+    def auto_calibrate(self, command, data):
+        """Automatic blind calibration: solve in a thread, apply explicitly.
+
+        Solving never runs in the work queue: it takes tens of seconds
+        and must not stall capture ticks. The thread only reads config
+        and event files and writes the auto-calibration records; the
+        apply step goes through the normal settings path.
+        """
+        data = data or {}
+        if command == 'auto_calibration_start':
+            if self._auto_job is not None and not self._auto_job.done.is_set():
+                return {'running': True, 'event_id': self._auto_job.event_id}
+            event_id = data.get('id') or latest_event_with_frame(self.cfg.root)
+            self._auto_job = AutoCalibrationJob(self, event_id)
+            return self._auto_job.start()
+        if command == 'auto_calibration_status':
+            job = self._auto_job.state() if self._auto_job is not None else None
+            status = read_status(self.cfg.root)
+            candidate = None
+            try:
+                raw = read_candidate(self.cfg.root, self.camera_id)
+                candidate = {'status': raw.get('status'), 'source_event': raw.get('source_event'),
+                             'image_timestamp_unix': raw.get('image_timestamp_unix'),
+                             'geometry': raw.get('geometry'),
+                             'verification': raw.get('result', {}).get('verification'),
+                             'created_unix': raw.get('created_unix'),
+                             'applied_unix': raw.get('applied_unix')}
+            except AutoCalibrationError:
+                candidate = None
+            return {'job': job, 'status': status, 'candidate': candidate,
+                    'live_calibration': self.calibration_report}
+        if command == 'auto_calibration_apply':
+            return apply_candidate(self)
+        if command == 'auto_calibration_cancel':
+            if self._auto_job is not None and not self._auto_job.done.is_set():
+                self._auto_job.cancel.set()
+                return {'cancelled': True, 'event_id': self._auto_job.event_id}
+            return {'cancelled': False, 'detail': 'No automatic solve is running.'}
+        raise AutoCalibrationError('Unknown automatic calibration command.')
 
     def detected(self, kind, track):
         if kind in self.cfg.detection['retain_types']:

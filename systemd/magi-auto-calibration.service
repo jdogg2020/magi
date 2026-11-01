@@ -1,0 +1,26 @@
+[Unit]
+Description=Magi automatic blind star calibration
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/mnt/magi-ssd
+
+[Service]
+Type=oneshot
+User=magi
+Group=magi
+WorkingDirectory=/opt/magi
+Environment=PYTHONPATH=/opt/magi/src
+ExecStart=/usr/bin/python3 -m magi star-solve --latest --config /etc/magi/config.json
+RuntimeDirectory=magi
+RuntimeDirectoryMode=0700
+UMask=0077
+TimeoutStartSec=900
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/mnt/magi-ssd/magi /run/magi /etc/magi
+ReadOnlyPaths=/mnt/magi-ssd/.magi-volume
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

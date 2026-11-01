@@ -104,7 +104,16 @@ def serve(cfg, config_path, control_enabled=True):
 def main(argv=None):
     os.umask(0o077)
     parser = argparse.ArgumentParser(description='Magi 24/7 sky observation service')
-    parser.add_argument('command', choices=('run', 'status', 'trigger', 'set-password'))
+    parser.add_argument('command', choices=('run', 'status', 'trigger', 'set-password', 'star-solve', 'star-apply'))
+    parser.add_argument('--event-id', default=None)
+    parser.add_argument('--latest', action='store_true')
+    parser.add_argument('--camera-id', default='primary')
+    parser.add_argument('--catalog', type=Path, default=None)
+    parser.add_argument('--timeout', type=float, default=600.0)
+    parser.add_argument('--rss-mb', type=int, default=2048)
+    parser.add_argument('--latitude', type=float, default=None)
+    parser.add_argument('--longitude', type=float, default=None)
+    parser.add_argument('--elevation-m', type=float, default=None)
     parser.add_argument('--config', type=Path, default=Path('/etc/magi/config.json'))
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--no-control-socket', action='store_true', help='HTTP-only mode for environments without Unix sockets')
@@ -125,6 +134,55 @@ def main(argv=None):
                 raise ValueError('Install FFmpeg and FFprobe first.')
             print(json.dumps({'ok': True, 'camera_configured': bool(cfg.source), 'dashboard_port': cfg.web['port'],
                               'mode': 'continuous_24_7', 'automatic_detection': cfg.detection['enabled']}))
+        elif args.command == 'star-solve':
+            if args.rss_mb:
+                try:
+                    import resource
+                    cap = args.rss_mb * 1024 * 1024
+                    resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+                except (ImportError, OSError, ValueError):
+                    pass
+            from .auto_calibration import latest_event_with_frame, solve_event
+            if bool(args.event_id) == bool(args.latest):
+                raise ValueError('Pass exactly one of --event-id or --latest.')
+            event_id = args.event_id or latest_event_with_frame(cfg.root)
+            override = None
+            if args.latitude is not None or args.longitude is not None:
+                if args.latitude is None or args.longitude is None:
+                    raise ValueError('Pass both --latitude and --longitude for an override location.')
+                override = {'latitude': args.latitude, 'longitude': args.longitude,
+                            'elevation_m': args.elevation_m if args.elevation_m is not None else 0}
+            try:
+                record = solve_event(cfg, event_id, camera_id=args.camera_id, catalog_path=args.catalog,
+                                     location_override=override, deadline=time.monotonic() + args.timeout)
+            except (ValueError, OSError) as exc:
+                print(f'Star solve failed: {exc}', file=sys.stderr)
+                return 1
+            result = record['result']
+            print(json.dumps({'status': result['status'], 'reason': result.get('reason'),
+                              'source_event': event_id, 'camera_id': args.camera_id,
+                              'geometry': result.get('geometry'),
+                              'verification': result.get('verification')}, indent=2))
+            return 0 if result['status'] == 'solved' else 1
+        elif args.command == 'star-apply':
+            try:
+                client(cfg.socket, 'status')
+                print('The service is running. Apply from the dashboard or stop the service first.', file=sys.stderr)
+                return 1
+            except (OSError, ValueError):
+                pass
+            from .application import Application
+            from .auto_calibration import apply_candidate
+            app = Application(args.config, camera_id=args.camera_id)
+            try:
+                saved = apply_candidate(app)
+            except (ValueError, OSError) as exc:
+                print(f'Star apply failed: {exc}', file=sys.stderr)
+                return 1
+            finally:
+                app.close()
+            print(json.dumps(saved, indent=2))
+            return 0
         elif args.command == 'run':
             serve(cfg, args.config, control_enabled=not args.no_control_socket)
         else:

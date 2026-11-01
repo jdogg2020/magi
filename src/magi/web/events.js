@@ -102,7 +102,10 @@ const MagiEvents = (()=>{
         const data={exported_utc:exported,events};
         const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
         const a=node('a');a.href=url;
-        a.download='magi-events-'+exported.replace(/[:.]/g,'-')+'-'+suffix+'.json';
+        const cameras=new Set(chosen.map(row=>row.camera_id || selectedCamera));
+        const safe=value=>String(value || '').replace(/[^a-zA-Z0-9_-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60);
+        const camera=cameras.size===1 ? [safe(chosen[0].camera_name),safe(chosen[0].camera_id || selectedCamera)].filter(Boolean).join('-') : 'multiple-cameras';
+        a.download='magi-events-'+camera+'-'+exported.replace(/[:.]/g,'-')+'-'+suffix+'.json';
         a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
         el('event-action-status').textContent=`Exported ${events.length} event(s) with full metadata.`;
       }catch(error){el('event-action-status').textContent='Export failed: '+error.message;}

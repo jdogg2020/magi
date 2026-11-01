@@ -398,6 +398,7 @@ async function refreshFrame() {
   const requests=[];
   if(!$('overview').classList.contains('hidden'))for(const camera of stationCameras){
     const tile=cameraTiles.get(camera.id);if(!tile)continue;
+    if(camera.state==='worker_failed'){tile.img.classList.add('hidden');tile.empty.classList.remove('hidden');continue;}
     requests.push(updateLiveFrame(camera.id,tile.img,tile.empty,tile));
   }
   if(!$('settings').classList.contains('hidden'))requests.push(updateLiveFrame(selectedCamera,$('camera-frame'),$('camera-empty'),settingsFrame));

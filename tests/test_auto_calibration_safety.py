@@ -83,6 +83,18 @@ class CalibrationSafetyTests(unittest.TestCase):
             self.assertTrue(AutoCalibrationJob.gate.acquire(blocking=False))
             AutoCalibrationJob.gate.release()
 
+    def test_worker_closed_input_releases_station_gate(self):
+        app=SimpleNamespace(path=Path('/unused/config'),camera_id='primary')
+        with patch('magi.auto_calibration.subprocess.Popen') as popen:
+            process=popen.return_value
+            process.poll.return_value=1
+            process.stdin.write.side_effect=BrokenPipeError()
+            job=AutoCalibrationJob(app,EVENT)
+            with self.assertRaises(AutoCalibrationError):job.start()
+            self.assertTrue(job.done.is_set())
+            self.assertTrue(AutoCalibrationJob.gate.acquire(blocking=False))
+            AutoCalibrationJob.gate.release()
+
     def test_job_worker_failure_is_reported(self):
         app=SimpleNamespace(path=Path('/unused/config'),camera_id='primary')
         with patch('magi.auto_calibration.subprocess.Popen') as popen:

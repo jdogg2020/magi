@@ -12,7 +12,7 @@ WorkingDirectory=/opt/magi
 Environment=PYTHONPATH=/opt/magi/src
 ExecStart=/usr/bin/python3 -m magi.star_worker @CONFIG@ --latest primary
 UMask=0077
-TimeoutStartSec=900
+TimeoutStartSec=150
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

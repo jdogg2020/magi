@@ -109,7 +109,7 @@ def main(argv=None):
     parser.add_argument('--latest', action='store_true')
     parser.add_argument('--camera-id', default='primary')
     parser.add_argument('--catalog', type=Path, default=None)
-    parser.add_argument('--timeout', type=float, default=600.0)
+    parser.add_argument('--timeout', type=float, default=120.0)
     parser.add_argument('--rss-mb', type=int, default=2048)
     parser.add_argument('--latitude', type=float, default=None)
     parser.add_argument('--longitude', type=float, default=None)
@@ -135,6 +135,11 @@ def main(argv=None):
             print(json.dumps({'ok': True, 'camera_configured': bool(cfg.source), 'dashboard_port': cfg.web['port'],
                               'mode': 'continuous_24_7', 'automatic_detection': cfg.detection['enabled']}))
         elif args.command == 'star-solve':
+            if not 1 <= args.timeout <= 600:
+                raise ValueError('Search timeout must be between 1 and 600 seconds.')
+            from .health import SearchGuard
+            guard = SearchGuard()
+            guard.is_set()
             if args.rss_mb:
                 try:
                     import resource
@@ -154,7 +159,7 @@ def main(argv=None):
                             'elevation_m': args.elevation_m if args.elevation_m is not None else 0}
             try:
                 record = solve_event(cfg, event_id, camera_id=args.camera_id, catalog_path=args.catalog,
-                                     location_override=override, deadline=time.monotonic() + args.timeout)
+                                     location_override=override, deadline=time.monotonic() + args.timeout, cancel_event=guard)
             except (ValueError, OSError) as exc:
                 print(f'Star solve failed: {exc}', file=sys.stderr)
                 return 1

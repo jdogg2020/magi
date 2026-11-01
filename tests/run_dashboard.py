@@ -40,6 +40,8 @@ def main():
             def feed():
                 atomic_json(radio_feed,{'now':time.time(),'aircraft':[{'hex':'abc123','flight':'TEST123','lat':40,'lon':-98,'gs':120,'track':90,'alt_baro':10000,'seen_pos':0}]})
             feed()
+            sensor_patch=patch('magi.sensors.snapshot',return_value={'state':'available','gnss':{'state':'fix'},'station_location':{'latitude':40.,'longitude':-98.,'elevation_m':322.8}})
+            sensor_patch.start()
             with patch('magi.station.Radio',lambda:Radio(radio_feed)):
                 app=Station(config)
             server=Server(app,('127.0.0.1',0));stop=threading.Event();failures=[]
@@ -62,7 +64,7 @@ def main():
                     subprocess.run(['node',str(Path(__file__).with_name('test_browser.js')),f'http://127.0.0.1:{server.server_port}'],check=True,timeout=120)
                 if failures:raise RuntimeError('Synthetic station failed') from failures[0]
             finally:
-                server.shutdown();server.server_close();http.join(2);stop.set();worker.join(10);app.close()
+                server.shutdown();server.server_close();http.join(2);stop.set();worker.join(10);app.close();sensor_patch.stop()
     finally:PrototypeTests.tearDownClass()
 
 

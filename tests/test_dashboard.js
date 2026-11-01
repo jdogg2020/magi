@@ -250,6 +250,10 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  for(let i=0;i<60;i++){await elements['star-refresh'].onclick();if(elements['star-event'].children.length)break;await new Promise(resolve=>setTimeout(resolve,150));}
  assert(elements['star-event'].children.length>0,'Star calibration should list full-resolution saved frames: '+elements['star-status'].textContent);
  await elements['star-load'].onclick();
+ assert(elements['star-picker'].open);
+ assert(elements['star-picker-grid'].children.length>0);
+ await elements['star-picker-grid'].children[0].onclick();
+ assert.equal(Number(elements['star-elevation'].value),322.8);
  assert(!elements['star-editor'].classList.contains('hidden'),'Frozen calibration image should open: '+elements['star-status'].textContent);
  assert(elements['star-name'].children.length>0,'Visible named stars should be available');
  const starNames=elements['star-name'].children.map(option=>option.value);
@@ -258,10 +262,11 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  elements['star-zoom'].value='2';elements['star-zoom'].onchange();assert.equal(elements['star-surface'].style.width,'200%');
  await elements['star-solve'].onclick();
  assert(elements['star-apply'].disabled,'A collinear/misidentified star fit must not be applied');
- assert(elements['star-status'].textContent.includes('Spread'),'Rejected fit should explain how to improve it');
+ assert(elements['star-status'].textContent.includes('6 optional hints'),'Manual search should accept optional hints');
+ await elements['auto-star-cancel'].onclick();
  elements['star-clear'].onclick();assert.equal(elements['star-points'].children.length,0);
  await elements['auto-star-refresh'].onclick();
- assert(elements['auto-star-status'].textContent.includes('never_run'));
+ assert(elements['auto-star-status'].textContent.includes('Latest search:'));
  assert(elements['auto-star-apply'].disabled,'Cannot apply an unreviewed automatic result');
  await elements['auto-star-start'].onclick();
  for(let i=0;i<100;i++){await new Promise(r=>setTimeout(r,100));await elements['auto-star-refresh'].onclick();if(!vm.runInContext('autoStarRunning',context))break;}

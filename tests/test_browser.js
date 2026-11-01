@@ -103,8 +103,15 @@ const base = process.argv[2];
     await page.locator('#settings').waitFor();
     await page.locator('.star-panel > summary').click();
     await page.locator('#auto-star-refresh').click();
-    await page.waitForFunction(()=>document.getElementById('auto-star-status').textContent.startsWith('Latest solve:'));
+    await page.waitForFunction(()=>document.getElementById('auto-star-status').textContent.startsWith('Latest search:'));
     assert(await page.locator('#auto-star-apply').isDisabled(),'Automatic calibration requires a reviewed candidate');
+    await page.locator('#star-refresh').click();
+    await page.locator('#star-picker').waitFor();
+    assert(await page.locator('#star-picker-grid button').count()>0);
+    await page.locator('#star-picker-grid button').first().click();
+    await page.locator('#star-picker').waitFor({state:'hidden'});
+    assert.equal(await page.locator('#star-elevation').inputValue(),'322.8');
+
 
     await page.waitForFunction(camera=>document.getElementById('camera-select').value===camera,event.camera);
     assert.equal(await page.locator('#camera-select').inputValue(),event.camera);

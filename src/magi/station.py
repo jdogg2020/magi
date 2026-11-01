@@ -21,6 +21,7 @@ from .event_review import ID as EVENT_ID, ReviewError, changes as review_changes
 from .storage import atomic_json
 from .storage_report import report
 from .storage_purge import Purges
+from .radio import Radio
 
 CAMERA_ID = re.compile(r'^(primary|cam-[a-f0-9]{12})$')
 MAX_CAMERAS = 8
@@ -33,13 +34,13 @@ def camera_name(value):
 
 
 class Worker:
-    def __init__(self, path, identity, name, archived=False):
+    def __init__(self, path, identity, name, archived=False, radio=None):
         self.app = None
         self.failed = False
         try:
             if Path(path).is_symlink() or Path(path).parent.is_symlink():
                 raise ValueError('Camera config path cannot be a symlink.')
-            self.app = Application(path, camera_id=identity, camera_name=name, archive_only=archived)
+            self.app = Application(path, camera_id=identity, camera_name=name, archive_only=archived, radio=radio)
         except (ValueError, OSError, KeyError, TypeError):
             self.failed = True
         self.stop = threading.Event()
@@ -88,15 +89,17 @@ class Station:
         else:
             self.registry = {'schema': 1, 'cameras': [{'id': 'primary', 'name': 'Camera 1'}]}
         self.validate_registry()
+        self.radio = Radio()
         try:
             for item in self.registry['cameras']:
                 config = self.path if item['id'] == 'primary' else self.config_directory / (item['id']+'.json')
-                self.workers[item['id']] = Worker(config, item['id'], item['name'], item.get('archived', False))
+                self.workers[item['id']] = Worker(config, item['id'], item['name'], item.get('archived', False), radio=self.radio)
                 if item['id'] == 'primary' and self.workers[item['id']].failed:
                     raise ValueError('Primary camera configuration is unavailable.')
             for worker in self.workers.values():
                 worker.thread.start()
         except Exception:
+            self.radio.close()
             for worker in self.workers.values():
                 if worker.thread.is_alive():
                     worker.close()
@@ -327,7 +330,7 @@ class Station:
             atomic_json(path, raw)
             worker = None
             try:
-                worker = Worker(path, identity, name)
+                worker = Worker(path, identity, name, radio=self.radio)
                 if worker.failed:
                     raise ValueError('Could not create camera configuration.')
                 registry['cameras'].append({'id': identity, 'name': name})
@@ -360,7 +363,7 @@ class Station:
             if worker.thread.is_alive():
                 raise ValueError('Camera is finishing its recordings. Wait and retry removal.')
             config = self.path if identity == 'primary' else self.config_directory / (identity+'.json')
-            replacement = Worker(config, identity, item['name'], archived=True)
+            replacement = Worker(config, identity, item['name'], archived=True, radio=self.radio)
             if replacement.failed:
                 raise ValueError('Could not open the camera archive configuration. Check its configuration before retrying.')
             registry = copy.deepcopy(self.registry)
@@ -449,7 +452,7 @@ class Station:
                 raise ValueError('This camera was already restarted.')
             item = next(item for item in self.registry['cameras'] if item['id'] == identity)
             config = self.path if identity == 'primary' else self.config_directory / (identity+'.json')
-            replacement = Worker(config, identity, item['name'])
+            replacement = Worker(config, identity, item['name'], radio=self.radio)
             self.workers[identity] = replacement
             replacement.thread.start()
             if replacement.failed:
@@ -482,5 +485,6 @@ class Station:
         deadline = time.monotonic()+18
         for worker in workers:
             worker.thread.join(max(0, deadline-time.monotonic()))
+        self.radio.close()
         if any(worker.thread.is_alive() for worker in workers):
             raise OSError('Camera workers did not finish shutdown before the deadline.')

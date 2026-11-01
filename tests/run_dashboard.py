@@ -7,6 +7,9 @@ import subprocess
 import tempfile
 import threading
 import time
+from unittest.mock import patch
+from magi.radio import Radio
+from magi.storage import atomic_json
 
 from magi.station import Station
 from magi.auth import password_hash
@@ -33,10 +36,21 @@ def main():
             secondary['storage']['directory']=str(root/'recordings'/'cameras'/'cam-123456789abc')
             second=config_dir/'cam-123456789abc.json';second.write_text(json.dumps(secondary));second.chmod(0o600)
             registry=root/'cameras.json';registry.write_text(json.dumps({'schema':1,'cameras':[{'id':'primary','name':'Camera 1'},{'id':'cam-123456789abc','name':'East sky'}]}));registry.chmod(0o600)
-            app=Station(config);server=Server(app,('127.0.0.1',0));stop=threading.Event();failures=[]
+            radio_feed=root/'test-aircraft.json'
+            def feed():
+                atomic_json(radio_feed,{'now':time.time(),'aircraft':[{'hex':'abc123','flight':'TEST123','lat':40,'lon':-98,'gs':120,'track':90,'alt_baro':10000,'seen_pos':0}]})
+            feed()
+            with patch('magi.station.Radio',lambda:Radio(radio_feed)):
+                app=Station(config)
+            server=Server(app,('127.0.0.1',0));stop=threading.Event();failures=[]
             def tick():
                 try:
-                    while not stop.is_set():app.tick();time.sleep(.025)
+                    next_feed=0
+                    while not stop.is_set():
+                        app.tick()
+                        if time.monotonic()>=next_feed:
+                            feed();next_feed=time.monotonic()+1
+                        time.sleep(.025)
                 except Exception as error:failures.append(error)
             worker=threading.Thread(target=tick,daemon=True)
             http=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.05},daemon=True)

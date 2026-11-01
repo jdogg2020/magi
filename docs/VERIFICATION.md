@@ -383,3 +383,10 @@ and execution, damaged annotations, original-camera forgetting across restart,
 other-camera preservation and secondary config removal. Dashboard/Chromium tests
 exercise storage deep links and cancellation/confirmation of archive deletion.
 These remain synthetic checks; no remote Pi access is used.
+
+## 0.18.0 radio evidence
+
+Synthetic local receiver fixtures cover missing altitude/position, outages,
+bounded history/event size, restart reuse, bearing motion/time rejection and
+ambiguous/weak candidates. Two-camera dashboard and Chromium tests download
+persisted partial aircraft records without real sensor access.

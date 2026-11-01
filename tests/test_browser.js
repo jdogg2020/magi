@@ -116,6 +116,7 @@ const base = process.argv[2];
     assert.equal(await page.locator('#setup-initialize').isChecked(),false);
     await page.waitForFunction(expected=>document.querySelectorAll('#camera-select option').length===expected,count+1);
     const removedId=new URL(page.url()).searchParams.get('camera');
+    await page.locator('.camera-management > summary').click();
     page.once('dialog',dialog=>dialog.dismiss());
     await page.locator('#camera-remove').click();
     assert.equal(await page.locator('#camera-select option').count(),count+1);

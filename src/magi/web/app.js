@@ -221,10 +221,9 @@ function renderStatus(status) {
   $('trigger').disabled = !buffering;
   $('frame-age').textContent = status.frame_age_seconds == null ? 'NO FRAME' : `${Math.round(status.frame_age_seconds)}s AGO`;
   let connectionMessage = '';
+  if (buffering) connectionStartedAt = 0;
   if (connectionStartedAt) {
-    connectionMessage = buffering
-      ? 'Camera connected. Recording is active. The live preview updates automatically; next, try Save an event.'
-      : Date.now() - connectionStartedAt < 30000
+    connectionMessage = Date.now() - connectionStartedAt < 30000
         ? 'Settings saved. Connecting to your camera… The live preview will appear here automatically.'
         : 'Still waiting for the camera. Open Settings to check its address, RTSP login and stream paths; confirm RTSP is enabled on the camera.';
   }

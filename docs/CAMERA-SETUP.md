@@ -203,3 +203,16 @@ After updating, check both CX820 live images, record a manual event from each,
 verify their Camera names and playback, then monitor Pi CPU, temperature,
 throttling and dropped-frame growth. No real-camera capacity result is implied
 by the synthetic two-camera tests.
+
+## Direct camera controls (0.15.4)
+
+Use **Cameras → Add a camera** in the left sidebar from any page. Enter the camera
+name, then choose **Add camera** to create it and open its connection settings.
+Cancel closes the dialog without adding anything. The button disables at the
+station's camera limit. Add no longer requires opening Station cameras inside
+another camera's settings. Rename and Restart remain in that settings panel.
+
+A settings link for the currently selected camera switches directly to Settings,
+even after visiting Overview or Events without changing the URL. Other cameras'
+links open their own settings page as before. Existing Reolink cameras should use
+their saved login with initialization unchecked.

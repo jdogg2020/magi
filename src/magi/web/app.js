@@ -6,9 +6,19 @@ function cameraPath(path, identity = selectedCamera) {
   return '/api/cameras/'+encodeURIComponent(identity)+'/'+path.slice(5);
 }
 const cameraTiles = new Map();
-let stationCameras = [], cameraRefreshBusy = false;
+let stationCameras = [], cameraRefreshBusy = false, cameraAddBusy = false;
 const eventKey = row => `${row.camera_id || selectedCamera}:${row.id}`;
 const eventPath = (row, part) => `/api/cameras/${encodeURIComponent(row.camera_id || selectedCamera)}/clips/${encodeURIComponent(row.id)}/${part}`;
+function cameraSettingsLink(camera, label){
+  const link=document.createElement('a');
+  link.href='/?camera='+encodeURIComponent(camera.id)+'#settings';link.textContent=label;
+  link.onclick=event=>{
+    if(camera.id===selectedCamera && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && !event.button){
+      event.preventDefault();tab('settings');location.hash='settings';refreshFrame();
+    }
+  };
+  return link;
+}
 async function refreshCameras() {
   if (!csrf || cameraRefreshBusy) return;
   cameraRefreshBusy = true;
@@ -25,13 +35,14 @@ async function refreshCameras() {
       for (const camera of result.cameras) {
         const option=document.createElement('option');option.value=camera.id;option.textContent=camera.name;select.append(option);
         const choice=document.createElement('option');choice.value=camera.id;choice.textContent=camera.name;filter.append(choice);
-        const link=document.createElement('a');link.href='/?camera='+encodeURIComponent(camera.id)+'#settings';link.textContent=camera.name+' settings';$('camera-links').append(link);
+        $('camera-links').append(cameraSettingsLink(camera,camera.name+' settings'));
       }
       filter.value=previous;select.value=selectedCamera;select.dataset.signature=signature;
       const current=result.cameras.find(c=>c.id===selectedCamera);
       if(current){$('camera-name').value=current.name;$('selected-camera-name').textContent=current.name;}
     }
-    $('camera-add').disabled=result.cameras.length >= result.max_cameras;
+    $('sidebar-camera-add').disabled=$('camera-add').disabled=cameraAddBusy || result.cameras.length >= result.max_cameras;
+    $('sidebar-camera-add').title=result.cameras.length >= result.max_cameras?'Camera limit reached':'';
     $('camera-rename').disabled=$('camera-restart').disabled=result.max_cameras===1;
     for (const camera of result.cameras) {
       let tile=cameraTiles.get(camera.id);
@@ -41,7 +52,7 @@ async function refreshCameras() {
         const img=document.createElement('img');img.alt=camera.name+' latest detection frame';img.classList.add('hidden');
         const empty=document.createElement('p');empty.textContent='Waiting for a fresh camera image.';
         const actions=document.createElement('div');actions.className='camera-tile-actions';
-        const link=document.createElement('a');link.href='/?camera='+encodeURIComponent(camera.id)+'#settings';link.textContent='Settings';
+        const link=cameraSettingsLink(camera,'Settings');
         const save=document.createElement('button');save.type='button';save.className='secondary';save.textContent='＋ Save an event';
         const feedback=document.createElement('p');feedback.setAttribute('role','status');feedback.className='muted';
         tile={card,title,state,count,analysis,img,empty,save,feedback,url:null};
@@ -65,13 +76,32 @@ async function refreshCameras() {
   } catch(error) { $('camera-management-status').textContent=error.message; }
   finally {cameraRefreshBusy=false;}
 }
-$('camera-select').onchange=()=>{location.href='/?camera='+encodeURIComponent($('camera-select').value)+'#settings';};
-for(const [button,action] of [['camera-add','add'],['camera-rename','rename']]) $(button).onclick=async()=>{
-  $(button).disabled=true;
-  try {const result=await api('/api/cameras',{action,id:selectedCamera,name:$(action==='add'?'camera-new-name':'camera-name').value});
-    if(action==='add')location.href='/?camera='+encodeURIComponent(result.id)+'#settings';
-    else {$('camera-management-status').textContent='Camera renamed.';await refreshCameras();}
-  }catch(error){$('camera-management-status').textContent=error.message;}finally{$(button).disabled=false;}
+$('camera-select').onchange=()=>{
+  const identity=$('camera-select').value;
+  if(identity===selectedCamera){tab('settings');location.hash='settings';refreshFrame();}
+  else location.href='/?camera='+encodeURIComponent(identity)+'#settings';
+};
+$('sidebar-camera-add').onclick=()=>{
+  if($('sidebar-camera-add').disabled)return;
+  $('camera-new-name').value='';$('camera-add-status').textContent='';$('camera-add-dialog').showModal();
+};
+$('camera-add-cancel').onclick=()=>{if(!cameraAddBusy)$('camera-add-dialog').close();};
+$('camera-add-form').onsubmit=async event=>{
+  event.preventDefault();if(cameraAddBusy)return;
+  cameraAddBusy=true;
+  $('sidebar-camera-add').disabled=$('camera-add').disabled=$('camera-add-cancel').disabled=true;
+  $('camera-add-status').textContent='Adding camera…';
+  try{
+    const result=await api('/api/cameras',{action:'add',name:$('camera-new-name').value});
+    $('camera-add-dialog').close();location.href='/?camera='+encodeURIComponent(result.id)+'#settings';
+  }catch(error){$('camera-add-status').textContent=error.message;}
+  finally{cameraAddBusy=false;$('camera-add-cancel').disabled=false;await refreshCameras();}
+};
+$('camera-rename').onclick=async()=>{
+  $('camera-rename').disabled=true;
+  try{await api('/api/cameras',{action:'rename',id:selectedCamera,name:$('camera-name').value});$('camera-management-status').textContent='Camera renamed.';await refreshCameras();}
+  catch(error){$('camera-management-status').textContent=error.message;}
+  finally{$('camera-rename').disabled=false;}
 };
 $('camera-restart').onclick=async()=>{
   $('camera-restart').disabled=true;

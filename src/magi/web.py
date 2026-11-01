@@ -300,11 +300,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/events/list':
                 self.reply(200, app.event_page(body))
                 return
-            commands = {'/api/events/list': 'events_list', '/api/events/update': 'events_update', '/api/camera/setup': 'camera_setup', '/api/camera/info': 'camera_info', '/api/trigger': 'trigger', '/api/settings': 'settings', '/api/reconnect': 'reconnect', '/api/identify': 'identify', '/api/render': 'render', '/api/calibration/load': 'calibration_load', '/api/calibration/solve': 'calibration_solve', '/api/calibration/apply': 'calibration_apply'}
+            commands = {'/api/events/list': 'events_list', '/api/events/update': 'events_update', '/api/camera/setup': 'camera_setup', '/api/camera/info': 'camera_info', '/api/trigger': 'trigger', '/api/settings': 'settings', '/api/reconnect': 'reconnect', '/api/identify': 'identify', '/api/render': 'render', '/api/calibration/load': 'calibration_load', '/api/calibration/solve': 'calibration_solve', '/api/calibration/apply': 'calibration_apply', '/api/auto-calibration/start': 'auto_calibration_start', '/api/auto-calibration/status': 'auto_calibration_status', '/api/auto-calibration/apply': 'auto_calibration_apply', '/api/auto-calibration/cancel': 'auto_calibration_cancel'}
             if path not in commands:
                 self.reply(404, {'error': 'Not found.'})
                 return
             self.reply(200, app.request(commands[path], body))
         except (ValueError,OSError) as error:
-            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/camera/setup', '/api/events/', '/api/cameras', '/api/station/events/', '/api/station/update', '/api/station/storage/')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
+            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/auto-calibration/', '/api/camera/setup', '/api/events/', '/api/cameras', '/api/station/events/', '/api/station/update', '/api/station/storage/')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
             self.reply(409, {'error': message})

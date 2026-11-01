@@ -260,6 +260,15 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(elements['star-apply'].disabled,'A collinear/misidentified star fit must not be applied');
  assert(elements['star-status'].textContent.includes('Spread'),'Rejected fit should explain how to improve it');
  elements['star-clear'].onclick();assert.equal(elements['star-points'].children.length,0);
+ await elements['auto-star-refresh'].onclick();
+ assert(elements['auto-star-status'].textContent.includes('never_run'));
+ assert(elements['auto-star-apply'].disabled,'Cannot apply an unreviewed automatic result');
+ await elements['auto-star-start'].onclick();
+ for(let i=0;i<100;i++){await new Promise(r=>setTimeout(r,100));await elements['auto-star-refresh'].onclick();if(!vm.runInContext('autoStarRunning',context))break;}
+ assert(!vm.runInContext('autoStarRunning',context),'Synthetic frame solve must finish or fail');
+ assert(elements['auto-star-apply'].disabled,'Failed solve must not permit apply');
+ assert(elements['auto-star-status'].textContent.includes('Previous calibration kept') || elements['auto-star-status'].textContent.includes('failed'));
+
  vm.runInContext("renderStatus({state:'buffering', health:{}, analysis:{state:'substream_probe_failed',width:320,height:180,fps:8,probe_error:'Camera did not answer in time.',retry_in_seconds:7}})",context);
  assert.equal(elements['analysis-state'].textContent,'Motion detection paused');
  assert(elements['analysis-diagnostic'].textContent.includes('in 7 seconds'));

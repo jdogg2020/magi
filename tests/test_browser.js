@@ -101,6 +101,11 @@ const base = process.argv[2];
     await page.locator(`aside a[href="/?camera=${event.camera}#settings"]`).click();
     await page.waitForURL('**/?camera='+event.camera+'#settings');
     await page.locator('#settings').waitFor();
+    await page.locator('.star-panel > summary').click();
+    await page.locator('#auto-star-refresh').click();
+    await page.waitForFunction(()=>document.getElementById('auto-star-status').textContent.startsWith('Latest solve:'));
+    assert(await page.locator('#auto-star-apply').isDisabled(),'Automatic calibration requires a reviewed candidate');
+
     await page.waitForFunction(camera=>document.getElementById('camera-select').value===camera,event.camera);
     assert.equal(await page.locator('#camera-select').inputValue(),event.camera);
     // Navigation keeps the hash, so a second click must explicitly reopen settings.

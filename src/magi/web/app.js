@@ -877,3 +877,60 @@ async function purgeStorage(camera,mode){
 }
 $('storage-purge-all').onclick=()=>purgeStorage('all','unprotected');
 $('storage-empty-trash').onclick=()=>purgeStorage('all','trash');
+
+// Automatic solving is isolated from capture and never applies without review.
+let autoStarCandidate=null, autoStarBusy=false, autoStarRunning=false, autoStarImageReady=false;
+const autoStarImage=document.createElement('img');
+function autoStarApplyState(){
+  $('auto-star-apply').disabled=autoStarBusy || autoStarRunning || !autoStarImageReady || !autoStarCandidate || autoStarCandidate.status!=='candidate' || !$('auto-star-reviewed').checked;
+}
+autoStarImage.onload=()=>{
+  const canvas=$('auto-star-canvas'),ctx=canvas.getContext('2d');
+  canvas.width=autoStarImage.naturalWidth;canvas.height=autoStarImage.naturalHeight;
+  ctx.drawImage(autoStarImage,0,0);ctx.strokeStyle='#ffdc00';ctx.fillStyle='#ffdc00';ctx.lineWidth=3;ctx.font='18px sans-serif';
+  for(const match of autoStarCandidate?.matches || []){
+    const x=match.x*canvas.width,y=match.y*canvas.height;ctx.beginPath();ctx.arc(x,y,10,0,Math.PI*2);ctx.stroke();ctx.fillText(match.catalog_id,x+12,y);
+  }
+  autoStarImageReady=true;autoStarApplyState();
+};
+autoStarImage.onerror=()=>{autoStarImageReady=false;autoStarApplyState();$('auto-star-status').textContent='Candidate frame is unavailable. Choose another saved frame and solve again.';};
+async function refreshAutoStars(){
+  if(!csrf || autoStarBusy)return;
+  autoStarBusy=true;autoStarApplyState();
+  try{
+    const data=await api('/api/auto-calibration/status',{}),candidate=data.candidate;
+    autoStarRunning=!!data.job?.running;
+    $('auto-star-cancel').disabled=!autoStarRunning;
+    $('auto-star-start').disabled=autoStarRunning;
+    const outcome=data.job?.error || data.job?.reason || data.status.reason || data.status.status;
+    $('auto-star-status').textContent=(autoStarRunning?'Solving locally; recording continues.':`Latest solve: ${outcome || 'not run'}.`)+(data.status.movement_suspect?' Camera movement suspected: review and recalibrate.':'');
+    if(candidate?.created_unix!==autoStarCandidate?.created_unix || candidate?.status!==autoStarCandidate?.status){
+      autoStarCandidate=candidate;autoStarImageReady=false;$('auto-star-reviewed').checked=false;
+      $('auto-star-review').classList.toggle('hidden',!candidate);
+      if(candidate){
+        const g=candidate.geometry,v=candidate.verification || {},r=candidate.residuals_deg || {};
+        $('auto-star-fit').textContent=`Candidate from ${new Date(candidate.image_timestamp_unix*1000).toLocaleString()}\nAzimuth ${g.azimuth_deg.toFixed(3)}° · elevation ${g.elevation_deg.toFixed(3)}° · roll ${g.roll_deg.toFixed(3)}°\nField of view ${g.horizontal_fov_deg.toFixed(3)}° × ${g.vertical_fov_deg.toFixed(3)}°\n${v.matched_count || 0} matched stars · ${v.verification_count || 0} additional verification stars\nAll-star RMS ${r.all_rms_deg?.toFixed(3) ?? '?'}° · maximum ${r.all_max_deg?.toFixed(3) ?? '?'}°\nPinhole model; lens distortion is not fitted. Host time is not verified camera exposure time.\n${candidate.status==='applied'?'Already applied.':'This candidate remains unchanged if a later solve fails.'}`;
+        autoStarImage.src=cameraPath(`/api/clips/${encodeURIComponent(candidate.source_event)}/frame?auto=${candidate.created_unix}`);
+      }
+    }
+  }catch(error){$('auto-star-status').textContent=error.message;}
+  finally{autoStarBusy=false;autoStarApplyState();}
+}
+$('auto-star-refresh').onclick=refreshAutoStars;
+$('auto-star-reviewed').onchange=autoStarApplyState;
+$('auto-star-start').onclick=async()=>{
+  if(autoStarBusy)return;autoStarBusy=true;autoStarApplyState();
+  try{const id=$('star-event').value;if(!id)throw new Error('Find saved frames and select a clear frame first.');await api('/api/auto-calibration/start',{id});autoStarRunning=true;}
+  catch(error){$('auto-star-status').textContent=error.message;return;}
+  finally{autoStarBusy=false;autoStarApplyState();}
+  await refreshAutoStars();
+};
+$('auto-star-cancel').onclick=async()=>{try{await api('/api/auto-calibration/cancel',{});await refreshAutoStars();}catch(error){$('auto-star-status').textContent=error.message;}};
+$('auto-star-apply').onclick=async()=>{
+  if($('auto-star-apply').disabled)return;autoStarBusy=true;autoStarApplyState();
+  try{await api('/api/auto-calibration/apply',{created_unix:autoStarCandidate.created_unix});await fillSettings();}
+  catch(error){$('auto-star-status').textContent=error.message;return;}
+  finally{autoStarBusy=false;autoStarApplyState();}
+  await refreshAutoStars();
+};
+setInterval(()=>{if(autoStarRunning)refreshAutoStars();},3000);

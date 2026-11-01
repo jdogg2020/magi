@@ -161,7 +161,9 @@ def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=N
         location = {'latitude': latitude, 'longitude': longitude, 'elevation_m': elevation,
                     'location_effective_source': 'cli_override', 'altitude_effective_source': 'cli_override'}
     else:
-        location = sensor_effective(cfg.identification, sensors)
+        location = sensor_effective({**cfg.identification, **({'location_source':'gnss'} if (options or {}).get('gps_required') else {})}, sensors)
+        if (options or {}).get('gps_required') and location.get('altitude_effective_source') != 'gnss_gga_wgs84':
+            raise AutoCalibrationError('Validated GPS elevation is unavailable. Check station sensors.')
         latitude, longitude, elevation = (location.get(k) for k in ('latitude', 'longitude', 'elevation_m'))
         if latitude is None or longitude is None:
             raise AutoCalibrationError('GPS fix required before solving. Check station sensors.')
@@ -192,7 +194,7 @@ def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=N
                           'retrieved_sha256': cache.get('retrieved_sha256'), 'star_count': len(cache['stars']),
                           'filter': cache.get('filter')},
               'timing_basis': 'estimated host receipt; not camera exposure time',
-              'created_unix': time.time(), 'result': result}
+              'created_unix': time.time(), 'operator_hints': (options or {}).get('hints', []), 'result': result}
     status = {'camera_id': camera_id, 'source_event': event_id, 'image_timestamp_unix': stamp,
               'status': result['status'], 'reason': result.get('reason'),
               'solved_geometry': result.get('geometry'),
@@ -316,8 +318,9 @@ class AutoCalibrationJob:
     """One low-priority, memory-limited child; capture never runs the solver."""
     gate = threading.Lock()
 
-    def __init__(self, app, event_id):
+    def __init__(self, app, event_id, hints=None):
         self.app, self.event_id = app, event_id
+        self.hints = hints or []
         self.done = threading.Event()
         self.process = None
         self.result = None
@@ -326,6 +329,11 @@ class AutoCalibrationJob:
         self.owns_gate = False
 
     def start(self):
+        from .health import search_block_reason
+        reason = search_block_reason(getattr(self.app, 'health', {}))
+        if reason:
+            self._finish(reason)
+            raise AutoCalibrationError(reason)
         if not self.gate.acquire(blocking=False):
             self._finish('Another camera is solving. Wait for it to finish.')
             raise AutoCalibrationError(self.error)
@@ -334,11 +342,17 @@ class AutoCalibrationJob:
         try:
             self.process = subprocess.Popen([sys.executable, '-m', 'magi.star_worker',
                 str(self.app.path), self.event_id, self.app.camera_id],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
         except OSError:
             self._finish('Could not start the star solver.')
             raise AutoCalibrationError(self.error) from None
-        self.deadline = time.monotonic() + 600
+        try:
+            self.process.stdin.write(json.dumps({"hints": self.hints}).encode())
+            self.process.stdin.close()
+        except OSError:
+            self.close("Could not send star hints to the solver; previous calibration kept.")
+            raise AutoCalibrationError(self.error) from None
+        self.deadline = time.monotonic() + 120
         return {'started': True, 'event_id': self.event_id}
 
     def _finish(self, error=None):
@@ -351,7 +365,11 @@ class AutoCalibrationJob:
     def poll(self):
         if self.done.is_set() or self.process is None:
             return
-        if time.monotonic() > self.deadline:
+        from .health import search_block_reason
+        reason = search_block_reason(getattr(self.app, 'health', {}))
+        if reason:
+            self.close(reason)
+        elif time.monotonic() > self.deadline:
             self.close('Solve exceeded its time budget; previous calibration kept.')
         elif self.process.poll() is not None:
             try:
@@ -382,6 +400,6 @@ class AutoCalibrationJob:
     def state(self):
         self.poll()
         if not self.done.is_set():
-            return {'running': True, 'event_id': self.event_id}
+            return {'running': True, 'event_id': self.event_id, 'temperature_available': getattr(self.app, 'health', {}).get('temperature_c') is not None}
         return {'running': False, 'event_id': self.event_id, 'error': self.error,
                 'status': (self.result or {}).get('status'), 'reason': (self.result or {}).get('reason')}

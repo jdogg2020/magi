@@ -19,17 +19,25 @@ def main():
         import fcntl
         from .config import Config
         from .auto_calibration import solve_event, latest_event_with_frame
+        from .health import SearchGuard
+        guard = SearchGuard()
+        guard.is_set()
+        payload = sys.stdin.buffer.read(16385)
+        if len(payload) > 16384:
+            raise ValueError('Hints too large')
+        request = json.loads(payload) if payload else {}
         cfg = Config.load(sys.argv[1])
         # The common runtime directory serializes CLI and dashboard workers.
         cfg.socket.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (cfg.socket.parent / 'star-solve.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             event_id = latest_event_with_frame(cfg.root) if sys.argv[2] == '--latest' else sys.argv[2]
-            record = solve_event(cfg, event_id, camera_id=sys.argv[3], deadline=time.monotonic()+570)
+            record = solve_event(cfg, event_id, camera_id=sys.argv[3], deadline=time.monotonic()+115, cancel_event=guard, options={"hints": request.get("hints", []), "gps_required": True})
         print(json.dumps({'status': record['status'], 'reason': record['result'].get('reason')}))
-    except Exception:
+    except Exception as error:
         # Do not expose file paths, credentials, or decoder error details.
-        print(json.dumps({'status': 'failed', 'error': 'Solve unavailable: check frame, location, astronomy packages and resource limits. Previous calibration kept.'}))
+        message = str(error) if isinstance(error, ValueError) and str(error).startswith('Star search stopped:') else 'Search unavailable: check frame, GPS location, astronomy packages and resource limits. Previous calibration kept.'
+        print(json.dumps({'status': 'failed', 'error': message}))
         return 1
     return 0
 

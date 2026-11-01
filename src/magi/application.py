@@ -365,6 +365,11 @@ class Application:
                 raise CalibrationError('Choose a saved full-resolution event frame.')
             path = self.clip_path(data['id'], 'frame')
             latitude, longitude, elevation = (data.get(k) for k in ('latitude','longitude','elevation_m'))
+            if data.get('use_gps'):
+                location = sensor_effective({**self.cfg.identification, 'location_source':'gnss'})
+                if location.get('altitude_effective_source') != 'gnss_gga_wgs84':
+                    raise CalibrationError('Validated GPS elevation is unavailable. Check station sensors.')
+                latitude, longitude, elevation = (location.get(k) for k in ('latitude','longitude','elevation_m'))
             for value, low, high in ((latitude,-90,90),(longitude,-180,180),(elevation,-500,9000)):
                 if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not low<=value<=high:
                     raise CalibrationError('Enter the camera location: latitude, longitude and elevation in meters.')
@@ -404,10 +409,10 @@ class Application:
         path = self.clip_path(session['id'], 'frame')
         if hashlib.sha256(path.read_bytes()).hexdigest() != session['image_sha256']:
             raise CalibrationError('The selected frame changed. Load it again before solving.')
-        if command == 'calibration_solve':
+        if command in ('calibration_solve', 'calibration_search'):
             session.pop('result', None);session.pop('matches', None)
             matches = data.get('matches')
-            if not isinstance(matches,list) or not 6<=len(matches)<=20:
+            if not isinstance(matches,list) or not (0 if command=='calibration_search' else 6)<=len(matches)<=20:
                 raise CalibrationError('Select 6–20 named stars, spread across the image.')
             catalog = {star['id']:star for star in session['stars']}
             ids = []; points = []; rays = []
@@ -418,6 +423,11 @@ class Application:
                 if star_id in ids or any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or not 0<=v<=1 for v in (x,y)):
                     raise CalibrationError('Star names must be unique and points must be inside the image.')
                 ids.append(star_id);points.append([x,y]);rays.append(catalog[star_id]['direction'])
+            if command == 'calibration_search':
+                if self._auto_job is not None and not self._auto_job.done.is_set():
+                    raise CalibrationError('A star search is already running.')
+                self._auto_job = AutoCalibrationJob(self, session['id'], [{'x':p[0], 'y':p[1], 'direction':r} for p,r in zip(points,rays)])
+                return self._auto_job.start()
             result = solve_geometry(points,rays)
             session['result'] = result;session['matches'] = matches
             return result
@@ -471,7 +481,10 @@ class Application:
                              'applied_unix': raw.get('applied_unix')}
             except AutoCalibrationError:
                 candidate = None
-            return {'job': job, 'status': status, 'candidate': candidate,
+            location = dict(sensor_effective({**self.cfg.identification, 'location_source':'gnss'}))
+            if location.get('altitude_effective_source') != 'gnss_gga_wgs84':
+                location['elevation_m'] = None
+            return {'job': job, 'status': status, 'candidate': candidate, 'search_location': {k:location.get(k) for k in ('latitude','longitude','elevation_m','altitude_effective_source','location_effective_source')},
                     'live_calibration': self.calibration_report}
         if command == 'auto_calibration_apply':
             if self._auto_job is not None and not self._auto_job.done.is_set():

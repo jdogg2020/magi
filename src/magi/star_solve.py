@@ -340,6 +340,15 @@ def verified_residuals(points, directions, basis, scales):
     return errors
 
 
+def hints_agree(hints, basis, scales):
+    if not hints:
+        return True
+    points = np.array([[h['x'], h['y']] for h in hints])
+    directions = np.array([h['direction'] for h in hints])
+    errors = _angular_errors(rays_from_points(points, basis, scales), directions)
+    return bool(np.all(np.isfinite(errors)) and np.max(errors) <= 0.4)
+
+
 def _select_fit_subset(matched, max_points=20):
     """Well-spread, low-residual subset for the rigorous final fit."""
     pool = [m for m in matched if m['residual_deg'] < 0.2]
@@ -411,6 +420,7 @@ def solve(detections, visible, width, height, deadline=None, cancel_event=None, 
     if deadline is None:
         deadline = time.monotonic() + DEFAULT_DEADLINE_SECONDS
     opts = {'tol_px_factor': 0.0015, 'tol_px_min': 4.0, **(options or {})}
+    hints = opts.get('hints', [])
     tol_px = max(opts['tol_px_min'], opts['tol_px_factor'] * width)
     visible = [star for star in visible if star['magnitude'] <= SOLVE_MAG_LIMIT]
     by_id = {star['id']: star for star in visible}
@@ -477,6 +487,8 @@ def solve(detections, visible, width, height, deadline=None, cancel_event=None, 
                     if refined is None:
                         continue
                     basis, scales, _ = refined
+                    if not hints_agree(hints, basis, scales):
+                        continue
                     projected, in_front = points_from_rays(np.array([s['direction'] for s in visible]), basis, scales)
                     matches = _match_projected(projected, in_front, detections, tol_px, width, height)
                     if len(matches) < 12:
@@ -545,6 +557,8 @@ def solve(detections, visible, width, height, deadline=None, cancel_event=None, 
         all_points = np.array([[m['x'], m['y']] for m in winner['matched']])
         all_dirs = np.array([by_id[m['catalog_id']]['direction'] for m in winner['matched']])
         errors = verified_residuals(all_points, all_dirs, basis, scales)
+        if not hints_agree(hints, basis, scales):
+            errors = None
         if errors is None:
             return {**result_base, 'status': 'failed', 'reason': 'final_verification_rejected',
                     'detail': 'Refitted geometry failed verification against all matched stars.',

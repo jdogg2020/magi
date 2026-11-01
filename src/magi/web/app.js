@@ -228,7 +228,7 @@ function renderSensors(data) {
   $('sensor-aircraft').textContent='Local aircraft: '+(aircraft.state || 'unavailable').replaceAll('_',' ')+' · '+(aircraft.aircraft ?? 0)+' tracked · '+(aircraft.usable_positions ?? 0)+' usable geometric positions'+(aircraft.age_seconds!=null?' · Feed age '+aircraft.age_seconds+'s':'');
   if(settingsLoaded && $('id-location_source').value==='gnss') {
     for(const key of ['latitude','longitude']) { $('id-'+key).value=loc[key] ?? ''; if($('star-'+key).value==='' && loc[key]!=null) $('star-'+key).value=loc[key]; }
-    if(loc.altitude_effective_source==='gnss_gga_wgs84'){ $('id-elevation_m').value=loc.elevation_m; if($('star-elevation').value==='')$('star-elevation').value=loc.elevation_m; }
+    if(loc.altitude_effective_source==='gnss_gga_wgs84'){ $('id-elevation_m').value=loc.elevation_m; $('star-elevation').value=loc.elevation_m; }
     $('id-elevation_m').readOnly=loc.altitude_effective_source==='gnss_gga_wgs84';
   }
 }
@@ -351,7 +351,7 @@ async function fillSettings() {
   renderZoneList(); drawZones(); loadZoneImage();
   const id = s.identification || {};
   for (const key of ['latitude','longitude','elevation_m','azimuth_deg','elevation_deg','roll_deg','horizontal_fov_deg','vertical_fov_deg','tolerance_deg','aircraft_feed_url','satellite_group','aircraft_provider','location_source']) $('id-'+key).value = id[key] ?? '';
-  for (const [field,key] of [['star-latitude','latitude'],['star-longitude','longitude'],['star-elevation','elevation_m']]) $(field).value=id[key] ?? '';
+  for (const field of ['star-latitude','star-longitude','star-elevation']) $(field).value='';
   if(s.star_calibration) $('star-status').textContent=`Saved star calibration · ${s.star_calibration.matches.length} stars · RMS ${s.star_calibration.fit.rms_deg.toFixed(3)}° · source event retained · recalibrate after moving the camera.`;
   for (const key of ['enabled','calibrated','satellites']) $('id-'+key).checked = !!id[key];
   $('id-opensky_client_id').placeholder = id.has_opensky_credentials ? 'Saved — leave blank to keep' : 'Your OpenSky API client ID';
@@ -754,21 +754,21 @@ async function refreshStarFrames() {
     const option=document.createElement('option');option.value=event.id;option.textContent=new Date(event.trigger_utc).toLocaleString();select.append(option);
   }
   if(select.children.length)select.value=select.children[0].value;
-  $('star-status').textContent=select.children.length?'Choose a clear-night frame, then Load star frame.':'No full-resolution frames yet. Save an event and wait for its thumbnail selection.';
+  $('star-status').textContent=select.children.length?'Choose a clear-night frame for automatic or manual star search.':'No full-resolution frames yet. Save an event and wait for its thumbnail selection.';
 }
-$('star-refresh').onclick=()=>refreshStarFrames().catch(error=>{$('star-status').textContent=error.message;});
-$('star-load').onclick=async()=>{
+$('star-refresh').onclick=()=>openStarPicker(false).catch(error=>{$('star-status').textContent=error.message;});
+async function loadManualStarFrame(){
   starSession=null;starPoints=[];invalidateStarFit();const generation=starGeneration;$('star-editor').classList.add('hidden');
   const location={latitude:$('star-latitude').value===''?null:Number($('star-latitude').value),longitude:$('star-longitude').value===''?null:Number($('star-longitude').value),elevation_m:$('star-elevation').value===''?null:Number($('star-elevation').value)};
   $('star-load').disabled=true;$('star-status').textContent='Computing visible named stars for the saved image time…';
   try {
-    const result=await api('/api/calibration/load',{id:$('star-event').value,...location});
+    const result=await api('/api/calibration/load',{id:$('star-event').value,...location,use_gps:true});
     if(generation!==starGeneration)return;
     starSession=result;$('star-name').replaceChildren();
     for(const star of result.stars) {const option=document.createElement('option');option.value=star.id;option.textContent=`${star.name} · mag ${star.magnitude.toFixed(1)} · az ${star.azimuth_deg.toFixed(0)}° / alt ${star.altitude_deg.toFixed(0)}°`;$('star-name').append(option);}
     if(result.stars.length)$('star-name').value=result.stars[0].id;
     $('star-frame').src=cameraPath(`/api/clips/${encodeURIComponent(result.id)}/frame?calibration=${encodeURIComponent(result.token)}`);
-    $('star-status').textContent=`Frozen frame: ${new Date(result.timestamp*1000).toLocaleString()} · ${result.width}×${result.height}. Choose a known star, then click its center. Select at least six across the image.`;
+    $('star-status').textContent=`Frozen frame: ${new Date(result.timestamp*1000).toLocaleString()} · ${result.width}×${result.height}. Choose a known star, then click its center. Identify any stars you recognize, or search without hints.`;
     $('star-editor').classList.remove('hidden');renderStarPoints();
   } catch(error){$('star-status').textContent=error.message;}
   finally{$('star-load').disabled=false;}
@@ -789,15 +789,9 @@ $('star-frame').addEventListener('load',drawStarPoints);
 $('star-frame').addEventListener('error',()=>{$('star-status').textContent='The frozen frame could not be loaded. Choose the frame and load again.';invalidateStarFit();});
 $('star-solve').onclick=async()=>{
   if(!starSession)return;
-  invalidateStarFit();const generation=starGeneration,token=starSession.token;$('star-solve').disabled=true;$('star-status').textContent='Fitting stars and validating each with a held-out check…';
-  try {
-    const solution=await api('/api/calibration/solve',{token,matches:starPoints});
-    if(generation!==starGeneration||starSession?.token!==token)return;
-    starSolution=solution;
-    const g=solution.geometry;
-    $('star-fit').textContent=`True-north azimuth: ${g.azimuth_deg.toFixed(3)}°\nElevation: ${g.elevation_deg.toFixed(3)}°\nRoll: ${g.roll_deg.toFixed(3)}°\nField of view: ${g.horizontal_fov_deg.toFixed(3)}° × ${g.vertical_fov_deg.toFixed(3)}°\nStar RMS: ${solution.rms_deg.toFixed(3)}° · max: ${solution.max_error_deg.toFixed(3)}° · held-out max: ${solution.held_out_max_deg.toFixed(3)}°\n${solution.model}\n${solution.assumptions.join('\n')}`;
-    renderStarPoints();$('star-status').textContent='Fit passed. Green squares are your clicks; amber squares are fitted positions. Review the values, then Apply calibration.';$('star-apply').disabled=false;
-  }catch(error){$('star-status').textContent=error.message;}
+  $('star-solve').disabled=true;
+  try{await api('/api/calibration/search',{token:starSession.token,matches:starPoints});autoStarRunning=true;await refreshAutoStars();$('star-status').textContent='Star search started with '+starPoints.length+' optional hints. Review the result in Automatic star search above.';}
+  catch(error){$('star-status').textContent=error.message;}
   finally{$('star-solve').disabled=false;}
 };
 $('star-apply').onclick=async()=>{
@@ -900,10 +894,13 @@ async function refreshAutoStars(){
   try{
     const data=await api('/api/auto-calibration/status',{}),candidate=data.candidate;
     autoStarRunning=!!data.job?.running;
+    const gps=data.search_location || {};
+    $('star-gps-status').textContent=gps.latitude!=null&&gps.longitude!=null&&gps.elevation_m!=null?'GPS WGS84 location · '+(gps.location_effective_source || 'GNSS'):'GPS position or validated WGS84 elevation unavailable. Check station sensors.';
+    for(const [field,key] of [['star-latitude','latitude'],['star-longitude','longitude'],['star-elevation','elevation_m']]) $(field).value=data.search_location?.[key] ?? '';
     $('auto-star-cancel').disabled=!autoStarRunning;
     $('auto-star-start').disabled=autoStarRunning;
     const outcome=data.job?.error || data.job?.reason || data.status.reason || data.status.status;
-    $('auto-star-status').textContent=(autoStarRunning?'Solving locally; recording continues.':`Latest solve: ${outcome || 'not run'}.`)+(data.status.movement_suspect?' Camera movement suspected: review and recalibrate.':'');
+    $('auto-star-status').textContent=(autoStarRunning?'Searching locally, up to two minutes; recording continues.'+(data.job.temperature_available?'':' Temperature reading unavailable; time/resource limits still apply.'):`Latest search: ${outcome || 'not run'}.`)+(data.status.movement_suspect?' Camera movement suspected: review and recalibrate.':'');
     if(candidate?.created_unix!==autoStarCandidate?.created_unix || candidate?.status!==autoStarCandidate?.status){
       autoStarCandidate=candidate;autoStarImageReady=false;$('auto-star-reviewed').checked=false;
       $('auto-star-review').classList.toggle('hidden',!candidate);
@@ -934,3 +931,41 @@ $('auto-star-apply').onclick=async()=>{
   await refreshAutoStars();
 };
 setInterval(()=>{if(autoStarRunning)refreshAutoStars();},3000);
+
+$('star-load').onclick=()=>openStarPicker(true).catch(error=>{$('star-status').textContent=error.message;});
+$('star-picker-close').onclick=()=>$('star-picker').close();
+let starPickerGeneration=0;
+async function openStarPicker(manual){
+  const generation=++starPickerGeneration;
+  await refreshStarFrames();await refreshAutoStars();
+  const result=await api('/api/clips');
+  if(generation!==starPickerGeneration)return;
+  const grid=$('star-picker-grid');grid.replaceChildren();
+  const rows=result.clips.filter(row=>row.best_frame).slice(0,24);
+  $('star-picker-status').textContent=rows.length?'Recent frames; loading preview quality suggestions…':'No saved stills yet. Save an event and wait for its full-resolution frame.';
+  $('star-picker').showModal();
+  const cards=[];
+  for(const row of rows){
+    const card=document.createElement('button');card.type='button';card.className='secondary';
+    const img=document.createElement('img');img.alt='Saved sky frame';img.style.width='100%';
+    const caption=document.createElement('span');caption.textContent=new Date(row.trigger_utc).toLocaleString();
+    const quality=document.createElement('small');quality.textContent='Preview quality unavailable';
+    card.append(img,caption,quality);grid.append(card);cards.push({card,score:-1});const item=cards[cards.length-1];
+    card.onclick=async()=>{$('star-event').value=row.id;$('star-picker').close();$('star-status').textContent='Selected '+caption.textContent;if(manual)await loadManualStarFrame();};
+    img.onload=()=>{
+      if(generation!==starPickerGeneration)return;
+      try{
+        const canvas=document.createElement('canvas');canvas.width=160;canvas.height=90;
+        const ctx=canvas.getContext('2d');ctx.drawImage(img,0,0,160,90);const data=ctx.getImageData(0,0,160,90).data;
+        const gray=Array.from({length:14400},(_,i)=>(data[i*4]+data[i*4+1]+data[i*4+2])/3);
+        const mean=gray.reduce((a,b)=>a+b,0)/gray.length;let edges=0,points=0;
+        for(let y=1;y<89;y++)for(let x=1;x<159;x++){const i=y*160+x;edges+=Math.abs(gray[i]-gray[i-1]);if(gray[i]>mean+35&&gray[i]>gray[i-1]&&gray[i]>gray[i+1]&&gray[i]>gray[i-160]&&gray[i]>gray[i+160])points++;}
+        item.score=Math.min(points,100)+Math.min(edges/14000,20)-(mean>150?50:0);
+        quality.textContent=points>=4&&mean<150?'Suggested preview: '+points+' star-like points':'Lower preview score; may still be usable';
+        cards.sort((a,b)=>b.score-a.score);for(const c of cards)grid.append(c.card);
+        $('star-picker-status').textContent='Showing up to 24 recent stills, suggested previews first. Thumbnail scores can miss faint stars or favor noise.';
+      }catch(error){quality.textContent='Preview quality unavailable';}
+    };
+    img.src=cameraPath('/api/clips/'+encodeURIComponent(row.id)+'/thumbnail');
+  }
+}

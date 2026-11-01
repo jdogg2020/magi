@@ -69,8 +69,8 @@ reach the same geometry, through review and an explicit apply step.
   ignored by the solver.
 * Detection capped at 400 stars; quad formation uses the brightest
   40 (bright tier) or 100 (faint tier); at most 200 candidates are
-  verified per tier. One solve is bounded by a deadline (default
-  600 seconds). Dashboard jobs run in a separate, low-priority process
+  verified per tier. The library solver is bounded by a deadline (default
+  600 seconds); dashboard and CLI searches use the shorter budgets below. Dashboard jobs run in a separate, low-priority process
   with one BLAS thread and a 1 GiB address-space limit. This is not an
   RSS measurement. CLI `--rss-mb` is also an address-space limit despite
   the legacy flag name. Crowded frames are rejected before building
@@ -235,3 +235,40 @@ The timer adds a 768 MiB memory limit and 25% CPU quota; hard limits can cause a
 solve to fail safely on expensive images. Other cameras use on-demand solving.
 
 No real sky-frame or Pi throughput claim is made by synthetic verification.
+
+## Star search workflow (v0.20)
+
+The Settings panel is now **Star search**. Both **Find saved frames** and
+**Manual star search** open a visual picker with up to 24 recent stills.
+Thumbnail brightness, sharpness and star-like maxima provide a lightweight
+suggestion order in the browser. These heuristics can favor noise or miss faint
+stars; they are not a cloud detector or confirmation of usable stars.
+
+Automatic and manual-hint searches use station GPS coordinates and validated
+WGS84 elevation. Missing elevation is displayed as unavailable and blocks search;
+zero is not substituted. Latched GPS location remains usable when a live fix is
+briefly lost. Station location is never reset by searching.
+
+Manual star search loads the selected still and named-star list. Identify zero
+or more stars (up to 20), then **Search with these hints**. Hints constrain the
+blind search and final fit to agree within 0.4 degrees; they do not bypass the
+additional-star verification or lower the final fit requirements. A wrong hint
+can therefore reject the search. Clear/correct hints and retry if necessary.
+This version constrains the blind solver with hints; it does not promise a
+three-point closed-form solution or faster recognition. Hints are retained in
+the candidate evidence. Review and Apply use the common automatic-search panel.
+The older six-star fitting API remains available for compatibility with existing
+manual sessions; the dashboard uses the new optional-hint search API.
+
+Dashboard searches have a 120-second parent deadline and a 115-second solver
+budget. CLI defaults to 120 seconds (an explicit 1–600 second budget is allowed).
+The scheduled worker uses the shorter budget too; installed timer units must be
+regenerated to pick up the revised 150-second systemd timeout.
+
+Searches refuse or stop at a reported CPU temperature of 75°C, or if current
+Pi throttling/undervoltage bits are set. Historical flags alone do not block a
+search. Workers check health about every five seconds and the dashboard parent
+also uses the station's cached health. Missing temperature readings are shown
+explicitly; memory/time limits still apply. These are conservative workload
+controls, not a guarantee of thermal safety, and stopped work is not retried
+automatically. Prior calibration is preserved.

@@ -257,6 +257,12 @@ class AutoCalibrationTests(unittest.TestCase):
         self.assertNotEqual(overlay.read_bytes(), original)
         self.assertEqual(frame.read_bytes(), original)
 
+    def test_search_status_does_not_mutate_sensor_snapshot(self):
+        status=self.app.auto_calibrate('auto_calibration_status', {})
+        self.assertIsNone(status['search_location']['elevation_m'])
+        from magi.application import sensor_effective
+        self.assertEqual(sensor_effective(self.app.cfg.identification)['elevation_m'],ELEV)
+
     def test_job_process_and_cli(self):
         started = self.app.auto_calibrate('auto_calibration_start', {'id': EVENT_NOISE})
         self.assertTrue(started['started'])

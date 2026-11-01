@@ -32,3 +32,32 @@ def cpu_counters():
         return sum(values), values[3] + values[4]
     except (OSError, IndexError, ValueError):
         return None
+
+
+def search_block_reason(health):
+    """Conservative search guard; historical throttle bits do not block work."""
+    temperature = health.get('temperature_c')
+    if isinstance(temperature, (int, float)) and temperature >= 75:
+        return 'Star search stopped: CPU temperature reached 75°C. Let the station cool before retrying.'
+    try:
+        flags = int(health.get('throttle_flags') or '0', 0)
+    except (TypeError, ValueError):
+        flags = 0
+    if flags & 0xf:
+        return 'Star search stopped: the Pi reports current throttling or undervoltage. Check cooling and power before retrying.'
+    return None
+
+
+class SearchGuard:
+    def __init__(self):
+        self.next_check = 0
+
+    def is_set(self):
+        import time
+        now = time.monotonic()
+        if now >= self.next_check:
+            self.next_check = now + 5
+            reason = search_block_reason(metrics())
+            if reason:
+                raise ValueError(reason)
+        return False

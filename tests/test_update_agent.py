@@ -157,7 +157,7 @@ class UpdateAgentTests(unittest.TestCase):
         installer.install(ROOT,self.root,lambda cmd,**kw:calls.append(cmd))
         for _,(path,mode) in installer.FILES.items():
             self.assertEqual((self.root/path).stat().st_mode&0o777,mode)
-        self.assertEqual(calls,[['systemctl','daemon-reload'],['systemctl','enable','--now','magi-update-agent.socket']])
+        self.assertEqual(calls,[['systemctl','daemon-reload'],['systemctl','enable','--now','magi-log-maintenance.timer'],['systemctl','enable','--now','magi-update-agent.socket']])
         destination=self.root/'usr/local/lib/magi/update_agent.py'
         destination.unlink();destination.symlink_to(self.root/'outside')
         with self.assertRaises(ValueError):installer.install(ROOT,self.root,lambda *a,**k:None)

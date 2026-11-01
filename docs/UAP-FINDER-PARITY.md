@@ -43,8 +43,8 @@ comparison when the reference documentation changes.
 | Meteor-like event assessment | Missing | Track duration, angular speed and fit quality; clip duration is not object duration |
 | Trajectory-change assessment | Missing | Robust segmented-fit evidence with track-quality safeguards, not an anomaly assertion |
 | Reference-check audit trail | Partial | Missing/stale data is already explicit; add counts, nearest residuals, catalogue age and measurement provenance |
-| Operator review and interpretation | Missing | Persistent notes, reviewed state and separate human label; retain machine results unchanged |
-| Linked cameras and coordinated capture | Missing | Multiple independent streams, shared triggers and synchronized event grouping |
+| Operator review and interpretation | Implemented (0.11) | Labels, notes, reviewed/protected flags and trash; full evidence bundle export remains |
+| Linked cameras and coordinated capture | Partial (0.13–0.16) | Independent cameras and preserved removed-camera archives implemented; shared triggers and synchronized grouping remain |
 | Cross-location corroboration | Missing | Clock/pointing uncertainty, compatible track association, triangulation and rejection criteria |
 | Remote viewing without inbound router ports | Missing | Optional authenticated outbound access; local recording survives disconnection |
 | Phone capture, public map, report API and community workflow | Missing | Separate services/client work, explicit sharing consent and location privacy |
@@ -83,17 +83,17 @@ new object class. Keep measurements and advisory interpretations separate.
 
 ### 3. Review workflow
 
-- [ ] Operator annotations, reviewed state and optional human interpretation.
+- [x] Operator annotations, reviewed state and optional human interpretation.
 - [ ] Search/filter/page the archive and export original footage plus a complete
   evidence bundle. Pin selected events against ordinary retention.
-- [ ] Show machine assessment beside human interpretation, never overwrite either.
+- [x] Show machine assessment beside human interpretation, never overwrite either.
 
 Acceptance: labels survive restart/export and cannot remove original evidence.
 Review permissions, retention behaviour and unavailable-sidecar states are tested.
 
 ### 4. Multiple cameras and observers
 
-- [ ] Per-camera streams, masks/calibration/storage controls and failure isolation.
+- [x] Per-camera streams, masks/calibration/storage controls and failure isolation.
 - [ ] Save the same time window across linked cameras, even if only one triggers.
 - [ ] Record clock quality and distinguish multiple cameras at one location from
   independent observers. Add triangulation only after geometry/clock gates exist.
@@ -134,3 +134,8 @@ controls are included. Real sky accuracy remains unvalidated; these are not
 confirmed classifications. Permanent trash deletion, cloud sharing, community
 classification and scientifically calibrated meteor/lightning detection are not
 claimed. See EVENTS.md.
+
+## 0.17.0 storage management
+
+Active/archive inventory, per-camera cleanup headroom and configurable trash age,
+plus bounded completed installer/updater logs. See [STORAGE.md](STORAGE.md).

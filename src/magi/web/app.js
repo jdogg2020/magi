@@ -160,7 +160,7 @@ async function api(path, body, identity = selectedCamera) {
   return value;
 }
 function loggedOut() { if(updateInProgress)$('login-error').textContent='Magi is updating or has restarted. Sign in again to see the update result.'; if(frameURL){URL.revokeObjectURL(frameURL);frameURL=null;$('camera-frame').removeAttribute('src');}for(const tile of cameraTiles.values()){if(tile.url)URL.revokeObjectURL(tile.url);}cameraTiles.clear();stationCameras=[];$('camera-grid').replaceChildren();MagiEvents.reset(); setupSignature=setupToken=null; setupError=''; for(const id of ['camera-password','setup-new-password','setup-confirm-password','id-opensky_client_id','id-opensky_client_secret']) $(id).value=''; if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
-function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); MagiEvents.mount(name);if(name==='updates')refreshUpdates(true);if(name==='events' || name==='overview')MagiEvents.refresh(true); }
+function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); MagiEvents.mount(name);if(name==='updates')refreshUpdates(true);if(name==='storage')refreshStorage();if(name==='events' || name==='overview')MagiEvents.refresh(true); }
 document.querySelectorAll('.nav').forEach(el => el.addEventListener('click', () => tab(el.dataset.tab)));
 $('open-settings').onclick = () => tab('settings');
 $('camera-settings-link').onclick = event => { event.preventDefault(); tab('settings'); }; $('view-all').onclick = () => tab('events');
@@ -339,7 +339,7 @@ async function fillSettings() {
   $('api_scheme').value = s.camera.api_scheme || 'http'; $('api_port').value = s.camera.api_port || 80;
   updateCameraWebLink();
   $('camera-password').placeholder = s.camera.has_password ? 'Saved — leave blank to keep' : 'Enter the camera password';
-  $('max_gb').value = s.storage.max_bytes / 1e9; $('free_gb').value = s.storage.min_free_bytes / 1e9; $('retention_days').value = s.storage.retention_days;
+  $('max_gb').value = s.storage.max_bytes / 1e9; $('free_gb').value = s.storage.min_free_bytes / 1e9; $('retention_days').value = s.storage.retention_days; $('cleanup_gb').value = (s.storage.cleanup_margin_bytes || 0) / 1e9; $('trash_days').value = s.storage.trash_days ?? 7;
   for (const key of ['threshold', 'min_pixels', 'min_seconds', 'min_travel']) $(key).value = s.detection[key];
   $('enabled').checked = s.detection.enabled;
   for(const key of ['lightning_enabled','meteor_enabled','retain_aircraft_matches','retain_satellite_matches']) $(key).checked=s.detection[key] ?? true;
@@ -398,7 +398,7 @@ $('settings-form').onsubmit = async event => { event.preventDefault(); const sub
   identification.aircraft_local_file=$('id-aircraft_local_file').checked;
   if(identification.location_source==='gnss'){ delete identification.latitude; delete identification.longitude; if(latestSensors?.effective_location?.altitude_effective_source==='gnss_gga_wgs84')delete identification.elevation_m; }
   identification.aircraft_feed_url = $('id-aircraft_feed_url').value.trim(); identification.satellite_group = $('id-satellite_group').value; identification.aircraft_provider = $('id-aircraft_provider').value; identification.opensky_client_id = $('id-opensky_client_id').value; identification.opensky_client_secret = $('id-opensky_client_secret').value;
-  try { await api('/api/settings', {camera, recording, detection, identification, storage: {max_bytes:Math.round(Number($('max_gb').value)*1e9), min_free_bytes:Math.round(Number($('free_gb').value)*1e9), retention_days:Number($('retention_days').value)}}); $('camera-password').value = ''; $('id-opensky_client_id').value = ''; $('id-opensky_client_secret').value = ''; $('opensky-import-status').textContent='Credentials saved locally on the Pi.'; $('settings-result').textContent = 'Saved. Reconnecting camera…'; settingsLoaded = false; connectionStartedAt = Date.now(); tab('overview');
+  try { await api('/api/settings', {camera, recording, detection, identification, storage: {max_bytes:Math.round(Number($('max_gb').value)*1e9), min_free_bytes:Math.round(Number($('free_gb').value)*1e9), retention_days:Number($('retention_days').value), cleanup_margin_bytes:Math.round(Number($('cleanup_gb').value)*1e9), trash_days:Number($('trash_days').value)}}); $('camera-password').value = ''; $('id-opensky_client_id').value = ''; $('id-opensky_client_secret').value = ''; $('opensky-import-status').textContent='Credentials saved locally on the Pi.'; $('settings-result').textContent = 'Saved. Reconnecting camera…'; settingsLoaded = false; connectionStartedAt = Date.now(); tab('overview');
     globalThis.scrollTo?.({top: 0, behavior: 'smooth'});
     notice('Settings saved. Connecting to your camera… The live preview will appear here automatically.');
     await refresh(); await refreshFrame(); } catch (error) { $('settings-result').textContent = error.message; } finally { submit.disabled = false; }
@@ -808,3 +808,33 @@ function setLocationMode(){
   if(!automatic)$('id-elevation_m').readOnly=false;
 }
 $('id-location_source').onchange=()=>{setLocationMode();if(latestSensors)renderSensors(latestSensors);};
+
+let storageBusy = false;
+async function refreshStorage() {
+  if(storageBusy) return;
+  storageBusy=true; $('storage-refresh').disabled=true;
+  $('storage-status').textContent='Measuring storage…';
+  try {
+    const result=await api('/api/station/storage');
+    $('storage-cameras').replaceChildren();$('storage-volumes').replaceChildren();
+    if(result.busy){$('storage-status').textContent='A storage scan is already running. Try again shortly.';return;}
+    $('storage-status').textContent=`${result.partial?'Partial inventory — some usage is unavailable. ':''}Active cameras: ${bytes(result.active_bytes)} · Removed-camera archives: ${bytes(result.archived_bytes)}. Measured ${new Date(result.measured_at*1000).toLocaleTimeString()}. Results cached for 30 seconds.`;
+    for(const volume of result.volumes){
+      const line=document.createElement('p');
+      line.textContent=`Disk: ${bytes(volume.free_bytes)} free of ${bytes(volume.total_bytes)} · ${volume.camera_ids.length} camera entries`;
+      $('storage-volumes').append(line);
+    }
+    for(const camera of result.cameras){
+      const card=document.createElement('article');card.className='panel form-panel';
+      const title=document.createElement('h2');title.textContent=camera.name+(camera.archived?' (removed)':'');
+      const info=document.createElement('p');
+      info.textContent=camera.error || `${bytes(camera.used_bytes)} used · ${camera.archived?'Automatic cleanup disabled':`Cap ${bytes(camera.max_bytes)} · Free-space floor ${bytes(camera.min_free_bytes)} · Cleanup headroom ${bytes(camera.cleanup_margin_bytes)} · Retention ${camera.retention_days} days · Trash ${camera.trash_days} days`}`;
+      card.append(title,info);
+      if(camera.state==='storage_blocked'){const warning=document.createElement('p');warning.textContent='Capture paused: the camera cap or free-space floor cannot be satisfied. Check protected/in-use footage and other disk users.';card.append(warning);}
+      if(!camera.archived)card.append(cameraSettingsLink(camera,'Edit storage limits'));
+      $('storage-cameras').append(card);
+    }
+  } catch(error){$('storage-status').textContent=error.message;}
+  finally {storageBusy=false;$('storage-refresh').disabled=false;}
+}
+$('storage-refresh').onclick=refreshStorage;

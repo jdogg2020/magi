@@ -50,7 +50,7 @@ Trash is reversible while its files exist. It hides events from the default list
 and Overview, without immediately deleting or moving their media. Use the Trash
 folder filter and Restore to bring them back. Protected events, active capture,
 processing jobs and live/applied star-calibration sources cannot be trashed.
-Trash is purged after seven days, or earlier under normal age/space retention.
+Trash is purged after the configured trash retention (seven days by default), or earlier under normal age/space retention. Removed-camera archives never run this cleanup. See [Storage management](STORAGE.md) for thresholds and log retention.
 Under storage pressure, trashed events are reclaimed before other unprotected
 events. There is no permanent-delete/empty-trash button in this release.
 

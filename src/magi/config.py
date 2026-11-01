@@ -57,6 +57,8 @@ class Config:
     socket: Path
     max_bytes: int = 100_000_000_000
     min_free: int = 1_000_000_000
+    cleanup_margin: int = 0
+    trash_days: float = 7
     retention_days: float = 14
     segment: float = 2
     pre: float = 5
@@ -85,6 +87,12 @@ class Config:
     @classmethod
     def from_dict(cls, data):
         camera, storage = data['camera'], data['storage']
+        for key, default in (('cleanup_margin_bytes', 0), ('trash_days', 7)):
+            value = storage.get(key, default)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError('invalid storage cleanup setting')
+            if key == 'cleanup_margin_bytes' and int(value) != value:
+                raise ValueError('cleanup margin must be whole bytes')
         rec = data.get('recording', {})
         api_settings(camera)
         source = camera_url(camera, 'mainstream_path')
@@ -149,6 +157,8 @@ class Config:
         cfg = cls(source=source, root=root, mount=mount, require_mount=storage.get('require_mount', True),
                   socket=socket, max_bytes=int(storage.get('max_bytes', 100_000_000_000)),
                   min_free=int(storage.get('min_free_bytes', 1_000_000_000)),
+                  cleanup_margin=int(storage.get('cleanup_margin_bytes', 0)),
+                  trash_days=float(storage.get('trash_days', 7)),
                   retention_days=float(storage.get('retention_days', 14)),
                   segment=float(rec.get('segment_seconds', 2)), pre=float(rec.get('pre_roll_seconds', 5)),
                   post=float(rec.get('post_roll_seconds', 5)), max_event=float(rec.get('max_event_seconds', 120)),
@@ -156,9 +166,10 @@ class Config:
                   ffprobe=data.get('ffprobe', 'ffprobe'), file_source=bool(camera.get('test_file')),
                   analysis_source=analysis_source, detection=detection, web=web,
                   identification=validate_identification(data.get('identification', {})))
-        nums = [cfg.retention_days, cfg.segment, cfg.pre, cfg.post, cfg.max_event, cfg.stall]
+        nums = [cfg.trash_days, cfg.retention_days, cfg.segment, cfg.pre, cfg.post, cfg.max_event, cfg.stall]
         if not all(math.isfinite(n) for n in nums) or not (
                 cfg.max_bytes > 0 and cfg.min_free >= 0 and cfg.retention_days > 0
+                and 0 <= cfg.cleanup_margin < cfg.max_bytes and 0 < cfg.trash_days <= 365
                 and .25 <= cfg.segment <= 10 and 0 <= cfg.pre <= 120 and 0 <= cfg.post <= 120
                 and cfg.pre + cfg.post < cfg.max_event <= 600 and cfg.stall >= cfg.segment * 3):
             raise ValueError('invalid recording limits')

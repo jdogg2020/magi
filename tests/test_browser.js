@@ -32,6 +32,15 @@ const base = process.argv[2];
 
     fs.mkdirSync('dist/browser',{recursive:true});
     await page.screenshot({path:'dist/browser/overview.png',fullPage:true});
+    await page.locator('.nav[data-tab=storage]').click();
+    await page.locator('#storage-status').filter({hasText:'Removed-camera archives:'}).waitFor();
+    assert.equal(await page.locator('#storage-volumes p').count(),1);
+    assert(await page.locator('#storage-cameras article').count()>=2);
+    await page.screenshot({path:'dist/browser/storage.png',fullPage:true});
+    await page.locator('#storage-cameras a').first().click();
+    await page.locator('#cleanup_gb').waitFor({state:'visible'});
+    assert.equal(await page.locator('#trash_days').inputValue(),'7');
+    await page.locator('.nav[data-tab=overview]').click();
     assert.equal(await page.locator('#overview #event-browser').count(),1,'Recent events must use the full list');
     assert(!await page.locator('#event-filter-panel').evaluate(panel=>panel.open),'Filters start collapsed');
     await page.locator('#event-filter-summary').click();

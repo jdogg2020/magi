@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path, PurePosixPath
 import shutil
@@ -320,8 +321,10 @@ def main():
     logs = Path('/var/log/magi'); logs.mkdir(mode=0o750, parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     log_path = logs / f'update-{stamp}-{os.getpid()}.log'
+    log_lock = log_path.with_name(log_path.name+'.lock').open('w')
+    fcntl.flock(log_lock, fcntl.LOCK_EX)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s',
-                        handlers=[logging.StreamHandler(), logging.FileHandler(log_path)])
+                        handlers=[logging.StreamHandler(), RotatingFileHandler(log_path, maxBytes=5*1024*1024, backupCount=3)])
     LOG.info('Update log: %s', log_path)
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt()

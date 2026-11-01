@@ -62,6 +62,17 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(elements['camera-links'].children.every(link=>link.href.endsWith('#settings')),'Left camera links open individual settings');
  assert.equal(vm.runInContext("cameraPath('/api/station/events/list')",context),'/api/station/events/list','Combined archive must be independent of settings selection');
  assert(elements['detection-mode'].textContent.includes('detecting'));
+ vm.runInContext(`renderSensors({state:'available',gnss:{state:'fix',utc:'2026-11-01T00:00:00Z',altitude_msl_m:365},clock:{state:'synchronized',source:'MGPS'},aircraft:{state:'available',aircraft:14,usable_positions:8,age_seconds:.4},effective_location:{latitude:41.2,longitude:-96.1,elevation_m:335,location_effective_source:'gnss',altitude_effective_source:'gnss_gga_wgs84'}})`,context);
+ assert(elements['sensor-aircraft'].textContent.includes('8 usable'));
+ assert(elements['sensor-clock'].textContent.includes('MGPS'));
+ elements['id-location_source'].value='gnss';elements['id-location_source'].onchange();
+ assert.equal(elements['id-latitude'].value,41.2);
+ assert.equal(elements['id-elevation_m'].value,335);
+ assert(elements['id-latitude'].readOnly);
+ elements['id-location_source'].value='manual';elements['id-location_source'].onchange();
+ assert(!elements['id-latitude'].readOnly);
+ await vm.runInContext('fillSettings()',context);
+
  // A slow station response must never show selected-camera values in its place.
  const statusIds=['connection','buffer','detection-mode','session-events','analysis-count'];
  const stationValues=statusIds.map(id=>elements[id].textContent);

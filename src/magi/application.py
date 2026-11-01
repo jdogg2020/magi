@@ -22,6 +22,7 @@ from .calibration import CalibrationError, GEOMETRY_KEYS, active_report, source_
 from .detection import Analysis
 from .health import metrics, cpu_counters
 from .event_review import ReviewError, read as read_review, changes as review_changes, filters as event_filters, matches as event_matches, optional_json
+from .sensors import snapshot as sensor_snapshot, effective as sensor_effective, aircraft_status
 from .identification import Identifier, defaults as identification_defaults
 from .media import Media
 from .previews import Previews
@@ -93,6 +94,7 @@ class Application:
                 'storage': {key: raw.get('storage', {}).get(key) for key in
                             ('max_bytes', 'min_free_bytes', 'retention_days')},
                 'detection': self.cfg.detection,
+                'effective_location': {k: sensor_effective(self.cfg.identification)[k] for k in ('latitude','longitude','elevation_m','location_effective_source','altitude_effective_source')},
                 'star_calibration': self.calibration_report, 'identification': {**{k: v for k, v in self.cfg.identification.items() if k not in ('opensky_client_secret', 'opensky_client_id')},
                                    'has_opensky_credentials': bool(self.cfg.identification.get('opensky_client_secret'))}}
 
@@ -123,6 +125,13 @@ class Application:
                     new.setdefault(section, {})[key] = value
             if calibration is not None:
                 new['calibration'] = calibration
+            selected = new.get('identification', {})
+            if selected.get('location_source') == 'gnss' and selected.get('calibrated'):
+                location = sensor_effective(selected)
+                if location.get('latitude') is None or location.get('longitude') is None:
+                    raise ValueError('GPS fix required before confirming calibration')
+                for key in ('latitude','longitude','elevation_m'):
+                    selected[key] = location[key]
             candidate = Config.from_dict(new)
             # Root, mount and executable paths cannot be edited via HTTP.
             if candidate.root != self.cfg.root or candidate.mount != self.cfg.mount:
@@ -152,13 +161,20 @@ class Application:
     def trigger(self, kind='manual', track=None):
         if not self.recorder:
             raise ValueError('Camera is not recording yet. Check settings and SSD status.')
+        sensors = sensor_snapshot()
+        geometry = sensor_effective(self.cfg.identification, sensors)
         result = self.recorder.trigger(kind=kind, track=track)
         if self.recorder.active:
             self.recorder.active['meta'].setdefault('camera_id', self.camera_id)
             self.recorder.active['meta'].setdefault('camera_name', self.camera_name)
             self.recorder.active['meta'].setdefault('measurement_geometry', {
-                'schema': 1, 'calibrated': self.cfg.identification['calibrated'],
-                'geometry': {k:self.cfg.identification[k] for k in GEOMETRY_KEYS}})
+                'schema': 1, 'calibrated': geometry['calibrated'],
+                'geometry': {k:geometry[k] for k in GEOMETRY_KEYS}})
+            self.recorder.active['meta'].setdefault('station_sensors', sensors)
+            self.recorder.active['meta'].setdefault('timing', {
+                'basis': 'Pi system UTC at host receipt; camera exposure time unverified',
+                'clock': sensors.get('clock'),
+                'location_source': geometry['location_effective_source']})
             self.recorder.active['meta'].setdefault('retention_policy', {k:self.cfg.detection[k] for k in ('retain_aircraft_matches','retain_satellite_matches')})
             self.recorder._save(self.recorder.active)
             if self.cfg.identification['enabled'] and any(self.cfg.detection[k] is False for k in ('retain_aircraft_matches','retain_satellite_matches')):
@@ -382,7 +398,9 @@ class Application:
                 'image_timestamp_unix':session['timestamp'], 'applied_unix':time.time(),
                 'geometry':geometry,'matches':session['matches'],'fit':result,
                 'catalog':'IAU WGSN J2000 named stars, 2022-04-04 snapshot'}
-            return self.update_settings({'identification':{**geometry,'calibrated':True}},calibration=report)
+            effective = sensor_effective(self.cfg.identification)
+            location_source = 'gnss' if self.cfg.identification['location_source'] == 'gnss' and all(geometry[k] == effective[k] for k in ('latitude','longitude','elevation_m')) else 'manual'
+            return self.update_settings({'identification':{**geometry,'calibrated':True,'location_source':location_source}},calibration=report)
         raise CalibrationError('Solve and inspect a valid star fit before applying it.')
 
     def detected(self, kind, track):
@@ -666,6 +684,8 @@ class Application:
             clips = self.list_clips()
         except OSError:
             clips = []
+        status['sensors'] = {**sensor_snapshot(), 'aircraft': aircraft_status(),
+                             'effective_location': {k: sensor_effective(self.cfg.identification)[k] for k in ('latitude','longitude','elevation_m','location_effective_source','altitude_effective_source')}}
         status.update({'camera_setup': self.camera_setup.read(), 'camera_info': self.camera_info.read(), 'error': self.last_error, 'trigger_note': self.last_trigger_error,
                        'uptime_seconds': round(time.monotonic() - self.started, 1),
                        'health': self.health, 'star_calibration': self.calibration_report, 'event_count_since_start': self.event_count,

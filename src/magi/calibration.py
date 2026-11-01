@@ -21,11 +21,13 @@ def source_fingerprint(cfg):
 
 
 def active_report(raw, cfg):
+    from .sensors import effective
+    geometry = effective(cfg.identification)
     report=raw.get('calibration')
     if (isinstance(report,dict) and report.get('schema')==1
             and report.get('source_fingerprint')==source_fingerprint(cfg)
-            and report.get('geometry')=={k:cfg.identification[k] for k in GEOMETRY_KEYS}
-            and cfg.identification['calibrated']):
+            and report.get('geometry')=={k:geometry[k] for k in GEOMETRY_KEYS}
+            and geometry['calibrated']):
         return report
     return None
 

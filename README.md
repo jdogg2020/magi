@@ -213,3 +213,5 @@ Original-derived color reviews, native-resolution frame selection and zoomed
 object thumbnails are generated in a bounded, low-priority background queue.
 Existing clips can be improved from the review dialog. See
 [docs/REVIEW-QUALITY.md](docs/REVIEW-QUALITY.md) for timing, selection and limits.
+
+Station GPS, local ADS-B, automatic location fields and optional GNSS clock setup: [Sensor setup and validation](docs/SENSORS.md).

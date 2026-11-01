@@ -212,6 +212,11 @@ class Updater:
             time.sleep(2)
         raise RuntimeError('new service failed dashboard/version checks')
 
+    def refresh_sensors(self):
+        if Path('/etc/systemd/system/magi-sensors.service').is_file():
+            action = 'try-restart' if (self.live/'src/magi/sensor_service.py').is_file() else 'stop'
+            self.command('systemctl', action, 'magi-sensors.service')
+
     def restore(self, transaction):
         backup = Path(transaction['backup'])
         if not (backup / 'app').is_dir():
@@ -231,6 +236,7 @@ class Updater:
         self.install_unit(backup / 'magi.service')
         self.control('start')
         self.healthy(transaction['old_version'])
+        self.refresh_sensors()
         self.journal.unlink(missing_ok=True)
         LOG.info('Previous service restored and healthy.')
 
@@ -246,6 +252,10 @@ class Updater:
         if self.journal.exists():
             raise RuntimeError('unfinished update exists; run magi-update --recover first')
         self.preflight(candidate)
+        # Preserve separately installed hardware binaries across source swaps.
+        # New sensor setup uses /usr/local/lib; retain the existing Pi layout too.
+        if (self.live / 'deps').is_dir() and not (candidate / 'deps').exists():
+            shutil.copytree(self.live / 'deps', candidate / 'deps', symlinks=True)
         for path in candidate.rglob('*'):
             if path.is_file():
                 with path.open('rb') as stream:
@@ -272,6 +282,7 @@ class Updater:
             self.install_unit(self.live / 'systemd/magi.service')
             self.control('start')
             self.healthy(version)
+            self.refresh_sensors()
             if (self.live/'scripts/install_update_agent.py').is_file():
                 self.command('/usr/bin/python3', '-I', str(self.live/'scripts/install_update_agent.py'), '--source', str(self.live))
             atomic_json(self.previous, transaction)

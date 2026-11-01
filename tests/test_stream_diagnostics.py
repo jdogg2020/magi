@@ -46,7 +46,7 @@ class StreamDiagnosticsTests(unittest.TestCase):
         analysis.probe_error = 'Earlier failure'
         result = SimpleNamespace(stdout=json.dumps({'streams': [{'width':640, 'height':360, 'r_frame_rate':'20/1'}]}).encode())
         process = Mock()
-        with patch('magi.detection.subprocess.run', return_value=result), patch('magi.detection.subprocess.Popen', return_value=process) as decoder, patch('magi.detection.os.set_blocking'):
+        with patch('magi.detection.subprocess.run', return_value=result), patch('magi.detection.subprocess.Popen', return_value=process) as decoder, patch.object(analysis, '_read_frames'):
             analysis.start()
         self.assertTrue(analysis.geometry_confirmed)
         self.assertIsNone(analysis.probe_error)
@@ -100,7 +100,7 @@ class StreamDiagnosticsTests(unittest.TestCase):
                 with patch('magi.detection.subprocess.Popen') as processes:
                     # Only replace the long-running decoder, not the real probe.
                     processes.side_effect = lambda args, **kwargs: Mock() if '-f' in args and 'rawvideo' in args else real_popen(args, **kwargs)
-                    with patch('magi.detection.os.set_blocking'):
+                    with patch.object(analysis, '_read_frames'):
                         analysis.start()
                 self.assertTrue(analysis.geometry_confirmed, analysis.probe_error)
                 self.assertEqual([analysis.settings[k] for k in ('width', 'height', 'fps')], [640, 360, 20])

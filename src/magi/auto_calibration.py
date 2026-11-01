@@ -327,7 +327,8 @@ class AutoCalibrationJob:
 
     def start(self):
         if not self.gate.acquire(blocking=False):
-            raise AutoCalibrationError('Another camera is solving. Wait for it to finish.')
+            self._finish('Another camera is solving. Wait for it to finish.')
+            raise AutoCalibrationError(self.error)
         self.owns_gate = True
         env = {**os.environ, 'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1'}
         try:

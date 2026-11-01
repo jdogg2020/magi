@@ -72,6 +72,8 @@ class CalibrationSafetyTests(unittest.TestCase):
             try:
                 other=AutoCalibrationJob(app,EVENT)
                 with self.assertRaises(AutoCalibrationError):other.start()
+                self.assertTrue(other.done.is_set())
+                self.assertFalse(other.state()["running"])
                 job.deadline=time.monotonic()-1
                 job.poll()
                 self.assertTrue(job.done.is_set())

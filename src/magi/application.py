@@ -435,7 +435,7 @@ class Application:
         raise CalibrationError('Solve and inspect a valid star fit before applying it.')
 
     def auto_calibrate(self, command, data):
-        """Automatic blind calibration: solve in a thread, apply explicitly.
+        """Automatic blind calibration: solve in a child, apply explicitly.
 
         Solving runs in a child process: it can take minutes
         and must not stall capture ticks. The child only reads config
@@ -443,12 +443,17 @@ class Application:
         apply step goes through the normal settings path.
         """
         data = data or {}
+        if not isinstance(data, dict):
+            raise AutoCalibrationError('Invalid automatic calibration request.')
         if self.archive_only:
             raise AutoCalibrationError('Archived cameras cannot run or apply calibration.')
         if command == 'auto_calibration_start':
             if self._auto_job is not None and not self._auto_job.done.is_set():
                 return {'running': True, 'event_id': self._auto_job.event_id}
             event_id = data.get('id') or latest_event_with_frame(self.cfg.root)
+            if not isinstance(event_id, str) or not EVENT_ID.fullmatch(event_id):
+                raise AutoCalibrationError('Choose a saved event frame.')
+            self.clip_path(event_id, 'frame')
             self._auto_job = AutoCalibrationJob(self, event_id)
             return self._auto_job.start()
         if command == 'auto_calibration_status':

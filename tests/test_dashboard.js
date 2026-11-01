@@ -237,8 +237,6 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  elements['review-labels'].value='aircraft, regression-review-label';elements['review-notes'].value='UI regression notes';elements['review-reviewed'].checked=true;
  await elements['review-save'].onclick();assert(elements['review-save-status'].textContent.includes('saved'));
  let managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label',camera_id:managedCamera})",context);assert(managed.events.some(e=>e.id===managedEventId && e.review.reviewed && e.review.notes==='UI regression notes'));
- await elements['review-label-aircraft'].onclick();
- assert.equal(elements['review-label-aircraft'].getAttribute('aria-pressed'),'false','Existing aircraft label toggles off');
  await elements['review-label-ignore'].onclick();
  managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label',camera_id:managedCamera})",context);
  assert(managed.events[0].review.labels.includes('ignore'),'Quick category must persist through the real API');

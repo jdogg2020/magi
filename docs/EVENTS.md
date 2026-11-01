@@ -174,9 +174,12 @@ that button. Review status does not itself protect footage from retention.
 The review image has quick category buttons above it: **Ignore**, **Plane**,
 **Bird / insect**, **Lightning**, **Cloud / weather**, **Meteor**, **Satellite**,
 and **Unknown**. A selected category is highlighted with a check mark. Click
-again to remove it; multiple categories can coexist. Labels save immediately,
-including any edits in the Labels field, while unsaved notes and review/protection
-checkbox changes remain in the form.
+a category to save the review and open the next event within the applied filters
+and sort order. This also saves any labels, notes and review/protection checkbox
+edits already made in the form. A failed save keeps the current event open. At
+the last matching event, the review stays open and reports the end of the list.
+Multiple labels can coexist; clicking an already selected category removes it
+and advances. Reviewed/protected flags change only if you explicitly edited them.
 
 Plane uses the existing `aircraft` label and Cloud / weather uses `weather`,
 so the label filter continues to find those categories. Ignore is the `ignore`

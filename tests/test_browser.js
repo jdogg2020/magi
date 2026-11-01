@@ -93,16 +93,16 @@ const base = process.argv[2];
     const radioResponse=await page.request.get(new URL(await page.locator('#radio-report').getAttribute('href'),base).href);
     assert(radioResponse.ok());assert.equal((await radioResponse.json()).source,'local_readsb');
     assert(await still.isVisible());
-    const imageBefore=await still.getAttribute('src');
-    await page.locator('#review-label-lightning').click();
-    await page.waitForFunction(()=>document.getElementById('review-label-lightning').getAttribute('aria-pressed')==='true' && !document.getElementById('review-label-lightning').disabled);
-    assert.equal(await still.getAttribute('src'),imageBefore,'Categorizing preserves the review image');
-    await page.locator('#review-label-weather').click();
-    await page.waitForFunction(()=>document.getElementById('review-label-weather').getAttribute('aria-pressed')==='true' && !document.getElementById('review-label-weather').disabled);
-    await page.screenshot({path:'dist/browser/review-categories.png',fullPage:true});
     assert(!await page.locator('#review-video').isVisible());
     await page.locator('#review-play').click();
     assert((await page.locator('#review-video').getAttribute('src')).includes(`/api/cameras/${event.camera}/clips/${event.id}/`));
+    await page.screenshot({path:'dist/browser/review-categories.png',fullPage:true});
+    const next=rows[rows.findIndex(row=>row.id===event.id && row.camera===event.camera)+1];
+    await page.locator('#review-label-lightning').click();
+    if(next){
+      await page.waitForFunction(next=>document.getElementById('review-still').getAttribute('src')?.includes('/clips/'+next.id+'/') && document.getElementById('review-still').getAttribute('src')?.includes('/api/cameras/'+next.camera+'/'),next);
+      assert(!await page.locator('#review-video').isVisible(),'Next review opens on its image');
+    }else await page.waitForFunction(()=>document.getElementById('review-save-status').textContent.includes('Last matching event'));
     await page.locator('#review-close').click();
     // Settings links select a camera, then Overview returns to all feeds.
     await page.locator(`aside a[href="/?camera=${event.camera}#settings"]`).click();

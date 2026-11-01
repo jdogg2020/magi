@@ -494,6 +494,7 @@ async function openReview(event, imageKind = 'thumbnail') {
   const generation = ++reviewGeneration; reviewEvent = event; MagiEvents.updateReview(event); reviewFrames = []; reviewMeta = null; reviewTracks=[]; reviewColorTracks=[]; reviewTimelineAttempted=false;
   $('review-title').textContent = `${event.camera_name || 'Camera 1'} · ${new Date(event.trigger_utc).toLocaleString()}`;
   $('motion-info').textContent = event.motion ? 'Loading motion data…' : 'Motion data unavailable for this older event.';
+  $('radio-report').classList.add('hidden'); $('radio-status').textContent='';
   $('track-report').classList.add('hidden'); $('identification-detail').textContent = ''; $('identification-status').textContent = 'Loading reference check…';
   updateReviewAvailability(event);
   $('review-quality').value = event.substream_preview ? 'substream' : 'analysis';
@@ -657,6 +658,9 @@ async function loadIdentification(id) {
   try { const report = await api(eventPath(reviewEvent,'identification')); if(generation!==reviewGeneration || !reviewEvent || eventKey(reviewEvent)!==key) return;
     $('identification-status').textContent = report.status.replaceAll('_',' ');
     $('track-report').href=eventPath(reviewEvent,'identification'); $('track-report').classList.remove('hidden');
+    const radio=report.radio_evidence;
+    $('radio-status').textContent=radio ? `Local radio: ${radio.aircraft_count || 0} aircraft recorded · ${radio.coverage} coverage · ${radio.association==='assessed'?'association assessed':'association not assessed'}. Nearby traffic alone does not identify the object.` : 'No saved radio evidence for this event.';
+    $('radio-report').classList.toggle('hidden',!radio);if(radio)$('radio-report').href=eventPath(reviewEvent,'radio');
     const measurements=report.measurements;
     const summary=(measurements?.tracks || []).map(t=>`Track ${t.track_id}: ${t.sampled_path_angle_deg.toFixed(2)}° sampled path over ${t.duration_seconds.toFixed(2)}s · ${t.mean_path_speed_deg_s == null ? 'speed unavailable' : t.mean_path_speed_deg_s.toFixed(2)+'°/s mean angular speed'}`).join('\n');
     $('identification-detail').textContent = (summary ? summary+'\nHost timing and centroid uncertainty unverified; angles do not establish physical speed or distance.\n\n' : '')+JSON.stringify(report, null, 2);

@@ -183,6 +183,11 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  elements['setup-network'].value='192.168.7.0/24';await vm.runInContext('fillSettings()',context);
  assert.equal(elements['setup-network'].value,'192.168.7.0/24','Settings refresh must preserve the entered search network');
  context.fetch=networkFetch;
+ for(let attempt=0;attempt<50;attempt++){await vm.runInContext('loadIdentification(reviewEvent.id)',context);if(!elements['radio-report'].classList.contains('hidden'))break;await new Promise(resolve=>setTimeout(resolve,100));}
+ assert(elements['radio-status'].textContent.includes('aircraft recorded'));
+ const radioEvidence=await vm.runInContext("api(eventPath(reviewEvent,'radio'))",context);
+ assert.equal(radioEvidence.source,'local_readsb');
+ assert(radioEvidence.snapshots.some(f=>f.aircraft.some(a=>a.hex==='abc123' && a.gs===120 && a.alt_geom===undefined)),'Radio fields without geometric altitude should survive event download');
  const savedFetch=context.fetch;
  context.fetch=async()=>({ok:true,json:async()=>({status:'disabled',measurements:{status:'available',tracks:[{track_id:'fixture',sampled_path_angle_deg:12,duration_seconds:2,mean_path_speed_deg_s:6}]}})});
  await vm.runInContext('loadIdentification(reviewEvent.id)',context);

@@ -129,3 +129,11 @@ meteor accuracy, Pi CPU delta or camera field performance is claimed.
 
 The row/filter/review/trash interaction takes inspiration from the inspected UAP
 Finder reference. The implementation and assets are independently written.
+
+## Aircraft radio evidence (0.18.0)
+
+New events save bounded local receiver observations independently of calibration
+and visual tracking. Review offers a radio JSON download, coverage summary and
+assessment state; selected exports include the evidence. Bearing-only aircraft
+associations are labelled separately and do not trigger footage discard. See
+[RADIO-EVIDENCE.md](RADIO-EVIDENCE.md) for collection limits and matching gates.

@@ -95,7 +95,9 @@ const MagiEvents = (()=>{
         const events=[];
         for(const row of chosen){
           const metadata=await api('/api/clips/'+encodeURIComponent(row.id)+'/metadata',undefined,row.camera_id || selectedCamera);
-          events.push({...row,...metadata,camera_id:row.camera_id,camera_name:row.camera_name,review:row.review});
+          let radio=null;
+          if(metadata.radio_evidence_requested){try{radio=await api('/api/clips/'+encodeURIComponent(row.id)+'/radio',undefined,row.camera_id || selectedCamera);}catch{radio={status:'unavailable'};}}
+          events.push({...row,...metadata,radio_evidence:radio,camera_id:row.camera_id,camera_name:row.camera_name,review:row.review});
         }
         const exported=new Date().toISOString();
         const suffix=Array.from(crypto.getRandomValues(new Uint8Array(8)),v=>v.toString(16).padStart(2,'0')).join('');

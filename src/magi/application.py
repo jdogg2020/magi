@@ -29,18 +29,21 @@ from .media import Media
 from .previews import Previews
 from .recorder import Recorder
 from .storage import atomic_json, Volume
+from .radio import Radio
 
 LOG = logging.getLogger('magi')
 EVENT_ID = re.compile(r'^\d{8}T\d{6}-[a-f0-9]{12}$')
 
 
 class Application:
-    def __init__(self, path, *, camera_id="primary", camera_name="Camera 1", archive_only=False):
+    def __init__(self, path, *, camera_id="primary", camera_name="Camera 1", archive_only=False, radio=None):
+        self.owns_radio = radio is None
         self.archive_only = archive_only
         self.archive_volume = None
         self.path = Path(path)
         self.camera_id, self.camera_name = camera_id, camera_name
         self.cfg = Config.load(path)
+        self.radio = radio or Radio(start=not archive_only)
         self.camera_info = CameraInfo()
         self.camera_setup = Setup()
         self.calibration_session = None
@@ -63,7 +66,7 @@ class Application:
         self.next_reference_retention = 0
         self.reference_retention_pending = set()
         self.last_trigger_error = None
-        self.identifier = Identifier(self.cfg)
+        self.identifier = Identifier(self.cfg, radio=self.radio)
         self.media = Media(self.cfg)
         if self.archive_only:
             self.media.close()
@@ -160,7 +163,7 @@ class Application:
         self.cfg = candidate
         self.calibration_session = None
         self.calibration_report = active_report(new, self.cfg)
-        self.identifier = Identifier(self.cfg)
+        self.identifier = Identifier(self.cfg, radio=self.radio)
         self.media = Media(self.cfg)
         if self.archive_only:
             self.media.close()
@@ -177,6 +180,7 @@ class Application:
         geometry = sensor_effective(self.cfg.identification, sensors)
         result = self.recorder.trigger(kind=kind, track=track)
         if self.recorder.active:
+            self.recorder.active['meta'].setdefault('radio_evidence_requested', True)
             self.recorder.active['meta'].setdefault('camera_id', self.camera_id)
             self.recorder.active['meta'].setdefault('camera_name', self.camera_name)
             self.recorder.active['meta'].setdefault('measurement_geometry', {
@@ -435,7 +439,7 @@ class Application:
         event_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')+'-'+uuid.uuid4().hex[:12]
         directory = self.cfg.root/'events'/event_id
         directory.mkdir(mode=0o700)
-        atomic_json(directory/'event.json',{'schema':1,'id':event_id,'camera_id':self.camera_id,'camera_name':self.camera_name,'state':'not_retained','trigger_type':kind,
+        atomic_json(directory/'event.json',{'schema':1,'id':event_id,'camera_id':self.camera_id,'camera_name':self.camera_name,'state':'not_retained','radio_evidence_requested':True,'trigger_type':kind,
             'detection_types':[kind],'trigger_unix':stamp,'trigger_utc':datetime.fromtimestamp(stamp,timezone.utc).isoformat(),
             'track_samples':[{'host_utc':datetime.fromtimestamp(track['sample_host_unix'],timezone.utc).isoformat(),**track}],
             'retention':{'decision':'not_retained','reason':'event_type_disabled_for_footage'},
@@ -553,7 +557,7 @@ class Application:
                     self.queue_media(path.parent, meta)
                 report_path = path.parent / 'identification.json'
                 report = optional_json(report_path)
-                if not self.archive_only and not report and (self.cfg.identification['enabled'] or meta.get('measurement_geometry',{}).get('calibrated')) and meta['state'] in ('complete', 'interrupted'):
+                if not self.archive_only and (not report or meta.get('radio_evidence_requested') and not (path.parent/'radio.json').exists()) and (meta.get('radio_evidence_requested') or self.cfg.identification['enabled'] or meta.get('measurement_geometry',{}).get('calibrated')) and meta['state'] in ('complete', 'interrupted', 'failed', 'not_retained'):
                     self.identifier.submit(path.parent, meta)
                 clips.append({key: meta.get(key) for key in
                               ('id', 'camera_id', 'camera_name', 'state', 'trigger_type', 'detection_types', 'retention', 'trigger_unix', 'trigger_utc', 'trigger_count',
@@ -750,7 +754,7 @@ class Application:
             self.recorder.volume.check()
         elif self.cfg.require_mount and not os.path.ismount(self.cfg.mount):
             raise ValueError('Recording volume is not mounted.')
-        names = {'original': 'clip.mkv', 'preview': 'preview.mp4', 'thumbnail': 'thumbnail.jpg', 'metadata': 'event.json', 'motion': 'motion.jsonl.gz', 'identification': 'identification.json', 'video': 'preview-substream.mp4', 'frame': 'best-frame.jpg', 'media': 'media.json', 'timeline': 'substream.json'}
+        names = {'original': 'clip.mkv', 'preview': 'preview.mp4', 'thumbnail': 'thumbnail.jpg', 'metadata': 'event.json', 'motion': 'motion.jsonl.gz', 'identification': 'identification.json', 'video': 'preview-substream.mp4', 'frame': 'best-frame.jpg', 'media': 'media.json', 'timeline': 'substream.json', 'radio': 'radio.json'}
         if kind not in names:
             raise ValueError('Unknown file.')
         base = self.cfg.root / 'events'
@@ -784,6 +788,8 @@ class Application:
         self.frame_at = 0
 
     def close(self):
+        if self.owns_radio:
+            self.radio.close()
         self.camera_setup.close()
         self.camera_info.close()
         self.media.close()

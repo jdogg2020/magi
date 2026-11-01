@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import threading
 import time
 
@@ -74,7 +75,7 @@ class Application:
             return copy.deepcopy(self.view)
 
     def request(self, command, value=None):
-        if self.archive_only and command not in ('events_list', 'events_update'):
+        if self.archive_only and command not in ('events_list', 'events_update', 'events_purge'):
             raise ValueError('Camera removed. Its recordings remain in Events.')
         task = {'command': command, 'value': value, 'done': threading.Event(), 'cancel': threading.Event()}
         try:
@@ -222,6 +223,8 @@ class Application:
                     task['result'] = self.event_page(task['value'])
                 elif task['command'] == 'events_update':
                     task['result'] = self.manage_events(task['value'])
+                elif task['command'] == 'events_purge':
+                    task['result'] = self.manage_events({'ids':task['value']['ids'], 'action':'purge'}, purge=True, expected=task['value']['expected'])
                 elif task['command'] == 'camera_setup':
                     value = task['value']
                     self.camera_setup.submit(value.get('action'), value, json.loads(self.path.read_text()).get('camera', {}))
@@ -646,13 +649,13 @@ class Application:
         volume.check()
         return {'events':rows,'total':len(matched),'offset':f['offset'],'limit':f['limit'],'labels':sorted(labels)}
 
-    def manage_events(self, value):
+    def manage_events(self, value, *, purge=False, expected=None):
         if not isinstance(value,dict) or set(value)-{'ids','action','changes'}:
             raise ReviewError('Invalid event action.')
         ids, action = value.get('ids'), value.get('action','update')
         if not isinstance(ids,list) or not 1 <= len(ids) <= 100 or any(not isinstance(i,str) or not EVENT_ID.fullmatch(i) for i in ids) or len(set(ids)) != len(ids):
             raise ReviewError('Select 1–100 different events.')
-        if action not in ('update','trash','restore'):
+        if action not in (('purge',) if purge else ('update','trash','restore')):
             raise ReviewError('Unknown event action.')
         patch = review_changes(value.get('changes')) if action=='update' else {}
         if action != 'update' and value.get('changes'):
@@ -673,6 +676,17 @@ class Application:
                 review = read_review(directory)
                 if review.get('annotation_error'):
                     raise ReviewError('Review metadata is damaged; event was protected for recovery.')
+                if action == 'purge':
+                    if review['protected'] or event_id in busy:
+                        raise ReviewError('Event is protected or in use; it was not deleted.')
+                    self.event_volume().check()
+                    info = directory.stat()
+                    if expected is None or expected.get(event_id) != [info.st_dev, info.st_ino]:
+                        raise ReviewError('Event changed since the preview; it was not deleted.')
+                    shutil.rmtree(directory)
+                    self.reference_retention_pending.discard(event_id)
+                    updated.append(event_id)
+                    continue
                 if action == 'trash':
                     if review['protected']:
                         raise ReviewError('Unprotect the event before moving it to trash.')

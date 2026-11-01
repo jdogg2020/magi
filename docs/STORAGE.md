@@ -30,8 +30,7 @@ per camera; this is not a station-wide reservation guarantee.
 
 Removed-camera archives never run automatic retention, including trash expiry.
 They remain accessible in Events after restart. Inventory does not alter them.
-There is no new permanent-delete action. Settings, credentials and camera identity
-are unchanged by inventory and log maintenance.
+Inventory and log maintenance do not change settings or credentials. Explicit permanent deletion controls are described below.
 
 ## Logs
 
@@ -62,3 +61,35 @@ Validation is synthetic: threshold/headroom behavior, protection, trash age,
 archive inventory, shared disks, hardlinks, scan failures, active-log exclusions,
 log budgets and two-camera dashboard/Chromium behavior. Pi field validation is
 separate; no direct connection to the remote Pi is made during development.
+
+## Explicit deletion (0.17.1)
+
+**Edit storage limits** opens the correct camera settings, scrolls directly to the
+storage section and focuses its cap field.
+
+Storage offers **Purge all unprotected events** and **Empty all trash**, plus the
+same actions per camera. These include removed-camera archives only when explicitly
+requested; their automatic-retention exemption remains. Preview shows the camera
+scope, count and approximate file size. Confirmation permanently deletes originals,
+previews, notes and metadata. It cannot be undone; hardlinks mean the displayed file
+size is not a guarantee of reclaimed space. Active capture buffers are untouched.
+
+Preview is bounded to five seconds / 10,000 eligible events and expires after five
+minutes. Only previewed event identities can be deleted. The browser confirms in
+batches of ten with progress; protection, processing/calibration use, completed
+state, volume identity and directory identity are checked again in the camera's
+serialized command queue. Newly captured events are excluded. Closing the page or
+losing connectivity stops further batches; completed deletions stay deleted. A
+lost-response retry for the same step returns the previous result without deleting
+another batch. Partial failures are reported; refresh before making a new preview.
+
+**Delete archived camera** is available only after ordinary camera removal. It
+previews deletion of that archive's eligible events and, after confirmation,
+removes leftover capture buffers and the camera from Storage and Events. Protected,
+unfinished or unreadable entries block archive removal. In-use events are rechecked
+at execution and prevent removal if retained. Other cameras continue recording.
+Additional-camera registry entries and their private configs/backups are removed.
+The original camera retains its station configuration and an internal forgotten
+marker, because that configuration also holds dashboard login and station defaults;
+it no longer appears in the UI, including after restart. Recordings belonging to
+other cameras under the same parent directory are never removed.

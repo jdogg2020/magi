@@ -9,12 +9,12 @@ const cameraTiles = new Map();
 let stationCameras = [], cameraRefreshBusy = false, cameraAddBusy = false;
 const eventKey = row => `${row.camera_id || selectedCamera}:${row.id}`;
 const eventPath = (row, part) => `/api/cameras/${encodeURIComponent(row.camera_id || selectedCamera)}/clips/${encodeURIComponent(row.id)}/${part}`;
-function cameraSettingsLink(camera, label){
+function cameraSettingsLink(camera, label, storage=false){
   const link=document.createElement('a');
-  link.href='/?camera='+encodeURIComponent(camera.id)+'#settings';link.textContent=label;
+  link.href='/?camera='+encodeURIComponent(camera.id)+(storage?'#storage-limits':'#settings');link.textContent=label;
   link.onclick=event=>{
     if(camera.id===selectedCamera && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && !event.button){
-      event.preventDefault();tab('settings');location.hash='settings';refreshFrame();
+      event.preventDefault();tab('settings');location.hash=storage?'storage-limits':'settings';if(storage)focusStorageLimits();refreshFrame();
     }
   };
   return link;
@@ -26,6 +26,9 @@ async function refreshCameras() {
     const result = await api('/api/cameras');
     if (!csrf) return;
     stationCameras = result.cameras;
+    if(result.cameras.length && !result.cameras.some(c=>c.id===selectedCamera) && !(result.archived_cameras || []).some(c=>c.id===selectedCamera)){
+      location.href='/?camera='+encodeURIComponent(result.cameras[0].id)+'#overview';return;
+    }
     const select = $('camera-select'), grid = $('camera-grid');
     const signature = JSON.stringify([result.cameras.map(c=>[c.id,c.name]),result.archived_cameras || []]);
     if (select.dataset.signature !== signature) {
@@ -167,7 +170,7 @@ $('camera-settings-link').onclick = event => { event.preventDefault(); tab('sett
 async function signedIn() {
   const session = await api('/api/session'); csrf = session.csrf;
   $('login').classList.add('hidden'); $('app').classList.remove('hidden');
-  settingsLoaded = false; clipSignature = ''; await refreshCameras(); await refresh(); await refreshUpdates(true); if(typeof location !== 'undefined' && new URL(location.href).hash==='#settings')tab('settings');
+  settingsLoaded = false; clipSignature = ''; await refreshCameras(); await refresh(); await refreshUpdates(true); if(typeof location !== 'undefined' && ['#settings','#storage-limits'].includes(new URL(location.href).hash)){tab('settings');if(location.hash==='#storage-limits')focusStorageLimits();}
 }
 $('login-form').onsubmit = async event => { event.preventDefault(); $('login-error').textContent = ''; try { await api('/api/login', {username: $('login-user').value, password: $('login-password').value}); $('login-password').value = ''; await signedIn(); } catch (error) { $('login-error').textContent = error.message; } };
 $('opensky-credentials-file').onchange=async()=>{
@@ -831,10 +834,42 @@ async function refreshStorage() {
       info.textContent=camera.error || `${bytes(camera.used_bytes)} used · ${camera.archived?'Automatic cleanup disabled':`Cap ${bytes(camera.max_bytes)} · Free-space floor ${bytes(camera.min_free_bytes)} · Cleanup headroom ${bytes(camera.cleanup_margin_bytes)} · Retention ${camera.retention_days} days · Trash ${camera.trash_days} days`}`;
       card.append(title,info);
       if(camera.state==='storage_blocked'){const warning=document.createElement('p');warning.textContent='Capture paused: the camera cap or free-space floor cannot be satisfied. Check protected/in-use footage and other disk users.';card.append(warning);}
-      if(!camera.archived)card.append(cameraSettingsLink(camera,'Edit storage limits'));
-      $('storage-cameras').append(card);
+      if(!camera.archived)card.append(cameraSettingsLink(camera,'Edit storage limits',true));
+      const actions=document.createElement('div');actions.className='update-actions';
+      for(const [mode,label] of [['unprotected','Purge unprotected events'],['trash','Empty trash'],...(camera.archived?[['remove_archive','Delete archived camera']]:[])]){
+        const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent=label;button.onclick=()=>purgeStorage(camera.id,mode);actions.append(button);
+      }
+      card.append(actions);$('storage-cameras').append(card);
     }
   } catch(error){$('storage-status').textContent=error.message;}
   finally {storageBusy=false;$('storage-refresh').disabled=false;}
 }
 $('storage-refresh').onclick=refreshStorage;
+
+function focusStorageLimits(){
+  $('storage-limits').scrollIntoView({block:'start',behavior:'smooth'});
+  $('max_gb').focus({preventScroll:true});
+}
+let purgeBusy=false;
+async function purgeStorage(camera,mode){
+  if(purgeBusy)return;
+  purgeBusy=true;
+  const status=$('storage-purge-status');status.textContent='Preparing deletion preview…';
+  try {
+    const preview=await api('/api/station/storage/purge',{action:'preview',camera_id:camera,mode});
+    if(!preview.count && mode!=='remove_archive'){status.textContent='No eligible events to purge.';return;}
+    const message=`${preview.scope}: permanently delete ${preview.count} unprotected events (about ${bytes(preview.estimated_bytes)} of files)? This includes originals, previews, notes and metadata. ${preview.retained} protected/unfinished/unreadable entries retained. Events in use will be rechecked and skipped. ${mode==='remove_archive'?'The removed camera will also disappear from Storage and Events; its leftover buffers will be deleted. ':''}This cannot be undone. File size is not guaranteed reclaimed space.`;
+    if(!confirm(message)){await api('/api/station/storage/purge',{action:'cancel',token:preview.token});status.textContent='Cancelled. No files deleted.';return;}
+    let step=0,result;
+    do {
+      result=await api('/api/station/storage/purge',{action:'confirm',token:preview.token,step});
+      step=result.step;
+      status.textContent=`Deleted ${result.deleted} events; ${result.failed} skipped or failed. Working…`;
+    } while(!result.done && csrf);
+    status.textContent=`Deleted ${result.deleted} events. ${result.failed} skipped or failed; ${result.retained} retained.${result.removed?' Archived camera removed.':''}${result.error?' '+result.error:''}`;
+    await refreshStorage();await refreshCameras();await MagiEvents.refresh(true);
+  }catch(error){status.textContent='Deletion stopped: '+error.message+' Refresh before retrying; completed deletions are permanent.';}
+  finally{purgeBusy=false;}
+}
+$('storage-purge-all').onclick=()=>purgeStorage('all','unprotected');
+$('storage-empty-trash').onclick=()=>purgeStorage('all','trash');

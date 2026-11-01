@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import shutil
 import threading
 import time
 import uuid
@@ -19,6 +20,7 @@ from .config import Config
 from .event_review import ID as EVENT_ID, ReviewError, changes as review_changes, filters as event_filters
 from .storage import atomic_json
 from .storage_report import report
+from .storage_purge import Purges
 
 CAMERA_ID = re.compile(r'^(primary|cam-[a-f0-9]{12})$')
 MAX_CAMERAS = 8
@@ -71,6 +73,7 @@ class Station:
         self.lock = threading.RLock()
         self.workers = {}
         self.closed = False
+        self.purges = Purges(self)
         self.storage_scan_lock = threading.Lock()
         self.storage_cache = None
         self.storage_cache_at = 0
@@ -105,6 +108,9 @@ class Station:
         entries = self.registry.get('cameras') if isinstance(self.registry, dict) else None
         if not isinstance(self.registry, dict) or self.registry.get('schema') != 1 or not isinstance(entries, list) or not 1 <= len(entries) <= 256:
             raise ValueError('Invalid camera registry.')
+        forgotten = self.registry.get('forgotten_cameras', [])
+        if forgotten not in ([], ['primary']) or forgotten and (not isinstance(entries[0], dict) or not entries[0].get('archived')):
+            raise ValueError('Invalid forgotten archive.')
         identities = []
         for item in entries:
             if not isinstance(item, dict) or (set(item)-{'id', 'name', 'archived'} or not {'id','name'} <= set(item) or not isinstance(item.get('archived', False), bool)) or not isinstance(item['id'], str) or not CAMERA_ID.fullmatch(item['id']):
@@ -116,6 +122,9 @@ class Station:
         if identities[0] != 'primary' or len(set(identities)) != len(identities):
             raise ValueError('Camera IDs must be unique and retain the primary camera.')
 
+    def is_forgotten(self, item):
+        return item['id'] in self.registry.get('forgotten_cameras', [])
+
     @property
     def cfg(self):
         return self.workers['primary'].app.cfg
@@ -123,7 +132,7 @@ class Station:
     def camera(self, identity='primary'):
         with self.lock:
             worker = self.workers.get(identity)
-            if not worker:
+            if not worker or any(i['id']==identity and self.is_forgotten(i) for i in self.registry['cameras']):
                 raise ValueError('Unknown camera.')
             if worker.stop.is_set():
                 raise ValueError("This camera worker is stopping. Wait before retrying.")
@@ -136,6 +145,8 @@ class Station:
             result = []
             archived = []
             for item in self.registry['cameras']:
+                if self.is_forgotten(item):
+                    continue
                 if item.get('archived'):
                     archived.append({'id': item['id'], 'name': item['name']})
                     continue
@@ -153,7 +164,7 @@ class Station:
         # Reuse worker snapshots for the frequently refreshed overview. Full
         # archive scans belong to the paginated Events page, not live polling.
         with self.lock:
-            entries = [(dict(item), self.workers[item['id']]) for item in self.registry['cameras']]
+            entries = [(dict(item), self.workers[item['id']]) for item in self.registry['cameras'] if not self.is_forgotten(item)]
         rows = []
         for item, worker in entries:
             if worker.app:
@@ -183,7 +194,7 @@ class Station:
             with self.lock:
                 entries = [(dict(item), worker.app.cfg if worker.app else None,
                             worker.app.read()['status']['state'] if worker.app else 'worker_failed')
-                           for item in self.registry['cameras'] for worker in [self.workers[item['id']]]]
+                           for item in self.registry['cameras'] if not self.is_forgotten(item) for worker in [self.workers[item['id']]]]
             self.storage_cache = report(entries)
             self.storage_cache_at = time.monotonic()
             return copy.deepcopy(self.storage_cache)
@@ -197,7 +208,7 @@ class Station:
         identity = value.pop('camera_id', 'all')
         f = event_filters(value)
         with self.lock:
-            entries = [(dict(item), self.workers[item['id']]) for item in self.registry['cameras']]
+            entries = [(dict(item), self.workers[item['id']]) for item in self.registry['cameras'] if not self.is_forgotten(item)]
         if not isinstance(identity, str) or identity != 'all' and identity not in {item['id'] for item, _ in entries}:
             raise ReviewError('Unknown camera filter.')
         rows, labels, unavailable, total = [], set(), [], 0
@@ -361,6 +372,55 @@ class Station:
             self.workers[identity] = replacement
             replacement.thread.start()
             return {'id': identity, 'removed': True, 'recordings_preserved': True}
+
+    def forget_archive(self, identity):
+        """Forget only an empty, stopped archive; retain primary station config."""
+        with self.lock:
+            item = next((i for i in self.registry['cameras'] if i['id']==identity and not self.is_forgotten(i)), None)
+            if not item or not item.get('archived'):
+                raise ValueError('Only removed cameras can be permanently removed.')
+            worker = self.workers[identity]
+            if not worker.app or worker.failed:
+                raise ValueError('Archive unavailable; cannot safely remove it.')
+            root = worker.app.cfg.root
+            if any(p.is_symlink() for p in (root, *root.parents)):
+                raise ValueError('Archive root is unsafe.')
+            worker.app.event_volume().check()
+            if any((root/'events').iterdir()):
+                raise ValueError('Archive still contains events. Protected, busy or unreadable events must be resolved first.')
+            for name in ('events', 'buffer', 'buffer-substream'):
+                path = root/name
+                if path.is_symlink():
+                    raise ValueError('Archive path is unsafe.')
+            worker.close()
+        worker.thread.join(15)
+        with self.lock:
+            if worker.thread.is_alive() or self.closed or self.workers.get(identity) is not worker:
+                raise ValueError('Archive is stopping; refresh and retry.')
+            # No other camera can write here; removal already stopped capture.
+            if any(p.is_symlink() for p in (root, *root.parents)):
+                raise ValueError('Archive root changed.')
+            worker.app.event_volume().check()
+            if any((root/'events').iterdir()):
+                raise ValueError('Archive changed; refresh before retrying.')
+            for name in ('buffer', 'buffer-substream'):
+                path = root/name
+                if path.exists():
+                    shutil.rmtree(path)
+            registry = copy.deepcopy(self.registry)
+            if identity == 'primary':
+                registry['forgotten_cameras'] = ['primary']
+            else:
+                registry['cameras'] = [i for i in registry['cameras'] if i['id']!=identity]
+            atomic_json(self.registry_path, registry)
+            self.registry = registry
+            if identity != 'primary':
+                del self.workers[identity]
+                # Private orphan config removal occurs after durable registry update.
+                for suffix in ('.json','.backup'):
+                    (self.config_directory/(identity+suffix)).unlink(missing_ok=True)
+            self.storage_cache = None
+            return {'removed': True}
 
     def restart_camera(self, identity):
         with self.lock:

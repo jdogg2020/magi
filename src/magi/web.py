@@ -274,6 +274,9 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, {'ok': True}, {'Set-Cookie': 'magi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})
             return
         try:
+            if path == '/api/station/storage/purge':
+                self.reply(200, self.server.app.purges.request(body))
+                return
             if path == '/api/station/update':
                 if body.get('action') not in ('check','install'):
                     raise ValueError('Choose Check for updates or Install update.')
@@ -302,5 +305,5 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.reply(200, app.request(commands[path], body))
         except (ValueError,OSError) as error:
-            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/camera/setup', '/api/events/', '/api/cameras', '/api/station/events/', '/api/station/update')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
+            message = str(error) if isinstance(error,ValueError) and path.startswith(('/api/calibration/', '/api/camera/setup', '/api/events/', '/api/cameras', '/api/station/events/', '/api/station/update', '/api/station/storage/')) else 'Action unavailable. Check camera fields, recording limits, storage and service status.'
             self.reply(409, {'error': message})

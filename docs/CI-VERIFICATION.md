@@ -34,3 +34,17 @@ the same conservative group rules. Main does not overwrite existing releases.
 
 Use **Actions → Verify and package → Run workflow → force_full** to run every
 test explicitly. That manual run verifies but does not publish a release.
+
+## Examples with current, successful evidence
+
+| Change | Solver tests | Calibration integration | Other checks |
+| --- | --- | --- | --- |
+| UI text, layout, or documentation | Reuse | Reuse | Run |
+| Application/controller Python | Reuse if solver dependencies unchanged | Run | Run |
+| Star solver, sensor geometry, or storage dependency | Run | Run | Run |
+| Dependency locks, CI policy/workflow, or service units | Run | Run | Run |
+| Version number only | Reuse | Reuse | Run |
+| Missing/expired proof or force_full | Run | Run | Run |
+
+These are dependency-based decisions, not promises that an entire feature area
+always skips tests. The plan job logs the proof run IDs and fingerprints it uses.

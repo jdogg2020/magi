@@ -102,9 +102,14 @@ current directory, for example
 `replay-primary-20261101T123456-0123456789ab-20261101T180000Z-1a2b3c4d.json`,
 and prints its exact path. Repeated runs therefore create distinct reports.
 An explicit output path that already exists is refused, and a report is never
-written inside an event evidence directory — if the current directory is
-inside the selected event's directory, the default report goes to
-`~/magi-replay-reports/` instead. Replay is read-only toward configurations,
+written inside event evidence: not the selected event, not any other event
+under the same camera's `events/` tree, and not any directory containing an
+`event.json` (which also covers other cameras' events in direct mode). If
+the current directory is inside event evidence, the default report goes to
+`~/magi-replay-reports/` instead. If report writing itself fails, only a
+report file this run actually created is removed; if another process
+creates the output path first, exclusive creation fails and that other
+process's file is left untouched. Replay is read-only toward configurations,
 recordings, labels, protection, and retention: source files, event metadata,
 and configs are not modified, and no settings are applied.
 
@@ -112,15 +117,22 @@ The running service protects in-use media through its in-memory protected set
 and review protection flags; a standalone replay cannot join that set without
 changing shared capture/storage code, so this tool does not try. Instead it
 makes one private temporary copy of the selected video (mode 0600, in the
-system temporary directory) and decodes from that copy. If the original
-disappears or changes while the copy is being made, the run fails cleanly,
-the partial copy is removed, and no report is written. Once the copy is
-complete, later retention changes cannot affect the run, and the copy is
-removed on success and on failure. Before copying, replay checks that the
-temporary directory has headroom for the source copy plus the decoded frames
-for the requested duration; if not, it fails with the bytes needed and
-available. Set `TMPDIR` to a disk-backed directory with more headroom if the
-system temporary directory is small. Replay never changes event protection
+system temporary directory) and decodes from that copy. The copy has a hard
+byte limit, set to the source size at the start of the copy: reads are
+capped to the remaining limit while copying, never merely checked
+afterwards, and a one-byte probe after reaching the limit rejects a source
+that grew past its initial size — a growing source therefore cannot exceed
+the checked disk budget during copying. After the copy, the source's size
+and file identity are rechecked; a change fails the run and removes the
+partial copy. Disappearance during the copy also fails cleanly, while
+disappearance after a complete copy is allowed, because that is exactly
+the retention case the copy protects against. Once the copy is complete,
+later retention changes cannot affect the run, and the copy is removed on
+success and on failure. Before copying, replay checks that the temporary
+directory has headroom for the source copy plus the decoded frames for the
+requested duration; if not, it fails with the bytes needed and available.
+Set `TMPDIR` to a disk-backed directory with more headroom if the system
+temporary directory is small. Replay never changes event protection
 flags or retention settings.
 
 Actionable failures include: unknown camera or event, an event belonging to a

@@ -9,11 +9,14 @@ import subprocess
 import tempfile
 import unittest
 
+import io as _io
+
 import numpy as np
 from magi.replay import (acquire_source, baseline_for_event, changed_settings,
                          compare, default_report_path, labels,
                          merge_candidate, resolve_event, resolve_output,
-                         settings, main)
+                         settings, main, write_report, _copy_bounded,
+                         _source_still_matches)
 
 FFMPEG = subprocess.call(["sh", "-c", "command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null"]) == 0
 EVENT_A = '20261101T123456-0123456789ab'
@@ -102,6 +105,83 @@ class ReplayTests(unittest.TestCase):
                 resolve_output(existing, tmp / 'video.mp4', event_dir)
             with self.assertRaises(ValueError):
                 resolve_output(event_dir / 'report.json', tmp / 'video.mp4', event_dir)
+    def test_write_report_never_deletes_other_process_file(self):
+        # The concurrent-creation case, deterministically: creation fails
+        # because the file already exists, and the other file must survive.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            output = tmp / 'report.json'
+            output.write_text('OTHER PROCESS DATA')
+            with self.assertRaises(FileExistsError):
+                write_report(output, {'ok': True})
+            self.assertEqual(output.read_text(), 'OTHER PROCESS DATA')
+    def test_write_report_removes_only_its_own_partial_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            output = tmp / 'report.json'
+            with self.assertRaises(TypeError):
+                write_report(output, {'unserializable': object()})
+            self.assertFalse(output.exists())
+            write_report(output, {'ok': True})
+            self.assertEqual(json.loads(output.read_text()), {'ok': True})
+    def test_copy_bounded_hard_limit(self):
+        # A stream longer than the limit must not be copied past it: only
+        # limit bytes are written, and growth is rejected during the copy.
+        output = _io.BytesIO()
+        with self.assertRaises(ValueError):
+            _copy_bounded(_io.BytesIO(b'A' * 20), output, 10)
+        self.assertEqual(len(output.getvalue()), 10)
+        output = _io.BytesIO()
+        digest, copied = _copy_bounded(_io.BytesIO(b'hello'), output, 5)
+        self.assertEqual((copied, output.getvalue()), (5, b'hello'))
+        self.assertEqual(digest.hexdigest(), hashlib.sha256(b'hello').hexdigest())
+        output = _io.BytesIO()
+        _digest, copied = _copy_bounded(_io.BytesIO(b'abc'), output, 10)
+        self.assertEqual(copied, 3)
+    def test_source_still_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            source = tmp / 'clip.mp4'
+            source.write_bytes(b'abc')
+            st = source.stat()
+            identity = (st.st_dev, st.st_ino, st.st_mtime_ns)
+            self.assertTrue(_source_still_matches(source, 3, identity))
+            with source.open('ab') as handle:
+                handle.write(b'd')
+            self.assertFalse(_source_still_matches(source, 3, identity))
+            source.unlink()
+            # Deletion after a complete copy is allowed: that is the
+            # retention case the temporary copy protects against.
+            self.assertTrue(_source_still_matches(source, 3, identity))
+    def test_evidence_guard_covers_events_tree_and_any_event_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            events = tmp / 'events'
+            event_a = events / 'event-a'
+            event_b = events / 'event-b'
+            event_a.mkdir(parents=True)
+            event_b.mkdir(parents=True)
+            (event_a / 'event.json').write_text('{}')
+            (event_b / 'event.json').write_text('{}')
+            (event_a / 'video.mp4').write_bytes(b'x')
+            # Sibling event, with an event.json: refused even without a
+            # station root, via the ancestor event.json check.
+            with self.assertRaises(ValueError):
+                resolve_output(event_b / 'report.json', event_a / 'video.mp4', event_a)
+            # Another directory under the events tree, even with no
+            # event.json yet: refused via the events-tree check.
+            other = events / 'not-yet-an-event'
+            other.mkdir()
+            with self.assertRaises(ValueError):
+                resolve_output(other / 'report.json', event_a / 'video.mp4',
+                               event_a, events)
+            # A directory elsewhere, with no event.json anywhere above it,
+            # is still allowed.
+            elsewhere = tmp / 'elsewhere'
+            elsewhere.mkdir()
+            self.assertEqual(resolve_output(elsewhere / 'report.json',
+                                            event_a / 'video.mp4', event_a, events),
+                             elsewhere / 'report.json')
 
 
 class EventReplayTests(unittest.TestCase):
@@ -307,6 +387,21 @@ class EventReplayTests(unittest.TestCase):
                       '--output', str(output)])
         self.assertEqual(caught.exception.code, 1)
         self.assertEqual(output.read_text(), first)
+
+    @unittest.skipUnless(FFMPEG, 'ffmpeg required')
+    def test_event_cli_output_into_other_event_refused(self):
+        self._event(self._event_dir(self.root, EVENT_A), 'primary', EVENT_A)
+        other = self._event(self._event_dir(self.root, EVENT_B), 'primary', EVENT_B)
+        before = {path: path.read_bytes() for path in other.iterdir()}
+        inside = other / 'report.json'
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                main(['--config', str(self.config), '--camera-id', 'primary',
+                      '--event-id', EVENT_A, '--candidate-override', '{"threshold": 14}',
+                      '--output', str(inside)])
+        self.assertEqual(caught.exception.code, 1)
+        self.assertFalse(inside.exists())
+        self.assertEqual({path: path.read_bytes() for path in other.iterdir()}, before)
 
     @unittest.skipUnless(FFMPEG, 'ffmpeg required')
     def test_repeated_default_reports_are_distinct_and_outside_event_dir(self):

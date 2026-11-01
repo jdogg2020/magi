@@ -10,10 +10,14 @@ Read protection for a standalone replay cannot join the running service's
 in-memory protected set (see ``storage.prune`` and the recorder's protected
 jobs), and this module deliberately does not change shared capture or storage
 internals to add one. Instead it makes one bounded, private temporary copy of
-the selected video before decoding. If the original disappears or changes
-while that copy is being made, the run fails cleanly and the partial copy is
-removed. Once the copy is complete, later retention changes cannot affect the
-run. The copy is removed on success and on failure.
+the selected video before decoding, hard-limited to the source size at the
+start of the copy: reads are capped during copying, not merely checked
+afterwards. If the original disappears or changes while that copy is being
+made, the run fails cleanly and the partial copy is removed. Once the copy
+is complete, later retention changes cannot affect the run. The copy is
+removed on success and on failure. A report is never written into event
+evidence, and only a report file this run created is removed if writing
+fails.
 
 Loading a camera's settings does not reproduce live detection exactly: live
 detection uses native substream geometry and rate, while replay samples at the
@@ -233,7 +237,7 @@ def resolve_event(config_path, camera_id, event_id):
             'preview-substream.mp4 is missing for this event; replay does not '
             'substitute clip.mkv, preview.mp4, or any other recording.')
     return {'camera_id': camera_id, 'camera_name': _camera_name(entry['name']), 'archived': archived,
-            'root': root, 'directory': directory, 'video': video, 'meta': meta,
+            'root': root, 'events_dir': root / 'events', 'directory': directory, 'video': video, 'meta': meta,
             'retained_detection': retained}
 
 
@@ -269,10 +273,25 @@ def _is_inside(path, directory):
         return path == directory or str(path).startswith(str(directory) + os.sep)
 
 
-def default_report_path(source, camera_id, event_id, event_directory):
+def _is_event_evidence(path, events_dir):
+    """True if path is, or is inside, any event evidence directory.
+
+    The events tree covers every event under a camera, not just the selected
+    one. Independently, any directory containing an event.json is an event
+    directory, which covers other cameras' events in direct mode, where no
+    station root is known. Checking ancestors (rather than only the selected
+    event) is what makes the guard complete.
+    """
+    if events_dir is not None and _is_inside(path, events_dir):
+        return True
+    candidates = [path, *path.parents]
+    return any((candidate / 'event.json').is_file() for candidate in candidates)
+
+
+def default_report_path(source, camera_id, event_id, event_directory, events_dir=None):
     """Uniquely named report in the current directory, unless that directory
-    is inside the selected event's evidence directory, in which case use a
-    per-user reports directory. Never inside event evidence."""
+    is inside event evidence, in which case use a per-user reports directory.
+    Never inside event evidence."""
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     suffix = uuid.uuid4().hex[:8]
     if event_id is not None:
@@ -282,28 +301,30 @@ def default_report_path(source, camera_id, event_id, event_directory):
         stem = f'replay-{stem}'
     name = f'{stem}-{stamp}-{suffix}.json'
     directory = Path.cwd()
-    if event_directory is not None:
-        try:
-            inside = _is_inside(directory.resolve(), event_directory.resolve())
-        except OSError:
-            inside = False
-        if inside:
-            directory = Path.home() / 'magi-replay-reports'
-            directory.mkdir(mode=0o700, exist_ok=True)
+    try:
+        resolved = directory.resolve()
+        inside = ((event_directory is not None and _is_inside(resolved, event_directory.resolve()))
+                  or _is_event_evidence(resolved, events_dir))
+    except OSError:
+        inside = False
+    if inside:
+        directory = Path.home() / 'magi-replay-reports'
+        directory.mkdir(mode=0o700, exist_ok=True)
     return directory / name
 
 
-def resolve_output(output, source, event_directory):
+def resolve_output(output, source, event_directory, events_dir=None):
     """Validate an explicit report path. An existing file is never
-    overwritten, and a report is never written inside an event evidence
-    directory."""
+    overwritten, and a report is never written inside event evidence:
+    not the selected event, not any other event under the same events
+    tree, and not any directory containing an event.json."""
     path = Path(output).expanduser()
     if not path.is_absolute():
         path = Path.cwd() / path
     path = path.resolve(strict=False)
     if event_directory is not None and _is_inside(path, event_directory):
         raise ValueError('Refuse to write a report inside an event evidence directory; choose another output path.')
-    if (source.parent / 'event.json').is_file() and _is_inside(path, source.parent):
+    if _is_event_evidence(path, events_dir):
         raise ValueError('Refuse to write a report inside an event evidence directory; choose another output path.')
     if path.exists():
         raise ValueError(f'Output already exists: {path}')
@@ -312,15 +333,77 @@ def resolve_output(output, source, event_directory):
     return path
 
 
+def write_report(output, result):
+    """Write a report with exclusive creation. Only a file this call
+    created is removed on failure: if another process creates the path
+    first, exclusive creation fails and that other process's file must
+    survive untouched."""
+    created = False
+    try:
+        with output.open('x') as out:
+            created = True
+            json.dump(result, out, indent=2, allow_nan=False)
+    except (OSError, ValueError, TypeError):
+        if created:
+            output.unlink(missing_ok=True)
+        raise
+
+
+def _copy_bounded(stream, output, limit):
+    """Copy at most limit bytes, hashing as it goes.
+
+    Reads are capped to the remaining limit, so a growing source cannot
+    push the copy past the checked disk budget while copying. Once the
+    limit is reached, one extra byte is probed: any data there means the
+    source grew past its initial size, and the copy is rejected without
+    ever writing the excess. A short read returns early; the caller then
+    rejects the copy as changed/shrunk.
+    """
+    digest = hashlib.sha256()
+    copied = 0
+    while copied < limit:
+        block = stream.read(min(1024 * 1024, limit - copied))
+        if not block:
+            break
+        output.write(block)
+        digest.update(block)
+        copied += len(block)
+    if copied == limit and stream.read(1):
+        raise ValueError(
+            'Source video grew while it was being copied; the run was '
+            'aborted and no report was written. Retry if the event is still present.')
+    return digest, copied
+
+
+def _source_still_matches(source, size, identity):
+    """Post-copy check: size and file identity must be unchanged.
+
+    Disappearance after a complete copy is allowed, because that is
+    exactly the retention case the temporary copy protects against;
+    the copy itself is already complete and hash-verified at that point.
+    """
+    try:
+        st = source.stat()
+    except FileNotFoundError:
+        return True
+    return st.st_size == size and (st.st_dev, st.st_ino, st.st_mtime_ns) == identity
+
+
 def acquire_source(source, width, height, fps, requested_seconds):
     """Make a bounded, private temporary copy and hash it in one pass.
 
-    Headroom accounts for the copy plus the decoded frames replay will hold
-    in the system temporary directory. A disappearance, growth, or short read
-    during the copy fails cleanly and removes the partial copy; a completed
-    copy is unaffected by later deletion of the original.
+    The hard byte limit is the source size at the start of the copy:
+    reads are capped to that limit during copying, never merely checked
+    afterwards, so a growing source cannot exceed the checked disk
+    budget. Headroom accounts for the copy plus the decoded frames
+    replay will hold in the system temporary directory. A disappearance
+    during the copy, a short read, growth, or a post-copy size/identity
+    change fails cleanly and removes the partial copy; a completed copy
+    is unaffected by later deletion of the original.
     """
-    size = source.stat().st_size
+    st = source.stat()
+    size = st.st_size
+    identity = (st.st_dev, st.st_ino, st.st_mtime_ns)
     temp_dir = Path(tempfile.gettempdir())
     decoded_bytes = width * height * fps * requested_seconds
     needed = size + decoded_bytes + 1_048_576
@@ -336,19 +419,11 @@ def acquire_source(source, width, height, fps, requested_seconds):
             'more headroom and retry.')
     fd, temp_name = tempfile.mkstemp(prefix='magi-replay-', suffix=source.suffix.lower())
     temp_path = Path(temp_name)
-    digest = hashlib.sha256()
-    copied = 0
     try:
         with source.open('rb') as stream, os.fdopen(fd, 'wb') as output:
             fd = None
-            while True:
-                block = stream.read(1024 * 1024)
-                if not block:
-                    break
-                output.write(block)
-                digest.update(block)
-                copied += len(block)
-        if copied != size:
+            digest, copied = _copy_bounded(stream, output, size)
+        if copied != size or not _source_still_matches(source, size, identity):
             raise ValueError(
                 'Source video changed while it was being copied; the run was '
                 'aborted and no report was written. Retry if the event is still present.')
@@ -459,6 +534,7 @@ def main(argv=None):
             source = resolved['video']
             baseline, provenance = baseline_for_event(resolved, args.baseline)
             camera_name, event_directory = resolved['camera_name'], resolved['directory']
+            events_dir = resolved['events_dir']
             mode, camera_id, event_id = 'event', args.camera_id, args.event_id
         else:
             source = args.video.resolve(strict=True)
@@ -466,7 +542,7 @@ def main(argv=None):
                 raise ValueError('Choose a local MP4 or MKV recording')
             baseline = settings(read_json_object(args.baseline, 'Baseline file')) if args.baseline is not None else settings({})
             provenance = 'explicit baseline file' if args.baseline is not None else 'detector defaults'
-            camera_name, event_directory, mode, camera_id, event_id = None, None, 'direct', None, None
+            camera_name, event_directory, events_dir, mode, camera_id, event_id = None, None, None, 'direct', None, None
         candidate = merge_candidate(baseline, candidate_overrides)
         if any(baseline[k]!=candidate[k] for k in ('width','height','fps')):
             raise ValueError('Use the same width, height and fps for a fair detector comparison')
@@ -482,17 +558,17 @@ def main(argv=None):
             default_event_dir = event_directory
             if default_event_dir is None and (source.parent / 'event.json').is_file():
                 default_event_dir = source.parent
-            output = default_report_path(source, camera_id, event_id, default_event_dir)
+            output = default_report_path(source, camera_id, event_id, default_event_dir, events_dir)
             for _ in range(10):
                 if not output.exists():
                     break
-                output = default_report_path(source, camera_id, event_id, default_event_dir)
+                output = default_report_path(source, camera_id, event_id, default_event_dir, events_dir)
             else:
                 raise ValueError('Could not choose a unique default report name; pass --output.')
             if output.parent != Path.cwd() and not output.parent.is_dir():
                 raise ValueError(f'Output directory does not exist: {output.parent}')
         else:
-            output = resolve_output(args.output, source, event_directory)
+            output = resolve_output(args.output, source, event_directory, events_dir)
         width,height,fps=(baseline[k] for k in ('width','height','fps'))
         temp_path, digest, _size = acquire_source(source, width, height, fps, args.seconds)
         started=time.perf_counter()
@@ -523,12 +599,7 @@ def main(argv=None):
                       changed_settings=changed,decode_seconds=decode_seconds,
                       limitations=['Offline normalized sampling, not live receipt timing or capture-drop simulation.', 'Window detection means a trigger anywhere in that window, not verified object identity.', 'Saved events alone cannot measure missed uncaptured objects or whole-night false alarm rates.', 'Tracker timing excludes decode; this is not a Pi capacity benchmark. Labels do not change retention.',
                                    'Loading camera settings does not reproduce live native-substream detection exactly; replay samples at the baseline width, height, and frame rate.'])
-        try:
-            with output.open('x') as out:
-                json.dump(result,out,indent=2,allow_nan=False)
-        except (OSError, ValueError, TypeError):
-            output.unlink(missing_ok=True)
-            raise
+        write_report(output, result)
         print_summary(mode=mode, camera_id=camera_id, camera_name=camera_name, event_id=event_id,
                       source=source, provenance=provenance, requested_seconds=args.seconds,
                       result=result, changed=changed, windows=windows, output=output)

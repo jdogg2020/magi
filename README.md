@@ -158,7 +158,7 @@ They are disabled until configured and never delete original recordings.
 
 Production installation uses OS-managed `python3`, `python3-numpy`, `python3-pil`
 and `ffmpeg` from the Pi's configured package repositories. Runtime dependencies are installed through OS packages, without pip. Application releases are installed separately
-through the manual update command described in `docs/UPDATES.md`. Python 3.11+ is required.
+through the manual update command described in `docs/UPDATES.md`. Python 3.13+ is required.
 `pyproject.toml` declares compatible library ranges for optional source packaging;
 `requirements-dev.lock` records the exact Python library versions tested here.
 The build tool is pinned separately. OS dependency versions deliberately follow

@@ -6,7 +6,7 @@ computer, sign in, and enter your camera details. It watches for tracked motion
 
 ## What you need
 
-- Raspberry Pi 4 running 64-bit Raspberry Pi OS (Bookworm/Trixie; Python 3.11+).
+- Raspberry Pi 4 running 64-bit Raspberry Pi OS (Trixie; Python 3.13+).
 - A wired RTSP camera; your existing Reolink CX820 is the initial target.
 - Free space on the Pi SD card (or an optional mounted USB SSD).
 - Internet access during dependency installation.

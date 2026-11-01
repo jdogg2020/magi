@@ -31,7 +31,6 @@ runs:
           sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends ffmpeg
         fi
     - uses: actions/cache@v4
-      if: inputs.python == '3.11'
       id: browser
       with:
         path: |
@@ -39,13 +38,13 @@ runs:
           ~/.cache/ms-playwright
         key: magi-browser-${{ runner.os }}-${{ runner.arch }}-ubuntu24-playwright-1.56.1-v1
     - name: Download pinned Playwright and Chromium on cache miss
-      if: inputs.python == '3.11' && steps.browser.outputs.cache-hit != 'true'
+      if: steps.browser.outputs.cache-hit != 'true'
       shell: bash
       run: |
         npm install --prefix /tmp/magi-browser --no-package-lock playwright@1.56.1
         /tmp/magi-browser/node_modules/.bin/playwright install chromium --only-shell
     - name: Install missing Chromium system libraries
-      if: inputs.python == '3.11' && inputs.cache-only != 'true'
+      if: inputs.cache-only != 'true'
       shell: bash
       run: |
         # Probe the cached browser, including its dynamic libraries. A cache

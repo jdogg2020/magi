@@ -30,9 +30,6 @@ jobs:
     # so future PRs can restore them, even when main reuses verification.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        python: ['3.11', '3.13']
     steps:
       - uses: actions/checkout@v6
         with:
@@ -40,16 +37,13 @@ jobs:
       - uses: ./.github/actions/verification-dependencies
         timeout-minutes: 10
         with:
-          python: '${{ matrix.python }}'
+          python: '3.13'
           cache-only: 'true'
 
   verify:
     needs: verification-plan
     if: needs.verification-plan.outputs.reuse != 'true'
     runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        python: ['3.11', '3.13']
     steps:
       - uses: actions/checkout@v6
         with:
@@ -57,7 +51,7 @@ jobs:
       - uses: ./.github/actions/verification-dependencies
         timeout-minutes: 10
         with:
-          python: '${{ matrix.python }}'
+          python: '3.13'
       - run: python -m unittest discover -s tests -v
         env:
           PYTHONPATH: src
@@ -74,9 +68,9 @@ jobs:
         env:
           PYTHONPATH: src
           NODE_PATH: /tmp/magi-browser/node_modules
-          MAGI_BROWSER_TEST: ${{ matrix.python == '3.11' && '1' || '0' }}
+          MAGI_BROWSER_TEST: '1'
       - name: Upload rendered dashboard snapshots
-        if: always() && matrix.python == '3.11'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: synthetic-dashboard-snapshots

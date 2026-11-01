@@ -117,7 +117,7 @@ visibility is enabled by the owner in repository settings. License selection
 remains pending; changing visibility does not add a license file.
 
 Work on branches and review changes before merging to `main`. The included
-workflow runs tests on Python 3.11 and 3.13, checks syntax and builds an archive.
+workflow runs tests on Python 3.13, checks syntax and builds an archive.
 After tests pass on `main`, a new value in `src/magi/__init__.py` creates a
 GitHub preview release (for example `v0.4.0`) with the archive and checksum.
 Existing releases and tags are left unchanged; bump the version for each new

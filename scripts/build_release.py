@@ -16,7 +16,7 @@ def build(destination):
         for path in (ROOT / directory).rglob('*'):
             if path.is_file() and '__pycache__' not in path.parts and path.suffix != '.pyc':
                 files[path.relative_to(ROOT).as_posix()] = path.read_bytes()
-    for name in ('README.md', 'START-HERE.md', 'config.example.json', 'pyproject.toml',
+    for name in ('LICENSE', 'README.md', 'START-HERE.md', 'config.example.json', 'pyproject.toml',
                  'requirements-dev.lock', 'requirements-identification.lock', '.gitignore'):
         files[name] = (ROOT / name).read_bytes()
     manifest = {'format': 1, 'version': version, 'config_schema': 1,

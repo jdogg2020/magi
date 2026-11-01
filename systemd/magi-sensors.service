@@ -20,7 +20,9 @@ CapabilityBoundingSet=CAP_DAC_OVERRIDE
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/run/magi-sensors /var/lib/magi-sensors
+# chronyc creates a client socket beside chronyd's socket. Optional when chrony
+# is not installed; the collector also supports the system time service.
+ReadWritePaths=/run/magi-sensors /var/lib/magi-sensors -/run/chrony
 RestrictAddressFamilies=AF_UNIX
 LockPersonality=true
 

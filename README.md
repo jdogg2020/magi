@@ -188,7 +188,7 @@ The web service refuses live-camera operation as root.
 ## Status
 
 Version 0.14.0 is an installable prototype, not an unattended-production release.
-The source license is still pending the owner's decision before public release.
+Magi is licensed under the [Apache License, Version 2.0](LICENSE). Third-party dependencies retain their respective licenses.
 Live Pi/camera acceptance and a 24-hour run are not claimed as completed.
 
 See [architecture](docs/ARCHITECTURE.md), [scope](docs/PROJECT-SPEC.md),

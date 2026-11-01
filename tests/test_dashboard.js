@@ -23,6 +23,8 @@ class Element {
   play(){this.playCalls=(this.playCalls||0)+1;return Promise.resolve();}
   pause(){}
   load(){}
+  focus(){this.focused=true;}
+  scrollIntoView(){this.scrolled=true;}
 }
 const html = fs.readFileSync(path.join(__dirname,'../src/magi/web/index.html'),'utf8');
 const elements={};
@@ -31,7 +33,7 @@ for (const match of html.matchAll(/<([a-z][a-z0-9]*)\b([^>]*\bid="([^"]+)"[^>]*)
  const classes=attributes.match(/class="([^"]*)"/); if(classes) classes[1].split(' ').forEach(c=>el.classList.add(c));
  const value=attributes.match(/value="([^"]*)"/); if(value) el.value=value[1]; el.checked=/\bchecked\b/.test(attributes);elements[el.id]=el;
 }
-const tabs=['overview','events','settings','updates'].map(id=>elements[id]);
+const tabs=['overview','events','settings','storage','updates'].map(id=>elements[id]);
 const nav=tabs.map(tab=>{const el=new Element('button');el.dataset.tab=tab.id;return el;});
 const document={getElementById:id=>{assert(elements[id],`Missing HTML ID: ${id}`);return elements[id];},querySelectorAll:selector=>selector==='.tab'?tabs:selector==='.nav'?nav:[],createElement:tag=>new Element(tag),hidden:false};
 let cookie='';
@@ -360,6 +362,13 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(elements['event-camera'].children.some(c=>c.value===addedId && c.textContent.includes('(removed)')));
  assert(!vm.runInContext('cameraTiles.has('+JSON.stringify(addedId)+')',context));
  assert(removedInventory.cameras.some(c=>c.id===cameraId),'Other cameras must remain active');
+ await vm.runInContext('purgeStorage('+JSON.stringify(addedId)+',"remove_archive")',context);
+ assert(elements['storage-purge-status'].textContent.includes('Cancelled'));
+ assert((await vm.runInContext("api('/api/cameras')",context)).archived_cameras.some(c=>c.id===addedId));
+ context.confirm=()=>true;
+ await vm.runInContext('purgeStorage('+JSON.stringify(addedId)+',"remove_archive")',context);
+ assert(elements['storage-purge-status'].textContent.includes('Archived camera removed'));
+ assert(!(await vm.runInContext("api('/api/cameras')",context)).archived_cameras.some(c=>c.id===addedId));
  await elements.logout.onclick();assert(!elements.login.classList.contains('hidden'));
  console.log('Dashboard '+cameraId+' behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, image-first review, playback from zero, full-frame viewing, substream track timing, tracker toggles, detection timeline exact pixel overlay mode, assisted star selection and invalid-fit rejection, event rows, operator labels/notes, bulk protection, trash/restore, sign-out.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

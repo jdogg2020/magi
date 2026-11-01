@@ -374,3 +374,12 @@ Adds threshold/headroom, trash age, protected/in-use preservation, archive usage
 shared volume and hardlink accounting, bounded scan failure and log-maintenance
 tests. Dashboard and Chromium checks cover Storage navigation and settings.
 These are local synthetic checks, not a Pi soak test.
+
+## 0.17.1 explicit storage deletion
+
+Tests cover preview cancellation/expiry, repeated confirmation, bounded batches,
+new and replaced events, protection changes and calibration use between preview
+and execution, damaged annotations, original-camera forgetting across restart,
+other-camera preservation and secondary config removal. Dashboard/Chromium tests
+exercise storage deep links and cancellation/confirmation of archive deletion.
+These remain synthetic checks; no remote Pi access is used.

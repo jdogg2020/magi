@@ -112,6 +112,16 @@ class PurgeTests(unittest.TestCase):
         self.assertTrue(restarted.manage_camera({'action':'add','name':'New'})['id'].startswith('cam-'))
         with self.assertRaises(ValueError):restarted.camera('primary')
 
+    def test_storage_cache_tracks_added_removed_and_forgotten_cameras_immediately(self):
+        self.station.storage_status()
+        identity=self.station.manage_camera({'action':'add','name':'New'})['id']
+        self.assertIn(identity,[c['id'] for c in self.station.storage_status()['cameras']])
+        self.station.manage_camera({'action':'remove','id':identity})
+        row=next(c for c in self.station.storage_status()['cameras'] if c['id']==identity)
+        self.assertTrue(row['archived'])
+        self.confirm(self.preview('remove_archive',identity))
+        self.assertNotIn(identity,[c['id'] for c in self.station.storage_status()['cameras']])
+
     def test_secondary_archive_removed_from_registry_and_private_config(self):
         identity=self.station.manage_camera({'action':'add','name':'Old'})['id']
         self.station.manage_camera({'action':'remove','id':identity})

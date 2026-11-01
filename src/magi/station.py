@@ -77,6 +77,7 @@ class Station:
         self.storage_scan_lock = threading.Lock()
         self.storage_cache = None
         self.storage_cache_at = 0
+        self.storage_cache_registry = None
         # Validate the existing private config before creating any workers/files.
         Config.load(self.path)
         if self.registry_path.exists():
@@ -189,13 +190,15 @@ class Station:
         if not self.storage_scan_lock.acquire(blocking=False):
             return {'busy': True, 'cameras': [], 'volumes': [], 'partial': True}
         try:
-            if self.storage_cache is not None and time.monotonic()-self.storage_cache_at < 30:
-                return copy.deepcopy(self.storage_cache)
             with self.lock:
+                registry_key = json.dumps(self.registry, sort_keys=True)
+                if self.storage_cache is not None and self.storage_cache_registry == registry_key and time.monotonic()-self.storage_cache_at < 30:
+                    return copy.deepcopy(self.storage_cache)
                 entries = [(dict(item), worker.app.cfg if worker.app else None,
                             worker.app.read()['status']['state'] if worker.app else 'worker_failed')
                            for item in self.registry['cameras'] if not self.is_forgotten(item) for worker in [self.workers[item['id']]]]
             self.storage_cache = report(entries)
+            self.storage_cache_registry = registry_key
             self.storage_cache_at = time.monotonic()
             return copy.deepcopy(self.storage_cache)
         finally:

@@ -857,7 +857,7 @@ async function purgeStorage(camera,mode){
   const status=$('storage-purge-status');status.textContent='Preparing deletion preview…';
   try {
     const preview=await api('/api/station/storage/purge',{action:'preview',camera_id:camera,mode});
-    if(!preview.count && mode!=='remove_archive'){status.textContent='No eligible events to purge.';return;}
+    if(!preview.count && mode!=='remove_archive'){await api('/api/station/storage/purge',{action:'cancel',token:preview.token});status.textContent='No eligible events to purge.';return;}
     const message=`${preview.scope}: permanently delete ${preview.count} unprotected events (about ${bytes(preview.estimated_bytes)} of files)? This includes originals, previews, notes and metadata. ${preview.retained} protected/unfinished/unreadable entries retained. Events in use will be rechecked and skipped. ${mode==='remove_archive'?'The removed camera will also disappear from Storage and Events; its leftover buffers will be deleted. ':''}This cannot be undone. File size is not guaranteed reclaimed space.`;
     if(!confirm(message)){await api('/api/station/storage/purge',{action:'cancel',token:preview.token});status.textContent='Cancelled. No files deleted.';return;}
     let step=0,result;

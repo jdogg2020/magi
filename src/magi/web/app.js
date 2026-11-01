@@ -55,15 +55,26 @@ async function refreshCameras() {
         const link=cameraSettingsLink(camera,'Settings');
         const save=document.createElement('button');save.type='button';save.className='secondary';save.textContent='＋ Save an event';
         const feedback=document.createElement('p');feedback.setAttribute('role','status');feedback.className='muted';
-        tile={card,title,state,count,analysis,img,empty,save,feedback,url:null};
-        save.onclick=async()=>{save.disabled=true;try{await api('/api/trigger',{},camera.id);feedback.textContent='Event started. Waiting for post-roll and assembly.';}catch(error){feedback.textContent=error.message;}finally{save.disabled=false;}};
+        tile={card,title,state,count,analysis,img,empty,save,feedback,url:null,pendingEvent:null,saving:false};
+        save.onclick=async()=>{tile.saving=true;save.disabled=true;try{const result=await api('/api/trigger',{},camera.id);tile.pendingEvent=result.event_id;tile.eventStatusFailures=0;feedback.textContent='Event started. Waiting for post-roll and assembly.';}catch(error){feedback.textContent=error.message;}finally{tile.saving=false;save.disabled=!!tile.pendingEvent;}};
         actions.append(save,link);card.append(title,state,count,analysis,img,empty,actions,feedback);grid.append(card);cameraTiles.set(camera.id,tile);
       }
       tile.title.textContent=camera.name;tile.img.alt=camera.name+' latest detection frame';
       tile.state.textContent=`Main: ${camera.state.replaceAll('_',' ')} · Substream: ${(camera.substream?.state || 'idle').replaceAll('_',' ')} · Detection: ${(camera.analysis?.state || 'idle').replaceAll('_',' ')}`;
       tile.count.textContent=`${camera.event_count_since_start || 0} events this session · ${bytes(camera.storage_used_bytes)} used`;
       const a=camera.analysis || {};tile.analysis.textContent=`${a.width || '?'}×${a.height || '?'} @ ${a.fps || '?'} fps · ${a.frames || 0} detection frames · ${a.dropped_frames || 0} dropped`;
-      tile.save.disabled=camera.state!=='buffering';
+      tile.save.disabled=tile.saving || !!tile.pendingEvent || camera.state!=='buffering';
+      if(tile.pendingEvent && !tile.saving){
+        try {
+          const event=await api('/api/clips/'+encodeURIComponent(tile.pendingEvent)+'/metadata',undefined,camera.id);
+          tile.eventStatusFailures=0;
+          const messages={collecting:'Saving event: collecting post-roll…',assembling:'Saving event: assembling recording…',complete:'Event saved. Available in Events.',interrupted:'Event saved with an interruption. Review it in Events.',failed:'Event could not be saved. Check Events and service status.'};
+          tile.feedback.textContent=messages[event.state] || 'Checking event status…';
+          if(['complete','interrupted','failed'].includes(event.state))tile.pendingEvent=null;
+        }catch(error){tile.eventStatusFailures=(tile.eventStatusFailures || 0)+1;tile.feedback.textContent=tile.eventStatusFailures<3 ? 'Event status unavailable. Retrying…' : 'Could not confirm the event result. Check Events.';if(tile.eventStatusFailures>=3)tile.pendingEvent=null;}
+      }
+      tile.save.disabled=tile.saving || !!tile.pendingEvent || camera.state!=='buffering';
+      tile.save.textContent=tile.saving || tile.pendingEvent ? 'Saving event…' : '＋ Save an event';
       if(camera.state==='worker_failed' || camera.frame_age_seconds==null || camera.frame_age_seconds>=10){tile.img.classList.add('hidden');tile.empty.classList.remove('hidden');}
     }
     const recording=result.cameras.filter(c=>c.state==='buffering').length;
@@ -195,7 +206,7 @@ function renderSensors(data) {
   latestSensors=data;
   const gps=data.gnss || {}, clock=data.clock || {}, aircraft=data.aircraft || {}, loc=data.effective_location || {};
   $('sensor-status').textContent='GPS: '+(data.station_location?.movement_detected ? 'station moved — reset location and recalibrate' : (gps.state || 'unavailable').replaceAll('_',' '))+(gps.utc?' · Fix UTC '+gps.utc:'')+(data.age_seconds!=null?' · Status age '+data.age_seconds+'s':'');
-  $('sensor-location').textContent='Location: '+(loc.location_effective_source || 'unknown').replaceAll('_',' ')+' · '+(loc.latitude ?? '—')+', '+(loc.longitude ?? '—')+(gps.altitude_msl_m!=null?' · GPS altitude '+gps.altitude_msl_m+' m above mean sea level':'')+' · WGS84 elevation: '+(loc.altitude_effective_source || 'manual').replaceAll('_',' ');
+  $('sensor-location').textContent='Location: '+(loc.location_effective_source || 'unknown').replaceAll('_',' ')+' · '+(loc.latitude ?? '—')+', '+(loc.longitude ?? '—')+(gps.altitude_msl_m!=null?' · GPS altitude '+gps.altitude_msl_m+' m above mean sea level':'')+' · WGS84 elevation: '+(loc.altitude_effective_source || 'manual').replaceAll('_',' ')+(data.nmea && data.nmea.state!=='not_configured'?' · NMEA: '+data.nmea.state.replaceAll('_',' '):'');
   $('sensor-clock').textContent='Pi clock: '+(clock.state || 'unknown')+' · Source: '+(clock.source || 'unknown')+' · Serial GPS time is coarse, not PPS precision';
   $('sensor-aircraft').textContent='Local aircraft: '+(aircraft.state || 'unavailable').replaceAll('_',' ')+' · '+(aircraft.aircraft ?? 0)+' tracked · '+(aircraft.usable_positions ?? 0)+' usable geometric positions'+(aircraft.age_seconds!=null?' · Feed age '+aircraft.age_seconds+'s':'');
   if(settingsLoaded && $('id-location_source').value==='gnss') {

@@ -19,7 +19,7 @@ sudo python3 /opt/magi/scripts/setup_sensors.py \
   --gnss-time
 ```
 
-An optional `--nmea-port /dev/serial/by-id/YOUR-NMEA-CANDIDATE` reads (never sends commands to) that interface. It is only accepted as an altitude source after checksummed GGA sentences agree with the AT fix in time and position. A SIM7600 interface number is not evidence of its function. Do not select a port owned by another application. Setup refuses active ModemManager/gpsd or a busy selected port.
+An optional `--nmea-port /dev/serial/by-id/YOUR-NMEA-CANDIDATE` keeps that interface open and continuously drains it (never sends commands). This avoids modem-side queues replaying old fixes when a port is opened briefly. Only GGA received within 2.5 seconds and matching the current AT fix can provide height. It is only accepted as an altitude source after checksummed GGA sentences agree with the AT fix in time and position. A SIM7600 interface number is not evidence of its function. Do not select a port owned by another application. Setup refuses active ModemManager/gpsd or a busy selected port.
 
 Fresh installation supports `--gnss-port=PATH`, `--nmea-port=PATH`, `--adsb-serial=SERIAL`, and `--gnss-time` on `scripts/install.sh`. Sensor setup is optional and installs its own dependencies even if the main install uses --skip-dependencies. No SSH server is installed implicitly.
 

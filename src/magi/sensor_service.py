@@ -78,17 +78,42 @@ def parse_gga(line, fix):
         return None
 
 
-def nmea_height(path, fix):
-    import serial
-    # Candidate interface is only accepted after checksummed, matching GGA data.
-    with serial.Serial(path, 115200, timeout=.15, write_timeout=1, exclusive=True) as port:
-        port.reset_input_buffer()
-        deadline = time.monotonic()+1.5
-        while time.monotonic() < deadline:
-            value = parse_gga(port.readline(256).decode('ascii', errors='replace').strip(), fix)
-            if value:
-                return value
-    return {}
+class NmeaReader:
+    """Continuously drain the read-only NMEA stream; retain only recent GGA."""
+    def __init__(self, path, stop):
+        self.path, self.stop = path, stop
+        self.lock = threading.Lock()
+        self.latest = None
+        self.state = 'waiting'
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def run(self):
+        import serial
+        while not self.stop.is_set():
+            try:
+                with serial.Serial(self.path, 115200, timeout=.2, exclusive=True) as port:
+                    while not self.stop.is_set():
+                        line = port.readline(512).decode('ascii', errors='replace').strip()
+                        if line.startswith(('$GPGGA,', '$GNGGA,')):
+                            with self.lock:
+                                self.latest = (line, time.monotonic())
+                                self.state = 'receiving'
+            except (OSError, ValueError, serial.SerialException):
+                with self.lock:
+                    self.latest = None
+                    self.state = 'device_unavailable'
+                self.stop.wait(2)
+
+    def height(self, fix):
+        with self.lock:
+            latest, state = self.latest, self.state
+        if latest is None:
+            return {}, state
+        line, received = latest
+        if time.monotonic() - received > 2.5:
+            return {}, 'stale'
+        value = parse_gga(line, fix)
+        return (value, 'verified') if value else ({}, 'waiting_for_matching_fix')
 
 
 def query(port, command):
@@ -190,12 +215,16 @@ def main():
         station = None
     tracker = FixTracker(station)
     saved_station = dict(station) if station else None
+    nmea = NmeaReader(config['nmea_port'], stop) if config.get('nmea_port') else None
+    if nmea:
+        nmea.thread.start()
     port = None
     last_fix = None
     while not stop.is_set():
         status = {'schema': 1, 'state': 'available', 'updated_unix': time.time(),
                   'clock': clock_status(), 'station_location': tracker.station,
-                  'gnss': {'state': 'not_configured'}, 'time_sample': 'not_sent'}
+                  'gnss': {'state': 'not_configured'}, 'time_sample': 'not_sent',
+                  'nmea': {'state': 'waiting_for_gnss' if nmea else 'not_configured'}}
         try:
             if config.get('at_port'):
                 if port is None:
@@ -215,11 +244,10 @@ def main():
                 elapsed = time.monotonic()-mono
                 fix = parse_fix(next(s for s in response if s.startswith('+CGPSINFO:')))
                 if fix:
-                    if config.get('nmea_port'):
-                        try:
-                            fix.update(nmea_height(config['nmea_port'], fix))
-                        except (OSError, ValueError, serial.SerialException):
-                            pass
+                    if nmea:
+                        height, nmea_state = nmea.height(fix)
+                        fix.update(height)
+                        status['nmea'] = {'state': nmea_state}
                     state = tracker.accept(fix, mono+elapsed)
                     last_fix = {**fix, 'received_unix': received}
                     status['gnss'] = {**last_fix, 'state': state}
@@ -250,6 +278,8 @@ def main():
         stop.wait(5)
     if port:
         port.close()
+    if nmea:
+        nmea.thread.join(3)
 
 
 if __name__ == '__main__':

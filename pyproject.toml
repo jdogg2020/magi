@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magi-capture"
-version = "0.16.3"
+version = "0.16.4"
 description = "Local-first, continuously buffered sky-camera recording"
 requires-python = ">=3.13"
 license = {file = "LICENSE"}

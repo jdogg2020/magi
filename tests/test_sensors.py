@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from magi.sensor_service import parse_fix, parse_gga, FixTracker, send_clock, clock_status
+from magi.sensor_service import parse_fix, parse_gga, FixTracker, send_clock, clock_status, NmeaReader
 from subprocess import CompletedProcess
 from magi.sensors import effective, snapshot, aircraft_status
 from magi.identification import validate, Identifier
@@ -44,6 +44,23 @@ class SensorTests(unittest.TestCase):
         self.assertAlmostEqual(result['elevation_m'], 334.9)
         self.assertIsNone(parse_gga(line[:-2]+'00', parse_fix(LINE)))
         self.assertIsNone(parse_gga(line, parse_fix(LINE.replace('004912.0','005012.0'))))
+
+    def test_nmea_cache_requires_recent_receipt_and_matching_fix(self):
+        import threading
+        reader = NmeaReader('/unused', threading.Event())
+        body = 'GPGGA,004912.00,4000.000000,N,10000.000000,W,1,08,0.9,364.9,M,-30.0,M,,'
+        checksum = 0
+        for char in body: checksum ^= ord(char)
+        line = f'${body}*{checksum:02X}'
+        reader.latest = (line, 100)
+        with patch('magi.sensor_service.time.monotonic', return_value=101):
+            value, state = reader.height(parse_fix(LINE))
+            self.assertEqual(state, 'verified')
+            self.assertAlmostEqual(value['elevation_m'], 334.9)
+            # Modem backlog can arrive now yet describe an older epoch.
+            self.assertEqual(reader.height(parse_fix(LINE.replace('004912.0','004942.0')))[1], 'waiting_for_matching_fix')
+        with patch('magi.sensor_service.time.monotonic', return_value=104):
+            self.assertEqual(reader.height(parse_fix(LINE)), ({}, 'stale'))
 
     def test_frozen_time_and_station_movement(self):
         fix = parse_fix(LINE)

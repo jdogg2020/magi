@@ -27,14 +27,16 @@ from .identification import Identifier, defaults as identification_defaults
 from .media import Media
 from .previews import Previews
 from .recorder import Recorder
-from .storage import atomic_json
+from .storage import atomic_json, Volume
 
 LOG = logging.getLogger('magi')
 EVENT_ID = re.compile(r'^\d{8}T\d{6}-[a-f0-9]{12}$')
 
 
 class Application:
-    def __init__(self, path, *, camera_id="primary", camera_name="Camera 1"):
+    def __init__(self, path, *, camera_id="primary", camera_name="Camera 1", archive_only=False):
+        self.archive_only = archive_only
+        self.archive_volume = None
         self.path = Path(path)
         self.camera_id, self.camera_name = camera_id, camera_name
         self.cfg = Config.load(path)
@@ -62,6 +64,9 @@ class Application:
         self.last_trigger_error = None
         self.identifier = Identifier(self.cfg)
         self.media = Media(self.cfg)
+        if self.archive_only:
+            self.media.close()
+            self.identifier.close()
         self._snapshot()
 
     def read(self):
@@ -69,6 +74,8 @@ class Application:
             return copy.deepcopy(self.view)
 
     def request(self, command, value=None):
+        if self.archive_only and command not in ('events_list', 'events_update'):
+            raise ValueError('Camera removed. Its recordings remain in Events.')
         task = {'command': command, 'value': value, 'done': threading.Event(), 'cancel': threading.Event()}
         try:
             self.queue.put_nowait(task)
@@ -153,6 +160,9 @@ class Application:
         self.calibration_report = active_report(new, self.cfg)
         self.identifier = Identifier(self.cfg)
         self.media = Media(self.cfg)
+        if self.archive_only:
+            self.media.close()
+            self.identifier.close()
         self.last_error = None
         self.next_start = 0
         self._snapshot()
@@ -251,6 +261,9 @@ class Application:
                 task['done'].set()
 
     def tick(self):
+        if self.archive_only:
+            self._commands()
+            return
         self._commands()
         camera_settings = self.camera_setup.take_completed()
         if camera_settings:
@@ -528,7 +541,7 @@ class Application:
                 review = read_review(path.parent)
                 if review['trashed_at'] is not None:
                     continue
-                if (not media_considered and index < 20 and meta['state'] in ('complete', 'interrupted')
+                if (not self.archive_only and not media_considered and index < 20 and meta['state'] in ('complete', 'interrupted')
                         and meta.get('trigger_unix', 0) >= self.review_since
                         and not media.get('status') in ('ready', 'failed')
                         and meta['id'] not in self.media.protected()):
@@ -536,7 +549,7 @@ class Application:
                     self.queue_media(path.parent, meta)
                 report_path = path.parent / 'identification.json'
                 report = optional_json(report_path)
-                if not report and (self.cfg.identification['enabled'] or meta.get('measurement_geometry',{}).get('calibrated')) and meta['state'] in ('complete', 'interrupted'):
+                if not self.archive_only and not report and (self.cfg.identification['enabled'] or meta.get('measurement_geometry',{}).get('calibrated')) and meta['state'] in ('complete', 'interrupted'):
                     self.identifier.submit(path.parent, meta)
                 clips.append({key: meta.get(key) for key in
                               ('id', 'camera_id', 'camera_name', 'state', 'trigger_type', 'detection_types', 'retention', 'trigger_unix', 'trigger_utc', 'trigger_count',
@@ -556,12 +569,19 @@ class Application:
                 continue
         return clips
 
+    def event_volume(self):
+        if self.recorder:
+            return self.recorder.volume
+        if self.archive_only:
+            if self.archive_volume is None:
+                self.archive_volume = Volume(self.cfg)
+            return self.archive_volume
+        raise ReviewError('Event management needs the recording volume to be available.')
+
     def event_directory(self, event_id):
         if not isinstance(event_id,str) or not EVENT_ID.fullmatch(event_id):
             raise ReviewError('Invalid event ID.')
-        if not self.recorder:
-            raise ReviewError('Event management needs the recording volume to be available.')
-        self.recorder.volume.check()
+        self.event_volume().check()
         directory = self.cfg.root / 'events' / event_id
         if self.cfg.root.is_symlink() or (self.cfg.root/'events').is_symlink() or (directory/'event.json').is_symlink() or directory.is_symlink() or not directory.is_dir() or directory.resolve().parent != (self.cfg.root/'events').resolve():
             raise ReviewError('Event is unavailable or was removed by retention.')
@@ -572,10 +592,10 @@ class Application:
         # Station aggregation requests a prefix in one scan, before global paging.
         if window is not None:
             f['offset'], f['limit'] = window
-        recorder = self.recorder
-        if not recorder:
+        if not self.recorder and not self.archive_only:
             return {'events':[], 'total':0,'offset':f['offset'],'limit':f['limit'],'message':'Waiting for the recording volume.','labels':[]}
-        recorder.volume.check()
+        volume = self.event_volume()
+        volume.check()
         paths = sorted((self.cfg.root/'events').glob('*/event.json'),reverse=f['sort']=='newest')
         if (self.cfg.root/'events').is_symlink():
             raise ReviewError('Event storage path is unsafe.')
@@ -622,7 +642,7 @@ class Application:
                 rows.append(row)
             except (OSError, ValueError, TypeError, KeyError):
                 continue
-        recorder.volume.check()
+        volume.check()
         return {'events':rows,'total':len(matched),'offset':f['offset'],'limit':f['limit'],'labels':sorted(labels)}
 
     def manage_events(self, value):
@@ -665,7 +685,7 @@ class Application:
                     if review['trashed_at'] is not None:
                         raise ReviewError('Restore the event before editing its review.')
                     review.update(patch)
-                self.recorder.volume.check()
+                self.event_volume().check()
                 review.update(schema=1,updated_unix=time.time())
                 atomic_json(directory/'review.json',review)
                 updated.append(event_id)
@@ -684,6 +704,9 @@ class Application:
             clips = self.list_clips()
         except OSError:
             clips = []
+        if self.archive_only:
+            status['state'] = 'archived'
+            status['automatic_detection'] = False
         status['sensors'] = {**sensor_snapshot(), 'aircraft': aircraft_status(),
                              'effective_location': {k: sensor_effective(self.cfg.identification)[k] for k in ('latitude','longitude','elevation_m','location_effective_source','altitude_effective_source')}}
         status.update({'camera_setup': self.camera_setup.read(), 'camera_info': self.camera_info.read(), 'error': self.last_error, 'trigger_note': self.last_trigger_error,
@@ -706,7 +729,9 @@ class Application:
     def clip_path(self, event_id, kind):
         if not EVENT_ID.fullmatch(event_id):
             raise ValueError('Invalid event ID.')
-        if self.recorder:
+        if self.archive_only:
+            self.event_volume().check()
+        elif self.recorder:
             self.recorder.volume.check()
         elif self.cfg.require_mount and not os.path.ismount(self.cfg.mount):
             raise ValueError('Recording volume is not mounted.')

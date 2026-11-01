@@ -54,6 +54,40 @@ class StationTests(unittest.TestCase):
         self.assertEqual(restarted.camera(identity).cfg.root, Path(raw['storage']['directory']))
         self.assertEqual(self.path.read_bytes(), original)
 
+    def test_removal_preserves_archive_and_primary_station_settings_after_restart(self):
+        station = self.station()
+        identity = station.manage_camera({'action':'add','name':'East'})['id']
+        original = self.path.read_bytes()
+        cfgpath = station.config_directory / (identity+'.json')
+        private = cfgpath.read_bytes()
+        app = station.camera(identity)
+        event_id = '20261101T020000-123456789abc'
+        directory = app.cfg.root/'events'/event_id
+        directory.mkdir(parents=True)
+        atomic_json(directory/'event.json', {'id':event_id,'state':'complete','trigger_unix':1793498400,'trigger_type':'manual'})
+        (directory/'clip.mkv').write_bytes(b'preserved recording')
+        result = station.manage_camera({'action':'remove','id':identity})
+        self.assertTrue(result['recordings_preserved'])
+        self.assertEqual(station.cameras()['archived_cameras'][0]['id'], identity)
+        self.assertEqual(len(station.cameras()['cameras']), 1)
+        self.assertEqual(station.event_page({'camera_id':identity})['total'], 1)
+        self.assertEqual(station.camera(identity).clip_path(event_id,'original').read_bytes(), b'preserved recording')
+        with self.assertRaises(ValueError): station.camera(identity).request('trigger')
+        with self.assertRaises(ValueError): station.manage_camera({'action':'restart','id':identity})
+        review = station.manage_events({'targets':[{'camera_id':identity,'id':event_id}], 'action':'update', 'changes':{'reviewed':True}})
+        self.assertEqual(len(review['updated']), 1)
+        station.manage_camera({'action':'remove','id':'primary'})
+        self.assertEqual(station.cameras()['cameras'], [])
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(cfgpath.read_bytes(), private)
+        station.close()
+        restarted = self.station()
+        self.assertEqual(restarted.cameras()['cameras'], [])
+        self.assertTrue(restarted.camera().archive_only)
+        self.assertIsNone(restarted.camera().recorder)
+        self.assertEqual(restarted.event_page({})['total'], 1)
+        self.assertTrue(restarted.manage_camera({'action':'add','name':'Replacement'})['id'].startswith('cam-'))
+
     def test_one_bad_camera_config_does_not_disable_primary(self):
         station = self.station()
         identity = station.manage_camera({'action': 'add', 'name': 'East'})['id']
@@ -343,5 +377,16 @@ class StationTests(unittest.TestCase):
                 self.assertNotEqual(*events)
                 with self.assertRaises(ValueError):
                     station.camera().clip_path(events[1], 'metadata')
+                primary = station.camera()
+                before = primary.read()['status']['analysis']['frames']
+                station.manage_camera({'action':'remove','id':identity})
+                self.assertIs(station.camera(), primary)
+                self.assertEqual(station.cameras()['cameras'][0]['id'], 'primary')
+                metadata = station.camera(identity).clip_path(events[1], 'metadata')
+                self.assertIn(json.loads(metadata.read_text())['state'], ('complete', 'interrupted'))
+                deadline = time.monotonic()+5
+                while primary.read()['status']['analysis']['frames'] <= before and time.monotonic()<deadline:
+                    time.sleep(.05)
+                self.assertGreater(primary.read()['status']['analysis']['frames'], before)
             finally:
                 release.set()

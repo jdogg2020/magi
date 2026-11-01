@@ -1,6 +1,6 @@
 """Reuse successful PR verification only for the exact source tree being released.
 
-The workflow records a tree-named artifact after *both* verification jobs pass.
+The workflow records a tree-named artifact after the Python 3.13 and browser verification job passes.
 Only artifact metadata is read; PR artifacts are never downloaded or executed.
 Missing/expired evidence or API errors deliberately fall back to full checks.
 """

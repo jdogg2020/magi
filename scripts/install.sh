@@ -94,7 +94,7 @@ if ! "$skip_dependencies"; then
 fi
 current_step='Step 3/7: Validate dependencies'
 progress "$current_step"
-/usr/bin/python3 -c 'import sys,numpy,PIL; assert sys.version_info >= (3,11), "Python 3.11+ required"'
+/usr/bin/python3 -c 'import sys,numpy,PIL; assert sys.version_info >= (3,13), "Python 3.13+ required"'
 command -v ffmpeg
 command -v ffprobe
 if ! ffmpeg -hide_banner -encoders 2>/dev/null | awk '{print $2}' | grep -qx libx264; then

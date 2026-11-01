@@ -167,7 +167,7 @@ class Updater:
         # Validate configuration and required imports as the actual service user.
         code = ("import sys,numpy,PIL; from magi.config import Config; "
                 "from magi.application import Application; from magi.web import Server; "
-                "assert sys.version_info >= (3,11); Config.load('/etc/magi/config.json')")
+                "assert sys.version_info >= (3,13); Config.load('/etc/magi/config.json')")
         self.service_user_python(candidate, '-c', code)
         LOG.info('Checking FFmpeg and systemd unit…')
         self.command('/usr/bin/ffmpeg', '-version')

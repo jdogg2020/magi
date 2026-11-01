@@ -1,3 +1,5 @@
+> Current baseline (v0.16.1 onward): Python 3.13 on Debian 13/Trixie. Historical entries below describe the Python versions tested for earlier releases. CI now runs one Python 3.13 job including the rendered browser tests.
+
 # Magi 0.11.0 event management and candidate profiles
 
 Synthetic tests cover brief broad flashes with a stable baseline, rejected slow/

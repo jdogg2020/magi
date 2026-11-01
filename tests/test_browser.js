@@ -98,7 +98,11 @@ const base = process.argv[2];
     assert((await page.locator('#review-video').getAttribute('src')).includes(`/api/cameras/${event.camera}/clips/${event.id}/`));
     await page.locator('#review-full-video').click();
     await page.waitForFunction(()=>document.getElementById('review-video').getAttribute('src')?.endsWith('/full-video'),{},{timeout:30000});
-    await page.waitForFunction(()=>document.getElementById('review-video').readyState>=2);
+    try { await page.waitForFunction(()=>document.getElementById('review-video').readyState>=2); }
+    catch(error) {
+      console.error('Full-quality playback diagnostics',await page.locator('#review-video').evaluate(v=>({source:v.currentSrc,ready:v.readyState,network:v.networkState,error:v.error?.message,codec:v.canPlayType('video/mp4; codecs="avc1.42E01E"'),paused:v.paused,status:document.getElementById('review-video-status').textContent})));
+      throw error;
+    }
     assert((await page.locator('#review-original').getAttribute('href')).includes(`/api/cameras/${event.camera}/clips/${event.id}/original`));
     assert(await page.locator('#show-tracker').isDisabled());
     await page.screenshot({path:'dist/browser/review-categories.png',fullPage:true});

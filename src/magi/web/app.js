@@ -730,6 +730,8 @@ function selectReviewVideo() {
   $('show-pixels').disabled = !analysis; $('show-boxes').disabled = !analysis;
   const video = $('review-video');
   video.src = eventPath(reviewEvent,$('review-quality').value === 'full' ? 'full-video' : analysis ? 'preview' : 'video');
+  // Recordings contain video only. Muting allows playback after asynchronous preparation.
+  video.muted = true; video.preload = 'auto';
   video.load(); video.currentTime = 0;
   drawMotion();
 }
@@ -763,7 +765,9 @@ $('review-full-video').onclick = async () => {
     $('quality-full').disabled=false; $('review-quality').value='full';
     $('review-play').disabled=false;
     $('review-video-status').textContent='Full camera quality. If playback is unsupported, download the original and open it in VLC.';
-    selectReviewVideo(); $('review-video').play().catch(()=>{});
+    selectReviewVideo();
+    try { await $('review-video').play(); }
+    catch(error) { if(generation===reviewGeneration) $('review-video-status').textContent = error.name === 'NotAllowedError' ? 'Full quality is ready. Press Play in the video controls to start.' : 'This browser could not play the camera video. Download the original and open it in VLC.'; }
   } catch(error) { if(generation===reviewGeneration) $('review-video-status').textContent=error.message; }
   finally { if(generation===reviewGeneration) $('review-full-video').disabled=!reviewEvent?.original; }
 };

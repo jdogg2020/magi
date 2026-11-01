@@ -7,6 +7,7 @@ from fractions import Fraction
 import os
 import subprocess
 import time
+import threading
 import uuid
 
 import numpy as np
@@ -171,7 +172,11 @@ class Analysis:
         self.tracker = Tracker(cfg.detection)
         self.settings = dict(cfg.detection)
         self.process = None
-        self.partial = bytearray()
+        self.reader = None
+        self.reader_stop = threading.Event()
+        self.frame_lock = threading.Lock()
+        self.pending_frames = deque(maxlen=3)
+        self.reader_dropped = 0
         self.last_frame = 0
         self.retry_at = 0
         self.backoff = 1
@@ -239,10 +244,37 @@ class Analysis:
         args += ['-i', cfg.analysis_source, '-an', '-map', '0:v:0', '-fps_mode', 'passthrough',
                  '-pix_fmt', 'gray', '-threads', '1', '-f', 'rawvideo', 'pipe:1']
         self.process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        os.set_blocking(self.process.stdout.fileno(), False)
-        self.partial.clear()
+        self.reader_stop.clear()
+        with self.frame_lock:
+            self.pending_frames.clear()
+            self.reader_dropped = 0
+        self.reader = threading.Thread(target=self._read_frames,
+                                       args=(self.process.stdout, width * height),
+                                       name='magi-analysis-reader', daemon=True)
+        self.reader.start()
         self.last_frame = time.monotonic()
         self.state = 'connecting'
+
+    def _read_frames(self, source, size):
+        # Drain FFmpeg independently of tracking, JPEG encoding and disk work.
+        # Never retain a growing raw-video backlog in the camera worker.
+        partial = bytearray()
+        try:
+            while not self.reader_stop.is_set():
+                chunk = os.read(source.fileno(), min(size - len(partial), 65536))
+                if not chunk:
+                    break
+                partial.extend(chunk)
+                if len(partial) == size:
+                    sample = (time.monotonic(), bytes(partial))
+                    partial.clear()
+                    with self.frame_lock:
+                        if len(self.pending_frames) == self.pending_frames.maxlen:
+                            self.reader_dropped += 1
+                        self.pending_frames.append(sample)
+        except (OSError, ValueError):
+            # Shutdown closes the decoder pipe. Never expose stream credentials.
+            pass
 
     def poll(self):
         now = time.monotonic()
@@ -250,33 +282,25 @@ class Analysis:
             if now >= self.retry_at:
                 self.start()
             return []
-        size = self.settings['width'] * self.settings['height']
-        # Drain available output and keep only the latest few frames under load.
-        for _ in range(32):
-            try:
-                chunk = os.read(self.process.stdout.fileno(), size * 3)
-            except BlockingIOError:
-                break
-            if not chunk:
-                break
-            self.partial.extend(chunk)
-        count = len(self.partial) // size
+        with self.frame_lock:
+            samples = list(self.pending_frames)
+            self.pending_frames.clear()
+            self.dropped += self.reader_dropped
+            self.reader_dropped = 0
+        # Receipt timestamps belong to the reader, not the later analysis poll.
+        fresh = [(timestamp, pixels) for timestamp, pixels in samples
+                 if now - timestamp <= 1]
+        self.dropped += len(samples) - len(fresh)
         frames = []
-        if count:
-            self.last_frame = now
+        if fresh:
+            self.last_frame = fresh[-1][0]
             self.state = 'analyzing'
-            skip = max(0, count - 3)
-            self.dropped += skip
-            # Approximate receipt times preserve frame spacing within a batch.
-            for index in range(skip, count):
-                pixels = bytes(self.partial[index * size:(index + 1) * size])
-                timestamp = now - (count - index - 1) / self.settings['fps']
+            for timestamp, pixels in fresh:
                 frame = np.frombuffer(pixels, dtype=np.uint8).reshape(self.settings['height'], self.settings['width'])
                 objects, events = self.tracker.update(frame, timestamp)
                 frames.append((timestamp, frame, objects, events,
                                {'mask': self.tracker.last_mask.copy(), 'suppressed': self.tracker.mask_suppressed}))
                 self.frames += 1
-            del self.partial[:count * size]
             self.backoff = 1
         if self.process.poll() is not None or now - self.last_frame > 15:
             self.close()
@@ -288,7 +312,11 @@ class Analysis:
         return frames
 
     def close(self):
+        self.reader_stop.set()
         stop_process(self.process)
+        if self.reader:
+            self.reader.join(timeout=4)
+            self.reader = None
         if self.process and self.process.stdout:
             self.process.stdout.close()
         self.process = None

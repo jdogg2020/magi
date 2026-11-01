@@ -90,7 +90,7 @@ const base = process.argv[2];
     await page.waitForFunction(()=>{const image=document.getElementById('review-still');return image.complete && image.naturalWidth>0;});
     await page.locator('#radio-report').waitFor({state:'visible'});
     assert((await page.locator('#radio-status').textContent()).includes('aircraft recorded'));
-    const radioResponse=await page.request.get(await page.locator('#radio-report').getAttribute('href'));
+    const radioResponse=await page.request.get(new URL(await page.locator('#radio-report').getAttribute('href'),base).href);
     assert(radioResponse.ok());assert.equal((await radioResponse.json()).source,'local_readsb');
     assert(await still.isVisible());
     assert(!await page.locator('#review-video').isVisible());

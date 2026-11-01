@@ -754,7 +754,7 @@ async function refreshStarFrames() {
     const option=document.createElement('option');option.value=event.id;option.textContent=new Date(event.trigger_utc).toLocaleString();select.append(option);
   }
   if(select.children.length)select.value=select.children[0].value;
-  $('star-status').textContent=select.children.length?'Choose a clear-night frame, then Load star frame.':'No full-resolution frames yet. Save an event and wait for its thumbnail selection.';
+  $('star-status').textContent=select.children.length?'Choose a clear-night frame for automatic or manual star search.':'No full-resolution frames yet. Save an event and wait for its thumbnail selection.';
 }
 $('star-refresh').onclick=()=>openStarPicker(false).catch(error=>{$('star-status').textContent=error.message;});
 async function loadManualStarFrame(){

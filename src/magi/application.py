@@ -481,7 +481,7 @@ class Application:
                              'applied_unix': raw.get('applied_unix')}
             except AutoCalibrationError:
                 candidate = None
-            location = sensor_effective({**self.cfg.identification, 'location_source':'gnss'})
+            location = dict(sensor_effective({**self.cfg.identification, 'location_source':'gnss'}))
             if location.get('altitude_effective_source') != 'gnss_gga_wgs84':
                 location['elevation_m'] = None
             return {'job': job, 'status': status, 'candidate': candidate, 'search_location': {k:location.get(k) for k in ('latitude','longitude','elevation_m','altitude_effective_source','location_effective_source')},

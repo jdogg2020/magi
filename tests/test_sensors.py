@@ -6,7 +6,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from magi.sensor_service import parse_fix, parse_gga, FixTracker, send_clock
+from magi.sensor_service import parse_fix, parse_gga, FixTracker, send_clock, clock_status
+from subprocess import CompletedProcess
 from magi.sensors import effective, snapshot, aircraft_status
 from magi.identification import validate, Identifier
 from magi.config import Config
@@ -15,6 +16,14 @@ LINE = '+CGPSINFO: 4000.000000,N,10000.000000,W,011126,004912.0,364.9,0.0,'
 
 
 class SensorTests(unittest.TestCase):
+    def test_clock_selection_does_not_imply_system_clock_has_settled(self):
+        for offset, dispersion, expected in [('437.320068359', '0.003119021', 'correcting'), ('-0.000791585', '0.004170983', 'synchronized'), ('0.001', '35.8', 'correcting')]:
+            tracking = f'A29FC801,162.159.200.1,4,1793497507,{offset},0,0,0,0,0,0,{dispersion},64.4,Normal'
+            with patch('magi.sensor_service.subprocess.run', side_effect=[CompletedProcess([],0,tracking), CompletedProcess([],0,'^,*,162.159.200.1,3,6,177,63,0,0,0')]):
+                result = clock_status()
+            self.assertEqual(result['state'], expected)
+            self.assertEqual(result['source'], '162.159.200.1')
+
     def test_fix_coordinates_utc_and_msl_not_ellipsoid(self):
         fix = parse_fix(LINE)
         self.assertAlmostEqual(fix['latitude'], 40)

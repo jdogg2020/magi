@@ -337,3 +337,31 @@ OK (skipped=1)
 ```text
 Dashboard behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, sign-out.
 ```
+
+
+## Faster GitHub verification and releases
+
+Run the checks relevant to a local change, then let the PR workflow run the full
+Python 3.11/3.13 suite, root/systemd probes and rendered synthetic dashboard.
+Both matrix jobs must pass before a separate job records the exact tested Git
+source tree as a 30-day artifact. A push to main or a release tag looks for that
+proof from a successful run of the same workflow. It reuses verification only
+when the full source tree matches, including workflow files and dependencies.
+Artifacts are inspected as metadata; their contents are not executed.
+
+Missing, expired, failed or mismatched evidence, direct/squash/rebased pushes
+without matching evidence, and GitHub API errors run the full suite again.
+Releases still require successful verification or matching successful proof,
+and keep the existing version, inventory, checksum and no-overwrite checks.
+
+Python downloads are cached by both lockfiles and interpreter. Pinned Playwright
+and Chromium downloads are cached by runner platform and browser version. The
+actual browser is launched to check system libraries; missing libraries are
+installed before tests. FFmpeg installation skips apt when both tools are
+already available. Main warms download caches in parallel with publication,
+since PR-scoped caches cannot seed future PRs. Warm jobs do not run tests.
+Superseded runs of the same PR are cancelled; main/tag release runs are retained.
+No Pi installer timeouts, settings, credentials or recordings change.
+
+Group related small changes in a single PR/version where practical. A workflow
+change alone does not need an application version bump or a separate Pi update.

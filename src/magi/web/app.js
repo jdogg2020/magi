@@ -162,15 +162,15 @@ async function api(path, body, identity = selectedCamera) {
   if (!response.ok) throw new Error(value.error || 'Request failed.');
   return value;
 }
-function loggedOut() { if(updateInProgress)$('login-error').textContent='Magi is updating or has restarted. Sign in again to see the update result.'; if(frameURL){URL.revokeObjectURL(frameURL);frameURL=null;$('camera-frame').removeAttribute('src');}for(const tile of cameraTiles.values()){if(tile.url)URL.revokeObjectURL(tile.url);}cameraTiles.clear();stationCameras=[];$('camera-grid').replaceChildren();MagiEvents.reset(); setupSignature=setupToken=null; setupError=''; for(const id of ['camera-password','setup-new-password','setup-confirm-password','id-opensky_client_id','id-opensky_client_secret']) $(id).value=''; if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
-function tab(name) { document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); MagiEvents.mount(name);if(name==='updates')refreshUpdates(true);if(name==='storage')refreshStorage();if(name==='events' || name==='overview')MagiEvents.refresh(true); }
+function loggedOut() { for(const request of frameRequests.values())request.abort();if(settingsFrame.url){URL.revokeObjectURL(settingsFrame.url);settingsFrame.url=null;$('camera-frame').removeAttribute('src');} if(updateInProgress)$('login-error').textContent='Magi is updating or has restarted. Sign in again to see the update result.'; if(frameURL){URL.revokeObjectURL(frameURL);frameURL=null;$('camera-frame').removeAttribute('src');}for(const tile of cameraTiles.values()){if(tile.url)URL.revokeObjectURL(tile.url);}cameraTiles.clear();stationCameras=[];$('camera-grid').replaceChildren();MagiEvents.reset(); setupSignature=setupToken=null; setupError=''; for(const id of ['camera-password','setup-new-password','setup-confirm-password','id-opensky_client_id','id-opensky_client_secret']) $(id).value=''; if (zoneFrameURL) { URL.revokeObjectURL(zoneFrameURL); zoneFrameURL = null; $('zone-frame').removeAttribute('src'); } zoneFrameReady = false; csrf = ''; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); $('review-video').pause(); if ($('review').open) $('review').close(); }
+function tab(name) { if(typeof history !== 'undefined')history.replaceState(null,'','#'+name); document.querySelectorAll('.tab').forEach(el => el.classList.toggle('hidden', el.id !== name)); document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.tab === name)); MagiEvents.mount(name);if(name==='updates')refreshUpdates(true);if(name==='storage')refreshStorage();if(name==='events' || name==='overview')MagiEvents.refresh(true); }
 document.querySelectorAll('.nav').forEach(el => el.addEventListener('click', () => tab(el.dataset.tab)));
 $('open-settings').onclick = () => tab('settings');
 $('camera-settings-link').onclick = event => { event.preventDefault(); tab('settings'); }; $('view-all').onclick = () => tab('events');
 async function signedIn() {
   const session = await api('/api/session'); csrf = session.csrf;
   $('login').classList.add('hidden'); $('app').classList.remove('hidden');
-  settingsLoaded = false; clipSignature = ''; await refreshCameras(); await refresh(); await refreshUpdates(true); if(typeof location !== 'undefined' && ['#settings','#storage-limits'].includes(new URL(location.href).hash)){tab('settings');if(location.hash==='#storage-limits')focusStorageLimits();}
+  settingsLoaded = false; clipSignature = ''; await refreshCameras(); await refresh(); await refreshUpdates(true); const requested=new URL(location.href).hash.slice(1);tab(['overview','events','settings','storage','updates'].includes(requested)?requested:requested==='storage-limits'?'settings':'overview');if(requested==='storage-limits')focusStorageLimits();
 }
 $('login-form').onsubmit = async event => { event.preventDefault(); $('login-error').textContent = ''; try { await api('/api/login', {username: $('login-user').value, password: $('login-password').value}); $('login-password').value = ''; await signedIn(); } catch (error) { $('login-error').textContent = error.message; } };
 $('opensky-credentials-file').onchange=async()=>{
@@ -367,27 +367,41 @@ async function refreshDashboard() {
   catch (error) { if (csrf) { notice(`Station unavailable: ${error.message}`); $('connection').textContent = 'Disconnected'; $('connection').classList.add('warning'); $('trigger').disabled = true; } }
   finally { busy = false; }
 }
-let frameBusy = false;
-async function refreshFrame() {
-  if (!csrf || frameBusy || document.hidden) return;
-  frameBusy=true;const session=csrf;
+// A stalled camera request must not stop other cameras or future refreshes.
+const frameRequests = new Map();
+async function updateLiveFrame(identity, image, empty, owner) {
+  if(frameRequests.has(identity))return;
+  const controller=new AbortController(), session=csrf;
+  frameRequests.set(identity,controller);
+  const timer=setTimeout(()=>controller.abort(),5000);
   try {
-    if(!$('overview').classList.contains('hidden')) await Promise.all(stationCameras.map(async camera=>{
-      const tile=cameraTiles.get(camera.id);if(!tile)return;
-      try {
-        if(camera.state==='worker_failed')throw new Error('Unavailable');
-        const response=await fetch(`/api/cameras/${encodeURIComponent(camera.id)}/frame.jpg`);
-        if(!response.ok)throw new Error('No fresh frame');
-        const blob=await response.blob();if(csrf!==session)return;
-        const url=URL.createObjectURL(blob);tile.img.src=url;if(tile.url)URL.revokeObjectURL(tile.url);tile.url=url;
-        tile.img.classList.remove('hidden');tile.empty.classList.add('hidden');
-      }catch{tile.img.classList.add('hidden');tile.empty.classList.remove('hidden');}
-    }));
-    if(!$('settings').classList.contains('hidden')) {
-      try {const response=await fetch(cameraPath('/api/frame.jpg'));if(!response.ok)throw new Error('No fresh frame');const blob=await response.blob();if(csrf!==session)return;const url=URL.createObjectURL(blob);$('camera-frame').src=url;if(frameURL)URL.revokeObjectURL(frameURL);frameURL=url;$('camera-frame').classList.remove('hidden');$('camera-empty').classList.add('hidden');}
-      catch{$('camera-frame').classList.add('hidden');$('camera-empty').classList.remove('hidden');}
-    }
-  }finally{frameBusy=false;}
+    const response=await fetch(cameraPath('/api/frame.jpg',identity),{cache:'no-store',signal:controller.signal});
+    if(!response.ok)throw new Error('No fresh frame');
+    const blob=await response.blob();
+    if(csrf!==session || controller.signal.aborted)return;
+    const url=URL.createObjectURL(blob), previous=owner.url;
+    image.src=url;owner.url=url;
+    if(previous)URL.revokeObjectURL(previous);
+    image.classList.remove('hidden');empty.classList.add('hidden');
+  }catch {
+    if(csrf!==session)return;
+    image.classList.add('hidden');empty.classList.remove('hidden');
+    image.removeAttribute('src');
+    if(owner.url)URL.revokeObjectURL(owner.url);owner.url=null;
+  }finally {
+    clearTimeout(timer);frameRequests.delete(identity);
+  }
+}
+const settingsFrame = {url:null};
+async function refreshFrame() {
+  if (!csrf || document.hidden) return;
+  const requests=[];
+  if(!$('overview').classList.contains('hidden'))for(const camera of stationCameras){
+    const tile=cameraTiles.get(camera.id);if(!tile)continue;
+    requests.push(updateLiveFrame(camera.id,tile.img,tile.empty,tile));
+  }
+  if(!$('settings').classList.contains('hidden'))requests.push(updateLiveFrame(selectedCamera,$('camera-frame'),$('camera-empty'),settingsFrame));
+  await Promise.all(requests);
 }
 $('settings-form').onsubmit = async event => { event.preventDefault(); const submit = event.submitter; submit.disabled = true; $('settings-result').textContent = 'Saving…'; const camera = {}; for (const key of ['host', 'username', 'mainstream_path', 'substream_path']) camera[key] = $(key).value.trim(); camera.port = Number($('port').value); camera.api_scheme = $('api_scheme').value; camera.api_port = Number($('api_port').value); camera.password = $('camera-password').value;
   const recording = {}; for (const key of ['pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds']) recording[key] = Number($(key).value);

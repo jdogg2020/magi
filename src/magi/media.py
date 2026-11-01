@@ -99,17 +99,19 @@ class Media:
         with self.lock:
             return sum(self.reservations.values())
 
-    def budget(self, meta):
+    def budget(self, meta, directory=None, full_quality=False):
+        if full_quality:
+            return (Path(directory) / "clip.mkv").stat().st_size * 2 + 4_000_000
         stream = (meta.get('stream_properties', {}).get('streams') or [{}])[0]
         width, height = stream.get('width', 3840), stream.get('height', 2160)
         frame = min(12_000_000, width*height*3+65536)
         return frame*3 + 4_000_000
 
-    def submit(self, directory, meta, force=False):
+    def submit(self, directory, meta, force=False, full_quality=False):
         directory = Path(directory)
         if self.stop.is_set() or not (directory / 'clip.mkv').is_file() or meta.get('state') not in ('complete', 'interrupted'):
             return False
-        status = directory / 'media.json'
+        status = directory / ('full-video.json' if full_quality else 'media.json')
         if not force and status.is_file():
             try:
                 value = json.loads(status.read_text())
@@ -121,13 +123,16 @@ class Media:
             marker = (self.cfg.mount / '.magi-volume').read_text()
             st = self.cfg.mount.stat()
             identity = (st.st_dev, st.st_ino, marker)
-            reserve = self.budget(meta)
+            reserve = self.budget(meta, directory, full_quality)
             with self.lock:
                 if meta['id'] in self.ids or len(self.ids) >= 4:
                     return False
+                if full_quality:
+                    self._guard(directory, identity)
+                    atomic_json(status, {'profile': PROFILE, 'status': 'queued'})
                 self.ids.add(meta['id']); self.reservations[meta['id']] = reserve
                 try:
-                    self.pending.put_nowait((directory, meta, identity))
+                    self.pending.put_nowait((directory, meta, identity, full_quality))
                 except queue.Full:
                     self.ids.discard(meta['id']); self.reservations.pop(meta['id'], None)
                     return False
@@ -247,20 +252,48 @@ class Media:
             except OSError:
                 pass
 
+    def _full_video(self, directory, meta, identity):
+        """Repackage camera video without decoding, resizing or re-encoding it."""
+        self._guard(directory, identity)
+        original = directory / 'clip.mkv'
+        work = directory / ('.media-work-' + uuid.uuid4().hex[:12])
+        work.mkdir(mode=0o700)
+        try:
+            properties = self._probe(original, 'stream=codec_name:format=duration')
+            codec = properties['streams'][0]['codec_name']
+            if codec not in ('h264', 'hevc'):
+                raise ValueError('Browser playback requires H.264 or HEVC; download the original instead.')
+            output = work / 'full-video.mp4'
+            args = [self.cfg.ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+                    '-i', str(original), '-map', '0:v:0', '-c:v', 'copy', '-an']
+            if codec == 'hevc':
+                args += ['-tag:v', 'hvc1']
+            self._run(args + ['-movflags', '+faststart', '-fs', str(self.budget(meta, directory, True)), str(output)], 120)
+            result = self._probe(output, 'format=duration')
+            if abs(float(result['format']['duration']) - float(properties['format']['duration'])) > 1:
+                raise ValueError('Full-quality copy is incomplete; download the original instead.')
+            self._guard(directory, identity)
+            output.replace(directory / 'full-video.mp4')
+            atomic_json(directory / 'full-video.json', {'profile': PROFILE, 'status': 'ready',
+                        'codec': codec, 'method': 'camera_main_stream_copy; no video transcode'})
+        finally:
+            self._guard(directory, identity, allow_stopped=True)
+            shutil.rmtree(work, ignore_errors=True)
+
     def _work(self):
         while not self.stop.is_set():
             try:
-                directory, meta, identity = self.pending.get(timeout=.2)
+                directory, meta, identity, full_quality = self.pending.get(timeout=.2)
             except queue.Empty:
                 continue
             try:
-                self._render(directory, meta, identity)
+                (self._full_video if full_quality else self._render)(directory, meta, identity)
             except InterruptedError:
                 pass
             except Exception as error:
                 try:
                     self._guard(directory, identity)
-                    status = directory / 'media.json'
+                    status = directory / ('full-video.json' if full_quality else 'media.json')
                     previous = json.loads(status.read_text()) if status.is_file() else {}
                     atomic_json(status, {**previous, 'profile': PROFILE, 'status': 'failed',
                         'reason': type(error).__name__, 'detail': str(error)[:240], 'fallback': 'detection replay remains available'})

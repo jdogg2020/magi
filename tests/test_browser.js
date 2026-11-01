@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const {chromium} = require('playwright');
 const base = process.argv[2];
 (async()=>{
-  const browser = await chromium.launch({headless:true,...(process.env.MAGI_CHROMIUM_EXECUTABLE ? {executablePath:process.env.MAGI_CHROMIUM_EXECUTABLE} : {})});
+  const executable=process.env.MAGI_CHROMIUM_EXECUTABLE || ['/usr/bin/google-chrome','/usr/bin/google-chrome-stable'].find(path=>fs.existsSync(path));
+  const browser = await chromium.launch({headless:true,...(executable ? {executablePath:executable} : {})});
   try {
     const page = await browser.newPage({viewport:{width:1600,height:1100}});
     const errors=[];
@@ -96,6 +97,20 @@ const base = process.argv[2];
     assert(!await page.locator('#review-video').isVisible());
     await page.locator('#review-play').click();
     assert((await page.locator('#review-video').getAttribute('src')).includes(`/api/cameras/${event.camera}/clips/${event.id}/`));
+    await page.locator('#review-full-video').click();
+    await page.waitForFunction(()=>document.getElementById('review-video').getAttribute('src')?.endsWith('/full-video'),{},{timeout:30000});
+    const supportsH264=await page.locator('#review-video').evaluate(v=>!!v.canPlayType('video/mp4; codecs="avc1.42E01E"'));
+    if(supportsH264) {
+      await page.waitForFunction(()=>document.getElementById('review-video').readyState>=2);
+      await page.waitForFunction(()=>document.getElementById('review-video').currentTime>0);
+      console.log('Full-quality H.264 playback decoded and advanced in the browser.');
+    } else {
+      await page.waitForFunction(()=>document.getElementById('review-video').error?.code===4);
+      assert((await page.locator('#review-video-status').textContent()).includes('original'));
+      console.log('Browser has no H.264 decoder: verified explicit original-download fallback.');
+    }
+    assert((await page.locator('#review-original').getAttribute('href')).includes(`/api/cameras/${event.camera}/clips/${event.id}/original`));
+    assert(await page.locator('#show-tracker').isDisabled());
     await page.screenshot({path:'dist/browser/review-categories.png',fullPage:true});
     const next=rows[rows.findIndex(row=>row.id===event.id && row.camera===event.camera)+1];
     await page.locator('#review-label-lightning').click();
@@ -177,6 +192,8 @@ const base = process.argv[2];
     page.once('dialog',dialog=>dialog.accept());
     await archive.getByRole('button',{name:'Delete archived camera'}).click();
     await page.locator('#storage-purge-status').filter({hasText:'Archived camera removed'}).waitFor();
+    await page.locator(`#event-camera option[value="${removedId}"]`).waitFor({state:'detached'});
+    await archive.waitFor({state:'detached'});
     assert.equal(await page.locator(`#event-camera option[value="${removedId}"]`).count(),0);
     assert.equal(await archive.count(),0);
     assert.deepEqual(errors,[]);

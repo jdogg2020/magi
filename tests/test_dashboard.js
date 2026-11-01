@@ -216,6 +216,14 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(elements['track-bands'].children.length>0,'Timeline must show recorded detection intervals');
  assert(elements['motion-overlay'].drawn,'Changed pixel overlay should draw');elements['show-pixels'].checked=false;elements['show-pixels'].onchange();assert(!elements['motion-overlay'].pixelDrawn,'Highlights should turn off');elements['show-pixels'].checked=true;elements['show-pixels'].onchange();assert(elements['motion-overlay'].drawn,'Highlights should turn back on');
  assert(elements.review.open,'Review dialog should open');assert(elements['review-video'].src.endsWith('/preview'));
+ assert(elements['review-original'].href.endsWith('/original'),'Original download belongs inside review');
+ await elements['review-full-video'].onclick();
+ assert.equal(elements['review-quality'].value,'full',elements['review-video-status'].textContent);
+ assert(elements['review-video'].src.endsWith('/full-video'));
+ assert(elements['show-tracker'].disabled,'Main video must not use substream track timing');
+ const fullResponse=await context.fetch(elements['review-video'].src,{headers:{Range:'bytes=0-99'}});
+ assert.equal(fullResponse.status,206);assert.equal(fullResponse.headers.get('content-type'),'video/mp4');
+ assert.equal((await fullResponse.arrayBuffer()).byteLength,100);
  elements['review-photo'].onclick();
  assert(!elements['review-still'].classList.contains('hidden'),'View image should return to the still');
  const calls=elements['review-video'].playCalls;

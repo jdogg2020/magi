@@ -96,6 +96,13 @@ const base = process.argv[2];
     assert(!await page.locator('#review-video').isVisible());
     await page.locator('#review-play').click();
     assert((await page.locator('#review-video').getAttribute('src')).includes(`/api/cameras/${event.camera}/clips/${event.id}/`));
+    await page.screenshot({path:'dist/browser/review-categories.png',fullPage:true});
+    const next=rows[rows.findIndex(row=>row.id===event.id && row.camera===event.camera)+1];
+    await page.locator('#review-label-lightning').click();
+    if(next){
+      await page.waitForFunction(next=>document.getElementById('review-still').getAttribute('src')?.includes('/clips/'+next.id+'/') && document.getElementById('review-still').getAttribute('src')?.includes('/api/cameras/'+next.camera+'/'),next);
+      assert(!await page.locator('#review-video').isVisible(),'Next review opens on its image');
+    }else await page.waitForFunction(()=>document.getElementById('review-save-status').textContent.includes('Last matching event'));
     await page.locator('#review-close').click();
     // Settings links select a camera, then Overview returns to all feeds.
     await page.locator(`aside a[href="/?camera=${event.camera}#settings"]`).click();

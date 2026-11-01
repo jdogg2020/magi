@@ -50,3 +50,5 @@
 .update-panel{max-width:900px;padding:20px}.update-panel p{margin:18px 0;overflow-wrap:anywhere}.update-actions{display:flex;gap:12px;flex-wrap:wrap;margin:18px 0}.update-panel progress{height:7px}
 
 .camera-menu>#sidebar-camera-add{width:100%;margin:12px 0 4px}.camera-add-form{padding:20px}.camera-add-form>.panel-heading{padding:0 0 15px;margin-bottom:18px}.camera-add-form>label{display:block}.camera-add-form>p{padding:0;margin:14px 0}#camera-add-dialog{max-width:480px}
+
+.review-categories{padding:8px 20px 14px}.review-categories p{margin:8px 0 0;font-size:12px}#review-quick-labels{display:flex;gap:8px;flex-wrap:wrap}#review-quick-labels button{min-height:40px}#review-quick-labels button[aria-pressed="true"]{background:var(--mint);color:#071712;border-color:var(--mint)}#review-quick-labels button[aria-pressed="true"]::before{content:"✓ ";}

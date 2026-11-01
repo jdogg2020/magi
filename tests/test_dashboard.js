@@ -237,6 +237,12 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  elements['review-labels'].value='aircraft, regression-review-label';elements['review-notes'].value='UI regression notes';elements['review-reviewed'].checked=true;
  await elements['review-save'].onclick();assert(elements['review-save-status'].textContent.includes('saved'));
  let managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label',camera_id:managedCamera})",context);assert(managed.events.some(e=>e.id===managedEventId && e.review.reviewed && e.review.notes==='UI regression notes'));
+ await elements['review-label-ignore'].onclick();
+ managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label',camera_id:managedCamera})",context);
+ assert(managed.events[0].review.labels.includes('ignore'),'Quick category must persist through the real API');
+ assert.equal(managed.events[0].review.trashed_at,null,'Ignore never trashes footage');
+ assert.equal(managed.events[0].review.notes,'UI regression notes');
+ assert(managed.events[0].review.reviewed);
  await vm.runInContext('MagiEvents.refresh(true)',context);
  const selectManaged=()=>{const row=elements['all-events'].children.find(r=>r.dataset.eventId===managedEventId && r.dataset.cameraId===context.managedCamera);assert(row,'Managed row should be visible');const checkbox=row.children[0].children[0];checkbox.checked=true;checkbox.onchange();};
  selectManaged();elements['event-action'].value='protect';await elements['event-apply'].onclick();

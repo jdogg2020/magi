@@ -115,6 +115,18 @@ const base = process.argv[2];
     await page.locator('#settings').waitFor();
     assert.equal(await page.locator('#setup-initialize').isChecked(),false);
     await page.waitForFunction(expected=>document.querySelectorAll('#camera-select option').length===expected,count+1);
+    const removedId=new URL(page.url()).searchParams.get('camera');
+    await page.locator('.camera-management > summary').click();
+    page.once('dialog',dialog=>dialog.dismiss());
+    await page.locator('#camera-remove').click();
+    assert.equal(await page.locator('#camera-select option').count(),count+1);
+    page.once('dialog',dialog=>dialog.accept());
+    await page.locator('#camera-remove').click();
+    await page.waitForURL('**/?camera=primary#overview');
+    await page.waitForFunction(expected=>document.querySelectorAll('#camera-select option').length===expected,count);
+    assert(await page.locator(`#event-camera option[value="${removedId}"]`).textContent().then(text=>text.includes('(removed)')));
+    await page.locator('#camera-grid img:not(.hidden)').nth(1).waitFor();
+    assert.equal(await page.locator('#camera-grid img:visible').count(),2);
     assert.deepEqual(errors,[]);
     console.log('Chromium passed: simultaneous images, station event list, explicit camera playback, settings links, manual save, mobile layout.');
   } finally {await browser.close();}

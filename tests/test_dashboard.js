@@ -9,6 +9,7 @@ const base = process.argv[2] || 'http://127.0.0.1:18790';
 class Element {
   constructor(tag='div') { this.tagName=tag; this.children=[]; this.value=''; this.textContent=''; this.checked=false; this.disabled=false; this.open=false; this.listeners={}; this.classes=new Set(); this.dataset={}; this.style={}; this.classList={add:(...n)=>n.forEach(v=>this.classes.add(v)),remove:(...n)=>n.forEach(v=>this.classes.delete(v)),toggle:(n,yes)=>{if(yes ?? !this.classes.has(n)) this.classes.add(n);else this.classes.delete(n);},contains:n=>this.classes.has(n)}; }
   append(...children) { for(const child of children){if(child && typeof child==='object'){if(child.parentNode)child.parentNode.children=child.parentNode.children.filter(item=>item!==child);child.parentNode=this;}this.children.push(child);} }
+  remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(child=>child!==this);}
   replaceChildren(...children) { this.children=[...children]; }
   addEventListener(name, callback) { this.listeners[name]=callback; }
   setAttribute(name,value) { this[name]=value; }
@@ -341,6 +342,19 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(!elements['camera-add-dialog'].open);
  assert(context.location.href.endsWith('#settings'),'Adding a camera should open its own setup screen');
  assert(context.location.href.includes('/?camera=cam-'));
+ const addedId=new URL(context.location.href,base).searchParams.get('camera');
+ await vm.runInContext('refreshCameras()',context);
+ context.confirm=()=>false;
+ await elements['camera-remove'].onclick();
+ assert((await vm.runInContext("api('/api/cameras')",context)).cameras.some(c=>c.id===addedId),'Cancel must keep camera');
+ await vm.runInContext("api('/api/cameras',"+JSON.stringify({action:'remove',id:addedId})+")",context);
+ await vm.runInContext('refreshCameras()',context);
+ const removedInventory=await vm.runInContext("api('/api/cameras')",context);
+ assert(!removedInventory.cameras.some(c=>c.id===addedId));
+ assert(removedInventory.archived_cameras.some(c=>c.id===addedId));
+ assert(elements['event-camera'].children.some(c=>c.value===addedId && c.textContent.includes('(removed)')));
+ assert(!vm.runInContext('cameraTiles.has('+JSON.stringify(addedId)+')',context));
+ assert(removedInventory.cameras.some(c=>c.id===cameraId),'Other cameras must remain active');
  await elements.logout.onclick();assert(!elements.login.classList.contains('hidden'));
  console.log('Dashboard '+cameraId+' behavior passed: sign-in, status, settings load, live frame, event cards, preview dialog, setup links, save navigation/status, save failure, ignore zones, image-first review, playback from zero, full-frame viewing, substream track timing, tracker toggles, detection timeline exact pixel overlay mode, assisted star selection and invalid-fit rejection, event rows, operator labels/notes, bulk protection, trash/restore, sign-out.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

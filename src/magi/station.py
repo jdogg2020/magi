@@ -30,13 +30,13 @@ def camera_name(value):
 
 
 class Worker:
-    def __init__(self, path, identity, name):
+    def __init__(self, path, identity, name, archived=False):
         self.app = None
         self.failed = False
         try:
             if Path(path).is_symlink() or Path(path).parent.is_symlink():
                 raise ValueError('Camera config path cannot be a symlink.')
-            self.app = Application(path, camera_id=identity, camera_name=name)
+            self.app = Application(path, camera_id=identity, camera_name=name, archive_only=archived)
         except (ValueError, OSError, KeyError, TypeError):
             self.failed = True
         self.stop = threading.Event()
@@ -83,7 +83,7 @@ class Station:
         try:
             for item in self.registry['cameras']:
                 config = self.path if item['id'] == 'primary' else self.config_directory / (item['id']+'.json')
-                self.workers[item['id']] = Worker(config, item['id'], item['name'])
+                self.workers[item['id']] = Worker(config, item['id'], item['name'], item.get('archived', False))
                 if item['id'] == 'primary' and self.workers[item['id']].failed:
                     raise ValueError('Primary camera configuration is unavailable.')
             for worker in self.workers.values():
@@ -99,14 +99,16 @@ class Station:
 
     def validate_registry(self):
         entries = self.registry.get('cameras') if isinstance(self.registry, dict) else None
-        if not isinstance(self.registry, dict) or self.registry.get('schema') != 1 or not isinstance(entries, list) or not 1 <= len(entries) <= MAX_CAMERAS:
+        if not isinstance(self.registry, dict) or self.registry.get('schema') != 1 or not isinstance(entries, list) or not 1 <= len(entries) <= 256:
             raise ValueError('Invalid camera registry.')
         identities = []
         for item in entries:
-            if not isinstance(item, dict) or set(item) != {'id', 'name'} or not isinstance(item['id'], str) or not CAMERA_ID.fullmatch(item['id']):
+            if not isinstance(item, dict) or (set(item)-{'id', 'name', 'archived'} or not {'id','name'} <= set(item) or not isinstance(item.get('archived', False), bool)) or not isinstance(item['id'], str) or not CAMERA_ID.fullmatch(item['id']):
                 raise ValueError('Invalid camera registry entry.')
             camera_name(item['name'])
             identities.append(item['id'])
+        if sum(not item.get('archived', False) for item in entries) > MAX_CAMERAS:
+            raise ValueError('Too many active cameras.')
         if identities[0] != 'primary' or len(set(identities)) != len(identities):
             raise ValueError('Camera IDs must be unique and retain the primary camera.')
 
@@ -128,7 +130,11 @@ class Station:
     def cameras(self):
         with self.lock:
             result = []
+            archived = []
             for item in self.registry['cameras']:
+                if item.get('archived'):
+                    archived.append({'id': item['id'], 'name': item['name']})
+                    continue
                 worker = self.workers[item['id']]
                 status = worker.app.read()['status'] if worker.app else {'state':'worker_failed','analysis':{'state':'unavailable'},'substream':{'state':'unavailable'},'event_count_since_start':0,'frame_age_seconds':None}
                 result.append({**item, 'state': 'worker_failed' if worker.failed else 'stopping' if worker.stop.is_set() else status['state'],
@@ -137,7 +143,7 @@ class Station:
                                'storage_used_bytes': status.get('storage_used_bytes', 0),
                                'frame_age_seconds': status['frame_age_seconds'],
                                'buffer_span_seconds': status.get('buffer_span_seconds', 0)})
-            return {'cameras': result, 'max_cameras': MAX_CAMERAS}
+            return {'cameras': result, 'archived_cameras': archived, 'max_cameras': MAX_CAMERAS}
 
     def recent_events(self):
         # Reuse worker snapshots for the frequently refreshed overview. Full
@@ -157,7 +163,7 @@ class Station:
         with self.lock:
             workers = list(self.workers.values())
         # Keep station health available when the selected camera has failed.
-        worker = next((worker for worker in workers if worker.app and not worker.failed and not worker.stop.is_set()), None)
+        worker = next((worker for worker in workers if worker.app and not worker.app.archive_only and not worker.failed and not worker.stop.is_set()), None)
         if worker:
             status = worker.app.read()['status']
             return {key: status.get(key) for key in ('health', 'disk_free_bytes', 'uptime_seconds', 'version')}
@@ -239,6 +245,8 @@ class Station:
     def manage_camera(self, data):
         if not isinstance(data, dict) or set(data)-{'action', 'id', 'name'}:
             raise ValueError('Invalid camera action.')
+        if data.get('action') == 'remove':
+            return self.remove_camera(data.get('id'))
         if data.get('action') == 'restart':
             return self.restart_camera(data.get('id'))
         with self.lock:
@@ -258,8 +266,10 @@ class Station:
                 return {'id': item['id'], 'name': name}
             if data.get('action') != 'add':
                 raise ValueError('Unknown camera action.')
-            if len(self.workers) >= MAX_CAMERAS:
+            if sum(not item.get('archived') for item in registry['cameras']) >= MAX_CAMERAS:
                 raise ValueError('This station supports up to eight cameras.')
+            if len(registry['cameras']) >= 256:
+                raise ValueError('Camera archive limit reached.')
             identity = 'cam-'+uuid.uuid4().hex[:12]
             raw = json.loads(self.path.read_text())
             raw['camera'] = {'host': '', 'port': 554, 'username': 'admin', 'password': '',
@@ -295,10 +305,46 @@ class Station:
             worker.thread.start()
             return {'id': identity, 'name': name}
 
+    def remove_camera(self, identity):
+        with self.lock:
+            if self.closed:
+                raise ValueError('Station is stopping.')
+            item = next((item for item in self.registry['cameras'] if item['id'] == identity), None)
+            if not item:
+                raise ValueError('Unknown camera.')
+            if item.get('archived'):
+                return {'id': identity, 'removed': True, 'recordings_preserved': True}
+            worker = self.workers[identity]
+            worker.close()
+        worker.thread.join(15)
+        with self.lock:
+            if self.closed or self.workers[identity] is not worker:
+                raise ValueError('Camera state changed; refresh before retrying.')
+            if worker.thread.is_alive():
+                raise ValueError('Camera is finishing its recordings. Wait and retry removal.')
+            config = self.path if identity == 'primary' else self.config_directory / (identity+'.json')
+            replacement = Worker(config, identity, item['name'], archived=True)
+            if replacement.failed:
+                raise ValueError('Could not open the camera archive configuration. Check its configuration before retrying.')
+            registry = copy.deepcopy(self.registry)
+            next(i for i in registry['cameras'] if i['id'] == identity)['archived'] = True
+            try:
+                atomic_json(self.registry_path, registry)
+            except Exception:
+                if replacement.app:
+                    replacement.app.close()
+                raise
+            self.registry = registry
+            self.workers[identity] = replacement
+            replacement.thread.start()
+            return {'id': identity, 'removed': True, 'recordings_preserved': True}
+
     def restart_camera(self, identity):
         with self.lock:
             if self.closed:
                 raise ValueError('Station is stopping.')
+            if any(i['id'] == identity and i.get('archived') for i in self.registry['cameras']):
+                raise ValueError('Removed cameras cannot be restarted.')
             worker = self.workers.get(identity) if isinstance(identity, str) else None
             if not worker:
                 raise ValueError('Unknown camera.')

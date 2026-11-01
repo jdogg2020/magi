@@ -27,7 +27,7 @@ async function refreshCameras() {
     if (!csrf) return;
     stationCameras = result.cameras;
     const select = $('camera-select'), grid = $('camera-grid');
-    const signature = JSON.stringify(result.cameras.map(c=>[c.id,c.name]));
+    const signature = JSON.stringify([result.cameras.map(c=>[c.id,c.name]),result.archived_cameras || []]);
     if (select.dataset.signature !== signature) {
       select.replaceChildren();$('camera-links').replaceChildren();
       const filter = $('event-camera'), previous = filter.value || 'all';filter.replaceChildren();
@@ -37,13 +37,17 @@ async function refreshCameras() {
         const choice=document.createElement('option');choice.value=camera.id;choice.textContent=camera.name;filter.append(choice);
         $('camera-links').append(cameraSettingsLink(camera,camera.name+' settings'));
       }
+      for(const camera of result.archived_cameras || []){const choice=document.createElement('option');choice.value=camera.id;choice.textContent=camera.name+' (removed)';filter.append(choice);}
       filter.value=previous;select.value=selectedCamera;select.dataset.signature=signature;
       const current=result.cameras.find(c=>c.id===selectedCamera);
       if(current){$('camera-name').value=current.name;$('selected-camera-name').textContent=current.name;}
     }
     $('sidebar-camera-add').disabled=$('camera-add').disabled=cameraAddBusy || result.cameras.length >= result.max_cameras;
     $('sidebar-camera-add').title=result.cameras.length >= result.max_cameras?'Camera limit reached':'';
-    $('camera-rename').disabled=$('camera-restart').disabled=result.max_cameras===1;
+    const selectedActive=result.cameras.some(c=>c.id===selectedCamera);
+    $('camera-remove').disabled=!selectedActive;
+    $('camera-rename').disabled=$('camera-restart').disabled=result.max_cameras===1 || !selectedActive;
+    for(const [id,tile] of cameraTiles){if(!result.cameras.some(c=>c.id===id)){if(tile.url)URL.revokeObjectURL(tile.url);tile.card.remove();cameraTiles.delete(id);}}
     for (const camera of result.cameras) {
       let tile=cameraTiles.get(camera.id);
       if(!tile){
@@ -119,6 +123,16 @@ $('camera-restart').onclick=async()=>{
   try {await api('/api/cameras',{action:'restart',id:selectedCamera});$('camera-management-status').textContent='Camera worker restarted.';await refreshCameras();await refresh();}
   catch(error){$('camera-management-status').textContent=error.message;}
   finally{$('camera-restart').disabled=false;}
+};
+$('camera-remove').onclick=async()=>{
+  const camera=stationCameras.find(c=>c.id===selectedCamera);
+  if(!camera || !confirm('Remove '+camera.name+'? Capture will stop. Recordings and private archive configuration will be kept.'))return;
+  $('camera-remove').disabled=true;
+  try{
+    await api('/api/cameras',{action:'remove',id:selectedCamera});
+    const result=await api('/api/cameras');
+    location.href='/?camera='+encodeURIComponent(result.cameras[0]?.id || 'primary')+'#overview';
+  }catch(error){$('camera-management-status').textContent=error.message;$('camera-remove').disabled=false;}
 };
 let connectionStartedAt = 0;
 let ignoreZones = [], zoneStart = null, zoneDraft = null, zoneFrameURL = null, zoneFrameReady = false;

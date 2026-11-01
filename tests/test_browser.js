@@ -192,6 +192,8 @@ const base = process.argv[2];
     page.once('dialog',dialog=>dialog.accept());
     await archive.getByRole('button',{name:'Delete archived camera'}).click();
     await page.locator('#storage-purge-status').filter({hasText:'Archived camera removed'}).waitFor();
+    await page.locator(`#event-camera option[value="${removedId}"]`).waitFor({state:'detached'});
+    await archive.waitFor({state:'detached'});
     assert.equal(await page.locator(`#event-camera option[value="${removedId}"]`).count(),0);
     assert.equal(await archive.count(),0);
     assert.deepEqual(errors,[]);

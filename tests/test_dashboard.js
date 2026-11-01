@@ -1,3 +1,4 @@
+require('./test_event_review.js');
 require('./test_live_refresh.js');
 // Lightweight DOM harness for the actual dashboard JavaScript against a running
 // disposable synthetic service. This checks behavior, not browser rendering.

@@ -137,3 +137,34 @@ and visual tracking. Review offers a radio JSON download, coverage summary and
 assessment state; selected exports include the evidence. Bearing-only aircraft
 associations are labelled separately and do not trigger footage discard. See
 [RADIO-EVIDENCE.md](RADIO-EVIDENCE.md) for collection limits and matching gates.
+
+## Reviewing matching events
+
+Reviewed/unreviewed is independent of labels, automated categories, and protection.
+Choose Unreviewed in the Review filter together with camera, label or event-type
+filters, then apply. Opening an event does not mark it reviewed.
+
+Previous/next in the review dialog follows the applied filters and sort order
+across list pages. After marking an event reviewed or moving it to trash removes
+it from the filter results, navigation continues from its capture position. New
+matching events are included when navigation is refreshed. Large archives may
+take longer to find adjacent events; navigation is disabled while loading.
+
+The dialog offers immediate Mark reviewed/unreviewed, Keep / protect, and Move to
+trash controls. Quick actions preserve unsaved labels and notes; Save review
+saves the whole form. Navigation and closing warn before discarding unsaved edits.
+Protection blocks trash until explicitly removed. Moving to trash changes the
+button to Restore from trash, so it can be undone without leaving the dialog.
+Trash is **not** guaranteed seven days of storage: normal retention and storage
+pressure can remove it earlier.
+
+Keyboard shortcuts while the review dialog is open:
+
+- Left/right arrows: previous/next matching event.
+- Space: play/pause (from the image, starts playback).
+- R: toggle reviewed status.
+- Delete: move an unprotected event to trash.
+
+Shortcuts ignore held-key repeats, modifier keys and editable fields. Native
+video controls keep their keyboard behavior; Space on a focused button activates
+that button. Review status does not itself protect footage from retention.

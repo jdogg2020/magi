@@ -124,8 +124,12 @@ def clock_status():
         if run.returncode == 0 and len(fields) >= 14:
             sources = subprocess.run(['chronyc', '-c', 'sources'], capture_output=True, text=True, timeout=2)
             selected = next((s.split(',')[2] for s in sources.stdout.splitlines() if len(s.split(',')) > 2 and s.split(',')[1] == '*'), 'none')
-            return {'state': 'synchronized' if fields[13] == 'Normal' else 'unsynchronized',
-                    'source': selected, 'service': 'chrony', 'system_offset_seconds': float(fields[4]),
+            offset = float(fields[4])
+            dispersion = float(fields[11])
+            settled = math.isfinite(offset) and math.isfinite(dispersion) and abs(offset) <= 0.1 and 0 <= dispersion <= 1
+            state = 'unsynchronized' if fields[13] != 'Normal' or selected == 'none' else ('synchronized' if settled else 'correcting')
+            return {'state': state,
+                    'source': selected, 'service': 'chrony', 'system_offset_seconds': offset,
                     'root_dispersion_seconds': float(fields[11])}
     except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
         pass

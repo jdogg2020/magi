@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magi-capture"
-version = "0.16.1"
+version = "0.16.2"
 description = "Local-first, continuously buffered sky-camera recording"
 requires-python = ">=3.13"
-# License is intentionally pending the owner's decision before publication.
+license = {file = "LICENSE"}
+classifiers = ["License :: OSI Approved :: Apache Software License"]
 dependencies = ["numpy>=1.24,<3", "Pillow>=9.4,<13"]
 
 [project.optional-dependencies]

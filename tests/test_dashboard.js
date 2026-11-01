@@ -111,8 +111,12 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  vm.runInContext("tab('events')",context);assert(elements['event-archive'].children.includes(elements['event-browser']));
  vm.runInContext("tab('overview')",context);assert(elements['recent-events'].children.includes(elements['event-browser']));
 
- for(const tile of vm.runInContext('[...cameraTiles.values()].filter(tile=>!tile.save.disabled)',context))await tile.save.onclick();
- await new Promise(resolve=>setTimeout(resolve,3000));
+ const captureTiles=vm.runInContext('[...cameraTiles.entries()].filter(([id])=>id==="primary" || id==="cam-123456789abc").map(([,tile])=>tile)',context);
+ for(let i=0;i<100;i++){await vm.runInContext('refreshCameras()',context);if(captureTiles.every(tile=>!tile.save.disabled))break;await new Promise(resolve=>setTimeout(resolve,100));}
+ assert(captureTiles.every(tile=>!tile.save.disabled),'Both real test cameras should be ready before triggering');
+ for(const tile of captureTiles)await tile.save.onclick();
+ for(let i=0;i<100;i++){await vm.runInContext('refreshCameras()',context);if(captureTiles.every(tile=>!tile.pendingEvent))break;await new Promise(resolve=>setTimeout(resolve,100));}
+ assert(captureTiles.every(tile=>!tile.pendingEvent && tile.feedback.textContent.includes('Event saved') && tile.save.textContent==='＋ Save an event'),'Each camera should report its completed event and restore the save button');
  await vm.runInContext('MagiEvents.refresh(true)',context);
  const common=await vm.runInContext("api('/api/station/events/list',{limit:100})",context);
  assert(new Set(common.events.map(row=>row.camera_id)).size===2,'One event list must contain both cameras');

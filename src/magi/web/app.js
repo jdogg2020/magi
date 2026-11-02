@@ -694,6 +694,13 @@ function updateReviewAvailability(event) {
   $('quality-full').disabled = !event.full_video;
   $('review-original').classList.toggle('hidden', !event.original);
   if(event.original) $('review-original').href = eventPath(event,'original');
+  const lowDownload = $('review-substream-download');
+  lowDownload.classList.toggle('hidden', !event.substream_preview);
+  lowDownload.removeAttribute('href');
+  if(event.substream_preview) {
+    lowDownload.href = eventPath(event,'video');
+    lowDownload.download = `${event.camera_id || selectedCamera}-${event.id}-substream.mp4`;
+  }
   if(reviewMeta&&event.substream_preview&&!reviewTimelineAttempted) loadReviewTimeline(event.id,reviewGeneration);
   $('quality-substream').disabled = !event.substream_preview; $('quality-analysis').disabled = !event.preview;
   $('review-play').disabled = !(event.full_video || event.substream_preview || event.preview);

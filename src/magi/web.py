@@ -8,7 +8,7 @@ import re
 import socket
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
 from .auth import Sessions
 from . import __version__
@@ -201,13 +201,13 @@ class Handler(BaseHTTPRequestHandler):
             if match:
                 try:
                     file = app.clip_path(*match.groups())
-                    self.send_file(file, match[2], app.camera_id)
+                    self.send_file(file, match[2], app.camera_id, download=parse_qs(urlsplit(self.path).query).get('download')==['1'])
                 except (OSError, ValueError):
                     self.reply(404, {'error': 'File unavailable.'})
             else:
                 self.reply(404, {'error': 'Not found.'})
 
-    def send_file(self, path, kind, camera_id="primary"):
+    def send_file(self, path, kind, camera_id="primary", *, download=False):
         with path.open('rb') as source:
             size = path.stat().st_size
             start, end = 0, size - 1
@@ -232,7 +232,10 @@ class Handler(BaseHTTPRequestHandler):
             mime = {'full-video': 'video/mp4', 'full-video-status': 'application/json', 'radio': 'application/json', 'video': 'video/mp4', 'frame': 'image/jpeg', 'media': 'application/json', 'timeline': 'application/json', 'preview': 'video/mp4', 'original': 'video/x-matroska', 'thumbnail': 'image/jpeg', 'metadata': 'application/json', 'motion': 'application/x-ndjson', 'identification': 'application/json'}[kind]
             if kind == 'motion':
                 extra['Content-Encoding'] = 'gzip'
-            if kind in ('original', 'metadata', 'identification', 'media', 'radio'):
+            download_names={'video':'substream.mp4','original':'original.mkv','metadata':'event.json','frame':'best-frame.jpg','thumbnail':'thumbnail.jpg'}
+            if download and kind in download_names:
+                extra['Content-Disposition'] = f'attachment; filename="{camera_id}-{path.parent.name}-{download_names[kind]}"'
+            elif kind in ('original', 'metadata', 'identification', 'media', 'radio'):
                 prefix = camera_id+'-' if kind=='radio' else ''
                 extra['Content-Disposition'] = f'attachment; filename="{prefix}{path.parent.name}-{path.name}"'
             length = end - start + 1

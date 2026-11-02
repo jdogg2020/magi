@@ -439,7 +439,7 @@ async function refreshFrame() {
   if(!$('settings').classList.contains('hidden'))requests.push(updateLiveFrame(selectedCamera,$('camera-frame'),$('camera-empty'),settingsFrame));
   await Promise.all(requests);
 }
-$('settings-form').onsubmit = async event => { event.preventDefault(); if(polygonDraft.length){$('settings-result').textContent='Finish the polygon or undo its points before saving.';return;} const submit = event.submitter; submit.disabled = true; $('settings-result').textContent = 'Saving…'; const camera = {}; for (const key of ['host', 'username', 'mainstream_path', 'substream_path']) camera[key] = $(key).value.trim(); camera.port = Number($('port').value); camera.api_scheme = $('api_scheme').value; camera.api_port = Number($('api_port').value); camera.password = $('camera-password').value;
+$('settings-form').onsubmit = async event => { event.preventDefault(); if(polygonDraft.length && !finishZone()){ $('settings-result').textContent=$('zone-status').textContent;return;} const submit = event.submitter; submit.disabled = true; $('settings-result').textContent = 'Saving…'; const camera = {}; for (const key of ['host', 'username', 'mainstream_path', 'substream_path']) camera[key] = $(key).value.trim(); camera.port = Number($('port').value); camera.api_scheme = $('api_scheme').value; camera.api_port = Number($('api_port').value); camera.password = $('camera-password').value;
   const recording = {}; for (const key of ['pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds']) recording[key] = Number($(key).value);
   const detection = {enabled: $('enabled').checked, ignore_zones: ignoreZones.map(zone => ({...zone}))}; for (const key of ['threshold', 'min_pixels', 'min_seconds', 'min_travel']) detection[key] = Number($(key).value);
   for(const key of ['lightning_enabled','meteor_enabled','retain_aircraft_matches','retain_satellite_matches']) detection[key]=$(key).checked;
@@ -481,11 +481,13 @@ function paintZone(ctx, zone, w, h) {
 function drawZones() {
   const canvas=$('zone-canvas'), ctx=canvas.getContext('2d');
   ctx.clearRect(0,0,canvas.width,canvas.height);
+  $('zone-finish').disabled=polygonDraft.length<3; $('zone-undo-point').disabled=!polygonDraft.length;
+  canvas.style.cursor=$('zone-mode').value==='edit'?'grab':'crosshair';
   [...ignoreZones,...(zoneDraft?[zoneDraft]:[])].forEach((zone,index)=>{
     ctx.fillStyle='rgba(255,174,76,.28)';ctx.strokeStyle=index===selectedZone?'#fff':'#ffbf72';ctx.lineWidth=2;
     paintZone(ctx,zone,canvas.width,canvas.height);
     if(index===selectedZone && $('zone-mode').value==='edit'){
-      const bounds=canvas.getBoundingClientRect(), size=8*canvas.width/(bounds.width||320);
+      const bounds=canvas.getBoundingClientRect(), size=14*canvas.width/(bounds.width||320);
       zonePoints(zone).forEach(([x,y],i,points)=>{
         ctx.fillStyle='#fff';ctx.fillRect(x*canvas.width-size/2,y*canvas.height-size/2,size,size);
         const next=points[(i+1)%points.length];ctx.fillStyle='#ffbf72';
@@ -505,7 +507,7 @@ function renderZoneList() {
     const row=document.createElement('div');row.className='zone-row';
     const label=document.createElement('button');label.type='button';label.className='secondary';
     label.textContent=`Zone ${index+1} · ${zone.points ? zone.points.length+' corners' : 'rectangle'} · edit`;
-    label.onclick=()=>{selectedZone=index;$('zone-mode').value='edit';$('zone-feather').value=(zone.feather||0)*100;zoneChanged('Drag a white corner or an amber side handle.');};
+    label.onclick=()=>{selectedZone=index;$('zone-mode').value='edit';$('zone-feather').value=(zone.feather||0)*100;zoneChanged('Drag inside to move the shape, or pull corners and sides. Double-click a side to add a corner.');};
     const remove=document.createElement('button');remove.type='button';remove.className='quiet';remove.textContent='Remove';
     remove.setAttribute('aria-label',`Remove ignore zone ${index+1}`);
     remove.onclick=()=>{ignoreZones.splice(index,1);selectedZone=-1;zoneChanged('Zone removed.');};
@@ -532,7 +534,7 @@ function validPolygon(points) {
 function addZone(zone) {
   if(ignoreZones.length>=32){$('zone-status').textContent='You can save up to 32 zones.';return false;}
   if(zone.points ? !validPolygon(zone.points) : ![zone.x,zone.y,zone.width,zone.height].every(Number.isFinite) || zone.x<0 || zone.y<0 || zone.width<=0 || zone.height<=0 || zone.x+zone.width>1 || zone.y+zone.height>1){
-    $('zone-status').textContent='Use a non-crossing shape with positive area inside the image.';return false;
+    $('zone-status').textContent=zone.points && zone.points.length<3 ? 'Add at least three corners, or use Add shape to start with a box.' : 'Two sides cross or overlap. Undo the last point and follow the outline in one direction.';return false;
   }
   zone.feather=Math.min(.1,Math.max(0,Number($('zone-feather').value)||0)/100);
   ignoreZones.push(zone);selectedZone=ignoreZones.length-1;zoneChanged('Zone added.');return true;
@@ -551,15 +553,16 @@ $('zone-frame').onload = () => {
   const canvas = $('zone-canvas'), image = $('zone-frame');
   canvas.width = Math.max(640,image.naturalWidth || 320); canvas.height = Math.round(canvas.width*(image.naturalHeight || 180)/(image.naturalWidth || 320));
   zoneFrameReady = true; drawZones();
-  $('zone-status').textContent = 'Choose Polygon to click around an obstruction, or Edit to drag corners and sides. Save settings to apply.';
+  $('zone-status').textContent = 'Add a shape, then drag its inside, corners or sides. Pull past the picture edge to snap there. Save settings to apply.';
 };
 $('zone-refresh').onclick = loadZoneImage;
 $('zone-add').onclick = () => addZone(Object.fromEntries(['x', 'y', 'width', 'height'].map(key => [key, Number($('zone-' + key).value) / 100])));
 $('zone-clear').onclick = () => { ignoreZones = []; polygonDraft=[];selectedZone=-1;zoneDrag=null; zoneDraft = null; zoneStart = null; renderZoneList(); drawZones(); $('zone-status').textContent = 'All zones cleared. Save settings to apply.'; };
-function zonePoint(event) {
+function zonePoint(event, clamp=true) {
   const bounds = $('zone-canvas').getBoundingClientRect();
   if (!bounds.width || !bounds.height) return null;
-  return {x: Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width)), y: Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height))};
+  const x=(event.clientX-bounds.left)/bounds.width,y=(event.clientY-bounds.top)/bounds.height;
+  return clamp?{x:Math.min(1,Math.max(0,x)),y:Math.min(1,Math.max(0,y))}:{x,y};
 }
 function zoneRectangle(start, end) {
   const x = Math.min(start.x, end.x), y = Math.min(start.y, end.y);
@@ -567,58 +570,114 @@ function zoneRectangle(start, end) {
 }
 function snapZonePoint(point) {
   const bounds=$('zone-canvas').getBoundingClientRect();
-  return {x:point.x*bounds.width<6?0:(1-point.x)*bounds.width<6?1:point.x,
-    y:point.y*bounds.height<6?0:(1-point.y)*bounds.height<6?1:point.y};
+  return {x:point.x*bounds.width<18?0:(1-point.x)*bounds.width<18?1:point.x,
+    y:point.y*bounds.height<18?0:(1-point.y)*bounds.height<18?1:point.y};
 }
-$('zone-mode').onchange=()=>{polygonDraft=[];zoneDraft=null;zoneStart=null;zoneDrag=null;drawZones();};
-$('zone-finish').onclick=()=>{if(addZone({points:polygonDraft.map(p=>[...p])})){polygonDraft=[];$('zone-mode').value='edit';drawZones();}};
+function finishZone() {
+  // Clicking the starting point is a natural way to close a polygon. Never
+  // persist a duplicate closing vertex, including old/in-progress drafts.
+  const points=polygonDraft.filter((p,i,a)=>!i || p[0]!==a[i-1][0] || p[1]!==a[i-1][1]).map(p=>[...p]);
+  if(points.length>1 && points[0][0]===points.at(-1)[0] && points[0][1]===points.at(-1)[1])points.pop();
+  if(!addZone({points}))return false;
+  polygonDraft=[];$('zone-mode').value='edit';drawZones();return true;
+}
+function starterZone(points) {
+  if(polygonDraft.length && !finishZone())return;
+  if(addZone({points})){$('zone-mode').value='edit';zoneChanged('Drag the shaded area to move it. Pull corners or sides past the picture edge to snap there.');}
+}
+$('zone-new').onclick=()=>starterZone([[.25,.25],[.75,.25],[.75,.75],[.25,.75]]);
+$('zone-ground').onclick=()=>starterZone([[0,.65],[.5,.65],[1,.65],[1,1],[0,1]]);
+$('zone-mode').onchange=()=>{
+  if(polygonDraft.length){$('zone-mode').value='polygon';$('zone-status').textContent='Finish this outline or Cancel drawing before changing tools.';return;}
+  zoneDraft=null;zoneStart=null;zoneDrag=null;drawZones();
+};
+$('zone-finish').onclick=finishZone;
+$('zone-cancel').onclick=()=>{polygonDraft=[];zoneDraft=null;zoneStart=null;$('zone-mode').value='edit';zoneChanged('Drawing cancelled.');};
 $('zone-undo-point').onclick=()=>{polygonDraft.pop();drawZones();};
+$('zone-canvas').onkeydown=event=>{
+  if(event.key==='Enter' && polygonDraft.length){event.preventDefault();finishZone();}
+  if(event.key==='Escape'){event.preventDefault();$('zone-cancel').onclick();}
+};
 $('zone-feather').oninput=()=>{
   if(selectedZone>=0 && $('zone-mode').value==='edit'){
     ignoreZones[selectedZone].feather=Math.min(.1,Math.max(0,Number($('zone-feather').value)||0)/100);zoneChanged('Soft boundary updated.');
   }else drawZones();
 };
-function zoneHit(point) {
+function zoneHit(point, edgesOnly=false) {
   const bounds=$('zone-canvas').getBoundingClientRect();
   const distance=(a,b)=>Math.hypot((a[0]-b[0])*bounds.width,(a[1]-b[1])*bounds.height);
   const order=ignoreZones.map((_,i)=>i).reverse();
   if(selectedZone>=0){order.splice(order.indexOf(selectedZone),1);order.unshift(selectedZone);}
   for(const index of order){
     const p=zonePoints(ignoreZones[index]);
-    for(let k=0;k<p.length;k++)if(distance(p[k],[point.x,point.y])<=10)return {index,vertices:[k]};
+    for(let k=0;!edgesOnly && k<p.length;k++)if(distance(p[k],[point.x,point.y])<=16)return {index,vertices:[k]};
     for(let k=0;k<p.length;k++){
       const a=p[k],b=p[(k+1)%p.length],dx=(b[0]-a[0])*bounds.width,dy=(b[1]-a[1])*bounds.height;
       const t=Math.max(0,Math.min(1,((point.x-a[0])*bounds.width*dx+(point.y-a[1])*bounds.height*dy)/(dx*dx+dy*dy)));
-      if(distance([a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])],[point.x,point.y])<=10)return {index,vertices:[k,(k+1)%p.length]};
+      if(distance([a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])],[point.x,point.y])<=16)return {index,vertices:[k,(k+1)%p.length]};
     }
+  }
+  if(!edgesOnly)for(const index of order){
+    const p=zonePoints(ignoreZones[index]);let inside=false;
+    for(let i=0,j=p.length-1;i<p.length;j=i++){
+      const a=p[i],b=p[j];
+      if((a[1]>point.y)!==(b[1]>point.y) && point.x<(b[0]-a[0])*(point.y-a[1])/(b[1]-a[1])+a[0])inside=!inside;
+    }
+    if(inside)return {index,vertices:p.map((_,i)=>i),move:true};
   }
   return null;
 }
+$('zone-canvas').ondblclick=event=>{
+  if($('zone-mode').value!=='edit' || !zoneFrameReady)return;
+  const point=zonePoint(event);if(!point)return;const hit=zoneHit(point,true);if(!hit)return;
+  const zone=ignoreZones[hit.index],points=zonePoints(zone).map(p=>[...p]);
+  if(points.length>=64){$('zone-status').textContent='Up to 64 corners per shape.';return;}
+  const [i,j]=hit.vertices,a=points[i],b=points[j],bounds=$('zone-canvas').getBoundingClientRect();
+  const dx=(b[0]-a[0])*bounds.width,dy=(b[1]-a[1])*bounds.height;
+  const t=Math.max(.1,Math.min(.9,((point.x-a[0])*bounds.width*dx+(point.y-a[1])*bounds.height*dy)/(dx*dx+dy*dy)));
+  points.splice(i+1,0,[a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);
+  if(validPolygon(points)){ignoreZones[hit.index]={points,feather:zone.feather||0};selectedZone=hit.index;zoneChanged('Corner added. Drag it to fit the outline.');}
+};
 $('zone-canvas').onpointerdown=event=>{
   if(!zoneFrameReady || (event.button!==undefined && event.button!==0))return;
-  event.preventDefault();const raw=zonePoint(event);if(!raw)return;
+  event.preventDefault();$('zone-canvas').focus();const raw=zonePoint(event);if(!raw)return;
   const point=snapZonePoint(raw),mode=$('zone-mode').value;
   if(mode==='polygon'){
+    const bounds=$('zone-canvas').getBoundingClientRect();
+    const near=p=>Math.hypot((raw.x-p[0])*bounds.width,(raw.y-p[1])*bounds.height)<=16;
+    if(polygonDraft.length>=3 && near(polygonDraft[0])){finishZone();return;}
+    if(polygonDraft.length && near(polygonDraft.at(-1)))return;
     if(polygonDraft.length>=64){$('zone-status').textContent='Up to 64 corners per shape.';return;}
-    polygonDraft.push([point.x,point.y]);drawZones();return;
+    polygonDraft.push([point.x,point.y]);drawZones();$('zone-status').textContent=polygonDraft.length>=3?'Click the first corner, press Enter, or Finish shape. Saving also closes the outline.':'Click around the outline, or use Add shape for an adjustable box.';return;
   }
   if(mode==='edit'){
     const hit=zoneHit(raw);if(!hit)return;
     selectedZone=hit.index;const original=JSON.parse(JSON.stringify(ignoreZones[hit.index]));
-    zoneDrag={...hit,original,start:point,points:zonePoints(original).map(p=>[...p])};
+    zoneDrag={...hit,original,start:raw,points:zonePoints(original).map(p=>[...p])};
     $('zone-feather').value=(original.feather||0)*100;drawZones();
   }else{zoneStart=point;zoneDraft=null;}
   $('zone-canvas').setPointerCapture(event.pointerId);
 };
 $('zone-canvas').onpointermove=event=>{
-  const raw=zonePoint(event);if(!raw)return;const point=snapZonePoint(raw);
+  const raw=zonePoint(event,!zoneDrag);if(!raw)return;const point=snapZonePoint(raw);
   if(zoneDrag){
     const d=zoneDrag,points=d.points.map(p=>[...p]);
-    let dx=point.x-d.start.x,dy=point.y-d.start.y;
-    dx=Math.max(-Math.min(...d.vertices.map(i=>points[i][0])),Math.min(dx,1-Math.max(...d.vertices.map(i=>points[i][0]))));
-    dy=Math.max(-Math.min(...d.vertices.map(i=>points[i][1])),Math.min(dy,1-Math.max(...d.vertices.map(i=>points[i][1]))));
-    d.vertices.forEach(i=>{points[i][0]+=dx;points[i][1]+=dy;});
+    const bounds=$('zone-canvas').getBoundingClientRect();
+    function shift(axis,delta,size) {
+      const low=Math.min(...d.vertices.map(i=>points[i][axis])),high=Math.max(...d.vertices.map(i=>points[i][axis]));
+      delta=Math.max(-low,Math.min(delta,1-high));
+      const gapLow=low+delta,gapHigh=1-high-delta;
+      if(gapLow*size<=18 && gapLow<=gapHigh)delta=-low;
+      else if(gapHigh*size<=18)delta=1-high;
+      return delta;
+    }
+    // Snap the moved geometry, not the grab position; even grabbing a side
+    // off-center can reach the exact frame boundary. Pointer capture permits
+    // dragging beyond the canvas without having to hit its final pixel.
+    const dx=shift(0,raw.x-d.start.x,bounds.width),dy=shift(1,raw.y-d.start.y,bounds.height);
+    d.vertices.forEach(i=>{points[i][0]=Math.max(0,Math.min(1,points[i][0]+dx));points[i][1]=Math.max(0,Math.min(1,points[i][1]+dy));});
     if(validPolygon(points)){ignoreZones[d.index]={points,feather:d.original.feather||0};drawZones();}
+    else $('zone-status').textContent='That would fold the shape over itself. Move the corner or side the other way.';
     return;
   }
   if(zoneStart){zoneDraft=zoneRectangle(zoneStart,point);zoneDraft.feather=(Number($('zone-feather').value)||0)/100;drawZones();}

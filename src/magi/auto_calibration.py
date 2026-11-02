@@ -114,6 +114,23 @@ def _check_guard(cancel_event):
         raise AutoCalibrationError('Star search stopped: solve cancelled.')
 
 
+def _solve_cancellation(record):
+    """Skip reason for a solve_event record that returned cancelled,
+    or None.
+
+    The solver returns cancellations instead of raising them (see
+    star_solve.solve), so a thermal stop inside the solver arrives
+    here as a record with result reason 'thermal_block' (or
+    'cancelled' for a plain cancellation), not as an exception.
+    Treating that as a failed solve would contradict the promised
+    skipped/thermal_block behavior and mark the night failed; it is
+    a skip, like a raised cancellation, with the night left open
+    for the next hourly attempt.
+    """
+    reason = (record or {}).get('result', {}).get('reason')
+    return reason if reason in ('thermal_block', 'cancelled') else None
+
+
 def candidate_path(root, camera_id):
     return Path(root) / STATUS_DIRNAME / f'{camera_id}-candidate.json'
 
@@ -978,6 +995,18 @@ def run_retry_attempt(primary_config_path, cameras=None, deadline=None, now_unix
                 record = solve_event(cfg, event_id, camera_id=camera_id, deadline=deadline,
                                      cancel_event=cancel_event,
                                      options={'gps_required': True}, gate_detections=GATE_DETECTIONS)
+                cancel_reason = _solve_cancellation(record)
+                if cancel_reason:
+                    # Returned cancellation, not a failed solve: skip
+                    # (system-wide, so no other camera is attempted)
+                    # and leave the night open for the next attempt.
+                    full_attempt_camera = camera_id
+                    update_status(root, camera_id=camera_id, last_outcome='skipped',
+                                  last_reason=cancel_reason, last_source_event=event_id)
+                    outcome = {'status': 'skipped', 'reason': cancel_reason,
+                               'camera_id': camera_id, 'source_event': event_id,
+                               'cameras_checked': checked}
+                    break
                 if record.get('status') == 'skipped':
                     update_status(root, camera_id=camera_id, last_outcome='skipped',
                                   last_reason=record.get('result', {}).get('reason', 'insufficient_detections'),
@@ -1052,6 +1081,16 @@ def run_retry_attempt(primary_config_path, cameras=None, deadline=None, now_unix
             record = solve_event(cfg, event_id, camera_id=camera_id, deadline=deadline,
                                  cancel_event=cancel_event,
                                  options={'gps_required': True}, gate_detections=GATE_DETECTIONS)
+            cancel_reason = _solve_cancellation(record)
+            if cancel_reason:
+                # Returned cancellation after a failed verification:
+                # skip, as in the uncalibrated path, not a failure.
+                update_status(root, camera_id=camera_id, last_outcome='skipped',
+                              last_reason=cancel_reason, last_source_event=event_id)
+                outcome = {'status': 'skipped', 'reason': cancel_reason,
+                           'camera_id': camera_id, 'source_event': event_id,
+                           'cameras_checked': checked}
+                break
             if record.get('status') == 'candidate':
                 file_pending_apply(root, camera_id, record, reason='verification_failed_resolve')
                 update_status(root, camera_id=camera_id, completed_night=night_start,

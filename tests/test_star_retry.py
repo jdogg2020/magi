@@ -467,6 +467,90 @@ class ReviewFixTests(RetryTestBase):
         self.assertFalse((root / 'auto-calibration' / 'pending-apply.json').exists())
         self.assertIsNone(read_status(root).get('completed_night'))
 
+    def test_solver_preserves_thermal_reason(self):
+        # The internal catch in solve() used to collapse every
+        # cancellation to 'cancelled', losing a thermal guard's
+        # reason before the worker ever saw it.
+        from magi.star_solve import solve
+
+        class HotGuard:
+            def is_set(self):
+                raise ValueError('Star search stopped: CPU temperature reached 75°C. '
+                                 'Let the station cool before retrying.')
+
+        result = solve(detections_for(spread_points()), visible_for(spread_points(), TRUTH),
+                       200, 200, deadline=time.monotonic() + 115, cancel_event=HotGuard())
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['reason'], 'thermal_block')
+        self.assertIn('Star search stopped', result['detail'])
+        import threading
+        event = threading.Event()
+        event.set()
+        plain = solve(detections_for(spread_points()), visible_for(spread_points(), TRUTH),
+                      200, 200, deadline=time.monotonic() + 115, cancel_event=event)
+        self.assertEqual(plain['reason'], 'cancelled')
+
+    def test_thermal_stop_inside_solver_is_thermal_skip(self):
+        # End to end with the REAL solve_event and the REAL solver:
+        # solve_event and blind_solve are NOT mocked here (the
+        # previous thermal test mocked solve_event and therefore
+        # missed the internal catch). Only detection and the catalog
+        # listing are stubbed, which do not touch that catch. The
+        # guard trips once detection has armed it, i.e. inside the
+        # solver, and the worker must report skipped/thermal_block,
+        # not failed/cancelled, with no pending-apply and the night
+        # left open.
+        root = Path(self.temp.name) / 'cam'
+        cfg = make_cfg(root)
+        make_event(root, EVENT, NOW - 7200)
+
+        class ArmingGuard:
+            def __init__(self):
+                self.armed = False
+
+            def is_set(self):
+                if self.armed:
+                    raise ValueError('Star search stopped: CPU temperature reached 75°C. '
+                                     'Let the station cool before retrying.')
+                return False
+
+        guard = ArmingGuard()
+
+        def _detect(image, **kwargs):
+            guard.armed = True
+            return detections_for(spread_points() * 2)
+
+        with patch('magi.auto_calibration.detect_stars', side_effect=_detect), \
+                patch('magi.auto_calibration.visible_catalog_stars',
+                      return_value=visible_for(spread_points(), TRUTH)):
+            outcome = run_retry_attempt(None, cameras=[('primary', cfg)],
+                                        deadline=time.monotonic() + 115, now_unix=NOW,
+                                        cancel_event=guard)
+        self.assertEqual(outcome['status'], 'skipped')
+        self.assertEqual(outcome['reason'], 'thermal_block')
+        self.assertFalse((root / 'auto-calibration' / 'pending-apply.json').exists())
+        self.assertIsNone(read_status(root).get('completed_night'))
+
+    def test_returned_plain_cancellation_is_skip(self):
+        # Worker-branch test only (it mocks solve_event to isolate
+        # the worker's handling of a returned cancellation, unlike
+        # the thermal test above which goes through the real solver):
+        # a returned 'cancelled' is a skip, not a failed solve.
+        root = Path(self.temp.name) / 'cam'
+        cfg = make_cfg(root)
+        make_event(root, EVENT, NOW - 7200)
+        with patch('magi.auto_calibration.solve_event',
+                   return_value={'status': 'failed', 'result': {'reason': 'cancelled'},
+                                 'created_unix': 1.0, 'source_event': EVENT,
+                                 'image_sha256': 'x' * 64, 'geometry': TRUTH,
+                                 'solve_snapshot': {}}):
+            outcome = run_retry_attempt(None, cameras=[('primary', cfg)],
+                                        deadline=time.monotonic() + 115, now_unix=NOW)
+        self.assertEqual(outcome['status'], 'skipped')
+        self.assertEqual(outcome['reason'], 'cancelled')
+        self.assertFalse((root / 'auto-calibration' / 'pending-apply.json').exists())
+        self.assertIsNone(read_status(root).get('completed_night'))
+
     def test_completed_night_stable_across_invocation_seconds(self):
         # Issue 3: a second invocation an hour and one second later
         # (timer randomized delay) must see the same night identifier

@@ -427,6 +427,11 @@ def solve(detections, visible, width, height, deadline=None, cancel_event=None, 
     fainter catalog stars are ignored.
     Returns a solved or failed result dict; never raises for bad input
     except SolverTimeout, which is converted to a failed result.
+    A cancellation is likewise returned, not raised — but its reason
+    is preserved: a thermal guard trip (a 'Star search stopped:'
+    message) returns reason 'thermal_block', so callers can report
+    a thermal skip instead of a generic failure. A plain
+    cancellation returns reason 'cancelled'.
     """
     if deadline is None:
         deadline = time.monotonic() + DEFAULT_DEADLINE_SECONDS
@@ -598,6 +603,15 @@ def solve(detections, visible, width, height, deadline=None, cancel_event=None, 
     except SolverTimeout:
         return {**result_base, 'status': 'failed', 'reason': 'timeout',
                 'detail': 'Solve exceeded its time budget; previous calibration untouched.'}
-    except SolverCancelled:
+    except SolverCancelled as exc:
+        # Preserve the thermal reason: _check_deadline converts a
+        # SearchGuard trip into a SolverCancelled carrying the guard's
+        # 'Star search stopped:' message. Collapsing that to a plain
+        # 'cancelled' here would lose the reason before the retry
+        # worker ever sees it, and a thermal stop would be reported
+        # as a failed solve instead of a thermal skip.
+        if str(exc).startswith('Star search stopped:'):
+            return {**result_base, 'status': 'failed', 'reason': 'thermal_block',
+                    'detail': str(exc)}
         return {**result_base, 'status': 'failed', 'reason': 'cancelled',
                 'detail': 'Solve cancelled; previous calibration untouched.'}

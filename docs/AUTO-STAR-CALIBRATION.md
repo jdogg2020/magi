@@ -355,7 +355,12 @@ and passed into verification and solving, so a Pi that heats up
 mid-attempt stops: detection and the solver check the guard
 periodically, and a guard trip is reported as a thermal skip (the
 next hourly invocation retries), not as a failed solve, with the
-old calibration preserved and no other camera attempted.
+old calibration preserved and no other camera attempted. The
+thermal reason is preserved through the solver: a guard trip
+inside the solver returns reason `thermal_block` (not a generic
+`cancelled`), and the worker handles a returned cancellation as a
+skip, so a stop inside the solver reports the same
+skipped/thermal_block status as a stop raised before solving.
 
 **Strengthened apply check and apply through the service.** The old
 configuration fingerprint covers stream URLs only. A solve now also

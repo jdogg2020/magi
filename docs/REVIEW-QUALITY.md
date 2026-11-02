@@ -31,8 +31,8 @@ rings use additional storage/network bandwidth but no video encoder.
 
 Click an event thumbnail to open its selected image first; video does not autoplay.
 **Play clip from beginning** starts the selected video at zero. **View image**
-returns to the object crop and **Full frame** displays the complete selected
-camera-resolution frame inline. The full-resolution frame link also opens this
+returns to the annotated full-frame image and **Full frame** displays the clean
+selected camera-resolution frame with switchable tracking inline. The full-resolution frame link also opens this
 image viewer instead of forcing a download.
 
 Choose **Camera substream** for the recorded color preview. Choose **Detection
@@ -43,27 +43,31 @@ replay because its timing differs from the native substream recording.
 ## Thumbnails
 
 After a newly captured original event is finalized, one low-priority worker
-extracts up to four candidate frames from it. Candidates favour larger tracked
-detections; native object crops are ranked by local contrast and edge detail.
-The complete selected JPEG is `best-frame.jpg` and its object-centred,
-non-upscaled crop is `thumbnail.jpg`. Both use original main-stream pixels.
-With no usable track, three full-frame candidates are considered and the
-thumbnail remains a full frame rather than inventing an object location.
+extracts up to four candidate frames from it. As of 0.20.11, candidates are spread
+across the most persistent recorded track, then ranked by local contrast and
+edge detail around the target. A large isolated flash does not automatically
+outrank a small persistent target. This remains a heuristic, not a classifier or
+a guarantee of the best view across every frame.
 
-The heuristic does not guarantee the best object image across every frame.
+`best-frame.jpg` is the clean selected main-camera image. `thumbnail.jpg` now
+keeps its entire native frame, without cropping or upscaling, and adds a red
+motion box and amber recorded path for the selected track when available.
+Unrelated or anonymous observations are never joined into a path; observation
+gaps longer than one second split it. With no usable track, three full-frame
+candidates are considered and no target is invented.
+
 Estimated host timing and a matching main/substream field of view are assumed;
-misalignment can misplace crops. Full frames and original footage remain
-available. `media.json` records selection time, score, native dimensions and crop.
-The thumbnail worker no longer encodes any video. It still briefly decodes
-main-stream footage for stills; this is not zero-cost on a Pi.
+the highlighted positions are approximate. Original footage remains untouched.
+`media.json` records selection time, score, native dimensions, scoring region,
+and normalized overlay geometry. The worker briefly decodes main-stream footage
+for stills but never re-encodes video; this is not zero-cost on a Pi.
 
 Only events triggered after this service start are considered for automatic
-thumbnail generation, at most four admitted at once. Existing thumbnails remain.
-Use **Improve thumbnail** to request selection/retry for an older original.
-Old events cannot acquire a missing substream recording retrospectively: they
-retain their detection replay and any files already saved. Existing 0.6 HD video
-files are left on disk for ordinary retention but are not offered as the new
-substream preview.
+thumbnail generation, at most four admitted at once. Existing archives are not
+mass-regenerated. Older events show their saved full-frame image immediately in
+the list/viewer, with estimated highlights where metadata permits. Use
+**Refresh thumbnail** to apply the new selection and embedded highlights to an
+older original. Old events cannot acquire missing recordings retrospectively.
 
 Jobs reserve temporary storage, use one FFmpeg decoder thread at low priority,
 validate volume identity before writes, and impose a 30-second extraction timeout.
@@ -80,10 +84,10 @@ assets are shipped or used at runtime.
 
 On high-resolution stills, red marks the estimated selected-image target, amber
 dots/path show the recorded main candidate's route, and green marks its last
-saved detection. Blue denotes other candidate tracks. Full-frame and cropped
-views use the same normalized track geometry transformed into the selected
-image's native pixel coordinates. The still is Magi's selected best candidate,
-not necessarily a clip's first frame. Crop/stream alignment remains approximate.
+saved detection. Blue denotes other candidate tracks. The clean full-frame viewer uses normalized track geometry transformed into
+the selected image's native pixel coordinates. The default thumbnail embeds
+only the selected target and its path. The still is Magi's selected best candidate,
+not necessarily a clip's first frame. Stream alignment remains approximate.
 
 During playback, the reticle follows interpolated saved centroids. The solid
 path grows up to the playhead; the dashed path shows the full recorded route,

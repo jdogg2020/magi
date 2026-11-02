@@ -6,7 +6,7 @@ Events is now a paginated table with a thumbnail, local capture time, duration,
 manual labels/review status, separate reference result, recording state and row
 actions. The Overview keeps its image cards. Clicking an image or Review opens
 the existing high-resolution image-first viewer; playback still uses the native
-camera substream. Previous/Next event navigate the current filtered page.
+camera substream. Previous/Next event navigate the current filtered archive across page and camera boundaries.
 
 Filters: search ID/type/labels/notes/reference status; exact manual label;
 reviewed/unreviewed; protected/unprotected; reference result; detector event type;
@@ -229,3 +229,16 @@ The detector replay CLI also ran at normalized 640×360 / 10 fps for 120 seconds
 unchanged baseline/candidate settings both emitted 45 detections and hit the
 64.5–65.3-second labeled target window. That CLI evaluates detections, not
 recording windows; normalized timing differs from native live analysis.
+
+## Faster sequential review (0.20.11)
+
+Navigation requests adjacent events in one archive query, instead of repeatedly
+fetching pages up to the current event. Each camera archive is scanned once per
+lookup, and media details are loaded only for its nearest neighbors. This still
+scans metadata; very large archives benefit from date filters.
+
+Quick categories save first and then advance without waiting for a list redraw.
+The active filters and order are preserved even when marking reviewed or moving
+to trash removes the current event from those filters. Failed saves stay on the
+current event; an unavailable camera archive reports a navigation error instead
+of claiming the end of the list. The list refreshes after closing review.

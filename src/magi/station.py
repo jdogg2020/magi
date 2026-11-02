@@ -5,6 +5,7 @@ Additional cameras have private configs and isolated recording directories.
 """
 import copy
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -214,6 +215,15 @@ class Station:
             raise ReviewError('Invalid event filters.')
         value = dict(value)
         identity = value.pop('camera_id', 'all')
+        anchor = value.pop('anchor', None)
+        if anchor is not None:
+            if (not isinstance(anchor, dict) or set(anchor) != {'id','camera_id','trigger_unix'}
+                    or not isinstance(anchor['id'], str) or not EVENT_ID.fullmatch(anchor['id'])
+                    or not isinstance(anchor['camera_id'], str) or not CAMERA_ID.fullmatch(anchor['camera_id'])
+                    or isinstance(anchor['trigger_unix'], bool) or not isinstance(anchor['trigger_unix'], (int,float))
+                    or not math.isfinite(anchor['trigger_unix'])):
+                raise ReviewError('Invalid event navigation anchor.')
+            anchor = (anchor['trigger_unix'], anchor['id'], anchor['camera_id'])
         f = event_filters(value)
         with self.lock:
             entries = [(dict(item), self.workers[item['id']]) for item in self.registry['cameras'] if not self.is_forgotten(item)]
@@ -226,7 +236,7 @@ class Station:
             try:
                 if worker.app is None:
                     raise ValueError()
-                page = worker.app.event_page(value, window=(0, f['offset']+f['limit']))
+                page = worker.app.event_page(value, anchor=anchor) if anchor is not None else worker.app.event_page(value, window=(0, f['offset']+f['limit']))
                 if page.get('message'):
                     unavailable.append(item['id'])
                 total += page['total']
@@ -237,6 +247,16 @@ class Station:
             except (ValueError, OSError):
                 unavailable.append(item['id'])
         rows.sort(key=lambda row: (row.get('trigger_unix', 0), row['id'], row['camera_id']), reverse=f['sort']=='newest')
+        if anchor is not None:
+            previous, following = None, None
+            for row in rows:
+                key = (row.get('trigger_unix',0), row['id'], row['camera_id'])
+                before = key < anchor if f['sort']=='oldest' else key > anchor
+                if before:
+                    previous = row
+                elif key != anchor and following is None:
+                    following = row
+            return {'previous':previous, 'next':following, 'unavailable_cameras':unavailable}
         result = {'events': rows[f['offset']:f['offset']+f['limit']], 'total': total,
                   'offset': f['offset'], 'limit': f['limit'], 'labels': sorted(labels),
                   'unavailable_cameras': unavailable}

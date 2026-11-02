@@ -11,12 +11,13 @@ import time
 import uuid
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from .recorder import stop_process
 from .storage import atomic_json
 
-PROFILE = 2
+PROFILE = 3
+VIDEO_PROFILE = 2
 
 
 def clip_time(meta, host_unix):
@@ -31,30 +32,77 @@ def clip_time(meta, host_unix):
     return None
 
 
-def candidates(meta, duration):
-    selected = []
-    tracks = sorted(meta.get('track_samples', []), key=lambda row: row.get('pixels', 0), reverse=True)
-    for row in tracks[:1200]:
+def track_rows(meta, duration):
+    """Validate qualified samples; never join unrelated/anonymous identities."""
+    result = []
+    for row in meta.get('track_samples', [])[:1200]:
         try:
             host = row.get('sample_host_unix')
             if host is None:
                 host = datetime.fromisoformat(row['host_utc'].replace('Z', '+00:00')).timestamp()
             seconds = clip_time(meta, host)
             width, height = row['width'], row['height']
-            box = row['box']
-            point = [row['x'] / width, row['y'] / height, (box[2]-box[0]) / width, (box[3]-box[1]) / height]
-            if (seconds is None or not 0 <= seconds < duration or not all(math.isfinite(v) and 0 <= v <= 1 for v in point)
-                    or any(abs(seconds - item['seconds']) < .25 for item in selected)):
+            box = [row['box'][i]/(width if i%2==0 else height) for i in range(4)]
+            point = [row['x']/width, row['y']/height, box[2]-box[0], box[3]-box[1]]
+            if (seconds is None or not 0 <= seconds < duration or
+                    not all(math.isfinite(v) and 0 <= v <= 1 for v in [*point,*box]) or
+                    box[2]<=box[0] or box[3]<=box[1]):
                 continue
-            selected.append({'seconds': seconds, 'target': point})
-            if len(selected) == 4:
-                break
-        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            track_id = row.get('track_id')
+            result.append({'seconds':seconds, 'target':point, 'box':box,
+                           'track_id':track_id if isinstance(track_id,str) else None})
+        except (KeyError, TypeError, ValueError, IndexError, ZeroDivisionError):
             continue
-    if not selected:
-        selected = [{'seconds': min(max(0, duration-.05), duration*fraction), 'target': None}
-                    for fraction in (.25, .5, .75)]
-    return selected
+    return sorted(result, key=lambda r:r['seconds'])
+
+
+def candidates(meta, duration):
+    rows = track_rows(meta, duration)
+    if rows:
+        groups = {}
+        for index,row in enumerate(rows):
+            groups.setdefault(row['track_id'] or ('anonymous',index), []).append(row)
+        # Prefer a persistent identity over the largest changed area. This is
+        # still a heuristic, not a cloud/aircraft classifier.
+        primary = max(groups.values(), key=lambda group:(group[-1]['seconds']-group[0]['seconds'],len(group)))
+        chosen = []
+        for index in dict.fromkeys(round(i*(len(primary)-1)/3) for i in range(4)):
+            row = primary[index]
+            if not any(abs(row['seconds']-r['seconds'])<.25 for r in chosen):
+                chosen.append(row)
+        return chosen
+    return [{'seconds': min(max(0,duration-.05),duration*f), 'target':None,
+             'track_id':None, 'box':None} for f in (.25,.5,.75)]
+
+
+def annotate_thumbnail(image, candidate, meta, duration):
+    """Full native image with estimated substream geometry; clean frame is separate."""
+    output = image.copy().convert('RGB')
+    draw = ImageDraw.Draw(output)
+    width,height = image.size
+    line = max(2, round(min(width,height)/350))
+    paths, current, previous = [], [], None
+    if candidate.get('track_id'):
+        rows = [r for r in track_rows(meta,duration) if r['track_id']==candidate['track_id']]
+        # Split gaps; do not draw a fictitious straight line across a lost track.
+        for row in rows:
+            if previous is not None and row['seconds']-previous>1:
+                if len(current)>1:paths.append(current)
+                current=[]
+            current.append(row['target'][:2]);previous=row['seconds']
+        if len(current)>1:paths.append(current)
+    for path in paths:
+        pixels=[(round(x*width),round(y*height)) for x,y in path]
+        draw.line(pixels,fill='#151a22',width=line+4)
+        draw.line(pixels,fill='#ffce5b',width=line)
+    box = candidate.get('box')
+    if box:
+        pad=max(6,round(min(width,height)*.006))
+        pixels=[max(0,round(box[0]*width)-pad),max(0,round(box[1]*height)-pad),
+                min(width-1,round(box[2]*width)+pad),min(height-1,round(box[3]*height)+pad)]
+        draw.rectangle(pixels,outline='#151a22',width=line+4)
+        draw.rectangle(pixels,outline='#ff665e',width=line)
+    return output, {'box':box, 'paths':paths, 'coordinates':'normalized_full_frame'}
 
 
 def crop_box(size, target):
@@ -115,7 +163,7 @@ class Media:
         if not force and status.is_file():
             try:
                 value = json.loads(status.read_text())
-                if value.get('profile') == PROFILE and value.get('status') in ('ready', 'failed'):
+                if value.get('profile') == (VIDEO_PROFILE if full_quality else PROFILE) and value.get('status') in ('ready', 'failed'):
                     return False
             except (OSError, ValueError):
                 pass
@@ -129,7 +177,7 @@ class Media:
                     return False
                 if full_quality:
                     self._guard(directory, identity)
-                    atomic_json(status, {'profile': PROFILE, 'status': 'queued'})
+                    atomic_json(status, {'profile': VIDEO_PROFILE, 'status': 'queued'})
                 self.ids.add(meta['id']); self.reservations[meta['id']] = reserve
                 try:
                     self.pending.put_nowait((directory, meta, identity, full_quality))
@@ -218,11 +266,13 @@ class Media:
                         score = quality(image.crop(box))
                         ranked += 1
                         if best is None or score > best['score']:
-                            image.crop(box).save(work / 'candidate-crop.jpg', 'JPEG', quality=95)
+                            annotated, overlay = annotate_thumbnail(image, candidate, meta, duration)
+                            annotated.save(work / 'candidate-full.jpg', 'JPEG', quality=95)
+                            annotated.close()
                             self._guard(directory, identity)
                             path.replace(work / 'best.jpg')
-                            (work / 'candidate-crop.jpg').replace(work / 'thumbnail.jpg')
-                            best = {**candidate, 'score': score, 'crop': list(box), 'native_width': image.width,
+                            (work / 'candidate-full.jpg').replace(work / 'thumbnail.jpg')
+                            best = {**candidate, 'score': score, 'crop': [0,0,image.width,image.height], 'selection_region':list(box), 'overlay':overlay, 'overlay_baked':True, 'native_width': image.width,
                                     'native_height': image.height}
                 except InterruptedError:
                     raise
@@ -241,9 +291,9 @@ class Media:
             atomic_json(directory / 'media.json', {'profile': PROFILE, 'status': 'ready', 'source': 'clip.mkv',
                 'video': {'file': 'preview-substream.mp4', 'method': 'camera_substream_stream_copy; no video transcode'},
                 'thumbnail': {'file': 'thumbnail.jpg', 'full_frame_file': 'best-frame.jpg',
-                    'selection': 'highest_contrast_and_sharpness_among_candidates', 'candidate_count': ranked, 'attempted_candidate_count': attempted,
+                    'selection': 'highest_local_contrast_and_sharpness_among_persistent_track_samples', 'candidate_count': ranked, 'attempted_candidate_count': attempted,
                     'crop_format': 'left_top_right_bottom_native_pixels',
-                    'zoom': 'native_pixel_crop; no upscaling', 'timing': 'estimated host-receipt mapping',
+                    'zoom': 'full_frame; no crop or upscaling', 'timing': 'estimated host-receipt mapping',
                     'geometry': 'main and analysis streams assumed to share the same field of view', **best}})
         finally:
             try:
@@ -274,7 +324,7 @@ class Media:
                 raise ValueError('Full-quality copy is incomplete; download the original instead.')
             self._guard(directory, identity)
             output.replace(directory / 'full-video.mp4')
-            atomic_json(directory / 'full-video.json', {'profile': PROFILE, 'status': 'ready',
+            atomic_json(directory / 'full-video.json', {'profile': VIDEO_PROFILE, 'status': 'ready',
                         'codec': codec, 'method': 'camera_main_stream_copy; no video transcode'})
         finally:
             self._guard(directory, identity, allow_stopped=True)
@@ -295,7 +345,7 @@ class Media:
                     self._guard(directory, identity)
                     status = directory / ('full-video.json' if full_quality else 'media.json')
                     previous = json.loads(status.read_text()) if status.is_file() else {}
-                    atomic_json(status, {**previous, 'profile': PROFILE, 'status': 'failed',
+                    atomic_json(status, {**previous, 'profile': VIDEO_PROFILE if full_quality else PROFILE, 'status': 'failed',
                         'reason': type(error).__name__, 'detail': str(error)[:240], 'fallback': 'detection replay remains available'})
                 except (OSError, InterruptedError):
                     pass

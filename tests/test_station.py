@@ -220,6 +220,34 @@ class StationTests(unittest.TestCase):
         for value in ({'camera_id':'missing'},{'camera_id':[]},{'limit':101},{'offset':True}):
             with self.assertRaises(ValueError):station.event_page(value)
 
+    def test_station_neighbors_scan_once_per_camera_and_keep_removed_anchor(self):
+        station,other=self.archive_station()
+        targets=[self.archive_event(station,'primary' if i%2 else other,i,1000+i) for i in range(130)]
+        anchor={**targets[110],'trigger_unix':1110}
+        with patch.object(station.camera('primary'),'event_page',wraps=station.camera('primary').event_page) as first, patch.object(station.camera(other),'event_page',wraps=station.camera(other).event_page) as second:
+            page=station.event_page({'sort':'oldest','anchor':anchor})
+            self.assertEqual(first.call_count,1);self.assertEqual(second.call_count,1)
+            self.assertEqual(page['previous']['id'],targets[109]['id'])
+            self.assertEqual(page['next']['id'],targets[111]['id'])
+        station.manage_events({'targets':[targets[110]],'changes':{'reviewed':True}})
+        page=station.event_page({'sort':'oldest','reviewed':'no','anchor':anchor})
+        self.assertEqual(page['next']['id'],targets[111]['id'])
+        page=station.event_page({'sort':'newest','anchor':anchor})
+        self.assertEqual(page['next']['id'],targets[109]['id'])
+        for bad in ({}, {**anchor,'trigger_unix':float('nan')}, {**anchor,'id':'../escape'}):
+            with self.assertRaises(ValueError):station.event_page({'anchor':bad})
+
+    def test_station_neighbors_disambiguate_identical_id_and_timestamp_across_cameras(self):
+        station,other=self.archive_station()
+        self.archive_event(station,'primary',1,1000)
+        twin=self.archive_event(station,other,1,1000)
+        self.archive_event(station,'primary',2,1001)
+        page=station.event_page({'sort':'oldest','anchor':{**twin,'trigger_unix':1000}})
+        self.assertEqual(page['next']['camera_id'],'primary')
+        self.assertEqual(page['next']['id'],twin['id'])
+        page=station.event_page({'camera_id':other,'sort':'oldest','anchor':{**twin,'trigger_unix':1000}})
+        self.assertIsNone(page['next']);self.assertIsNone(page['previous'])
+
     def test_station_bulk_collision_isolation_validation_and_partial_failure(self):
         station, other = self.archive_station()
         first = self.archive_event(station,'primary',1,1000)

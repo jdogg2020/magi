@@ -219,6 +219,12 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  context.fetch=savedFetch;
 
  assert(elements['review-still'].src.includes('/thumbnail'),'Image should be the native-resolution thumbnail');
+ assert(tracked.media_detail.overlay_baked,'New event thumbnails embed motion highlights');
+ assert.deepEqual(tracked.media_detail.crop,[0,0,tracked.media_detail.native_width,tracked.media_detail.native_height],'Thumbnail must retain the whole native frame');
+ vm.runInContext("reviewEvent.media_detail.overlay_baked=false;showReviewImage()",context);
+ assert(elements['review-still'].src.includes('/frame?'),'Legacy cropped thumbnails must open their full-frame source');
+ vm.runInContext("reviewEvent.media_detail.overlay_baked=true;showReviewImage()",context);
+ assert(elements['show-tracker'].disabled,'Embedded highlights must not offer a misleading off switch');
  assert(elements['review-video'].classList.contains('hidden'),'Video should stay hidden until Play');
  assert(!elements['review-video'].playCalls,'Opening the image must not autoplay');
  elements['review-play'].onclick();

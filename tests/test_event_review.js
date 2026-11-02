@@ -12,6 +12,7 @@ const ctx={console,setTimeout,csrf:'token',selectedCamera:'a',clipSignature:'',r
   if(path.endsWith('/update')){updates++;if(failUpdate)return {updated:[],failed:[{error:'Test save rejected'}]};const row=records.find(r=>r.id===data.targets[0].id && r.camera_id===data.targets[0].camera_id);if(data.action==='update')Object.assign(row.review,data.changes);else row.review.trashed_at=data.action==='trash'?1:null;return {updated:data.targets,failed:[]};}
   queries.push(data);let rows=records.filter(r=>(data.reviewed!=='no'||!r.review.reviewed)&&(data.camera_id==='all'||data.camera_id===r.camera_id)&&(data.trash==='all'||(data.trash==='trash')===(r.review.trashed_at!=null)));
   rows.sort((a,b)=>(a.trigger_unix-b.trigger_unix || a.id.localeCompare(b.id)||a.camera_id.localeCompare(b.camera_id))*(data.sort==='oldest'?1:-1));
+  if(data.anchor){const a=data.anchor,compare=r=>(r.trigger_unix-a.trigger_unix || r.id.localeCompare(a.id)||r.camera_id.localeCompare(a.camera_id))*(data.sort==='oldest'?1:-1);return {previous:structuredClone(rows.filter(r=>compare(r)<0).at(-1)||null),next:structuredClone(rows.find(r=>compare(r)>0)||null),unavailable_cameras:[]};}
   return {events:structuredClone(rows.slice(data.offset,data.offset+data.limit)),total:rows.length,offset:data.offset,labels:[]};
  }};
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('src/magi/web/events.js','utf8'),ctx);
@@ -25,7 +26,7 @@ const settle=async()=>{for(let i=0;i<20;i++)await new Promise(resolve=>setImmedi
  el('review-event-next').onclick();await settle();assert.equal(ctx.reviewEvent.camera_id,'b');
  el('review-event-next').onclick();await settle();assert.equal(ctx.reviewEvent.id,'0126');
  el('review-event-prev').onclick();await settle();assert.equal(ctx.reviewEvent.camera_id,'b');
- assert(queries.some(q=>q.offset===100),'Navigation must read beyond the first page');
+ assert(queries.some(q=>q.anchor),'Navigation asks for adjacent events directly');assert(!queries.some(q=>q.offset===100),'Navigation must not scan archive pages');
  await el('review-mark').onclick();await settle();assert(ctx.reviewEvent.review.reviewed);
  el('review-event-next').onclick();await settle();assert.equal(ctx.reviewEvent.id,'0126','A removed anchor must not skip its successor');
  await el('review-keep').onclick();assert(el('review-trash').disabled);
@@ -43,7 +44,8 @@ const settle=async()=>{for(let i=0;i<20;i++)await new Promise(resolve=>setImmedi
  ctx.openReview(records[20]);await settle();
  el('review-notes').value='Save this note';el('review-protected').checked=true;
  el('review-labels').value='Interesting';
- await el('review-label-aircraft').onclick();await settle();
+ const queryStart=queries.length;await el('review-label-aircraft').onclick();await settle();
+ assert.equal(queries.length-queryStart,2,'One neighbor lookup after save and one on opening next; no list refresh blocks advance');
  assert.equal(ctx.reviewEvent.id,'0021','Category saves and advances in current order');
  assert.deepEqual(Array.from(records[20].review.labels),['interesting','aircraft']);
  assert.equal(records[20].review.notes,'Save this note');assert(records[20].review.protected);

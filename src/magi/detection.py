@@ -13,6 +13,7 @@ import uuid
 import numpy as np
 
 from .recorder import stop_process
+from .masks import weights
 
 
 class Tracker:
@@ -34,13 +35,7 @@ class Tracker:
         self.last_mask = np.zeros(current.shape, dtype=bool)
         self.mask_suppressed = False
         if self.active_pixels is None or self.active_pixels.shape != current.shape:
-            height, width = current.shape
-            xs, ys = (np.arange(width) + .5) / width, (np.arange(height) + .5) / height
-            self.active_pixels = np.ones(current.shape, dtype=bool)
-            for zone in self.s.get('ignore_zones', []):
-                columns = (xs >= zone['x']) & (xs < zone['x'] + zone['width'])
-                rows = (ys >= zone['y']) & (ys < zone['y'] + zone['height'])
-                self.active_pixels[np.ix_(rows, columns)] = False
+            self.active_pixels, self.motion_weights = weights(self.s.get('ignore_zones', []), current.shape)
         if self.previous is None:
             self.previous = current.copy()
             return [], []
@@ -73,6 +68,7 @@ class Tracker:
         # Keep raw changed pixels for review. Only detection uses the exclusion mask.
         self.last_mask = mask.copy()
         mask &= self.active_pixels
+        mask &= delta * self.motion_weights >= self.s['threshold']
         if np.count_nonzero(mask) > np.count_nonzero(self.active_pixels) * self.s['max_changed_fraction']:
             self.tracks.clear()
             self.meteor_tracks.clear()

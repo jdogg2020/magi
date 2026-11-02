@@ -32,8 +32,9 @@ function drawOverviewZones(tile) {
   overlay.width=width;overlay.height=height;
   const ctx=overlay.getContext('2d');
   ctx.clearRect(0,0,width,height);
-  ctx.fillStyle='rgba(255, 180, 60, 0.32)';
+  ctx.fillStyle='rgba(255, 180, 60, 0.32)';ctx.strokeStyle='#ffbf72';ctx.lineWidth=1;
   for(const z of zones) {
+    if(z?.points || z?.feather){ paintZone(ctx,z,width,height); continue; }
     if(!z || ![z.x,z.y,z.width,z.height].every(Number.isFinite) || z.x<0 || z.y<0 || z.width<=0 || z.height<=0 || z.x+z.width>1 || z.y+z.height>1)continue;
     const left=Math.max(0,Math.ceil(z.x*width-.5)), top=Math.max(0,Math.ceil(z.y*height-.5));
     const right=Math.min(width,Math.ceil((z.x+z.width)*width-.5)), bottom=Math.min(height,Math.ceil((z.y+z.height)*height-.5));
@@ -379,7 +380,8 @@ async function fillSettings() {
   $('enabled').checked = s.detection.enabled;
   for(const key of ['lightning_enabled','meteor_enabled','retain_aircraft_matches','retain_satellite_matches']) $(key).checked=s.detection[key] ?? true;
   for(const kind of ['motion','lightning_candidate','meteor_candidate']) $('retain-'+kind).checked=(s.detection.retain_types || ['motion','lightning_candidate','meteor_candidate']).includes(kind);
-  ignoreZones = (s.detection.ignore_zones || []).map(zone => ({...zone}));
+  ignoreZones = JSON.parse(JSON.stringify(s.detection.ignore_zones || []));
+  selectedZone=-1;polygonDraft=[];zoneDrag=null;zoneDraft=null;zoneStart=null;
   renderZoneList(); drawZones(); loadZoneImage();
   const id = s.identification || {};
   for (const key of ['latitude','longitude','elevation_m','azimuth_deg','elevation_deg','roll_deg','horizontal_fov_deg','vertical_fov_deg','tolerance_deg','aircraft_feed_url','satellite_group','aircraft_provider','location_source']) $('id-'+key).value = id[key] ?? '';
@@ -437,7 +439,7 @@ async function refreshFrame() {
   if(!$('settings').classList.contains('hidden'))requests.push(updateLiveFrame(selectedCamera,$('camera-frame'),$('camera-empty'),settingsFrame));
   await Promise.all(requests);
 }
-$('settings-form').onsubmit = async event => { event.preventDefault(); const submit = event.submitter; submit.disabled = true; $('settings-result').textContent = 'Saving…'; const camera = {}; for (const key of ['host', 'username', 'mainstream_path', 'substream_path']) camera[key] = $(key).value.trim(); camera.port = Number($('port').value); camera.api_scheme = $('api_scheme').value; camera.api_port = Number($('api_port').value); camera.password = $('camera-password').value;
+$('settings-form').onsubmit = async event => { event.preventDefault(); if(polygonDraft.length){$('settings-result').textContent='Finish the polygon or undo its points before saving.';return;} const submit = event.submitter; submit.disabled = true; $('settings-result').textContent = 'Saving…'; const camera = {}; for (const key of ['host', 'username', 'mainstream_path', 'substream_path']) camera[key] = $(key).value.trim(); camera.port = Number($('port').value); camera.api_scheme = $('api_scheme').value; camera.api_port = Number($('api_port').value); camera.password = $('camera-password').value;
   const recording = {}; for (const key of ['pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds']) recording[key] = Number($(key).value);
   const detection = {enabled: $('enabled').checked, ignore_zones: ignoreZones.map(zone => ({...zone}))}; for (const key of ['threshold', 'min_pixels', 'min_seconds', 'min_travel']) detection[key] = Number($(key).value);
   for(const key of ['lightning_enabled','meteor_enabled','retain_aircraft_matches','retain_satellite_matches']) detection[key]=$(key).checked;
@@ -458,34 +460,82 @@ $('trigger').onclick = async () => { connectionStartedAt = 0; $('trigger').disab
 $('reconnect').onclick = async () => { try { await api('/api/reconnect', {}); $('settings-result').textContent = 'Reconnecting…'; } catch(error) { $('settings-result').textContent = error.message; } };
 
 $('review-close').onclick = () => { if(MagiEvents.mayLeave()) $('review').close(); }; $('review').addEventListener('close', () => { $('review-video').pause(); $('review-video').removeAttribute('src'); $('review-video').load(); reviewGeneration++; reviewFrames = []; reviewMeta = null; reviewEvent = null; reviewMode = 'image'; $('review-still').removeAttribute('src'); drawMotion(); });
+let polygonDraft = [], zoneDrag = null, selectedZone = -1;
+function zonePoints(zone) {
+  return zone.points || [[zone.x,zone.y],[zone.x+zone.width,zone.y],[zone.x+zone.width,zone.y+zone.height],[zone.x,zone.y+zone.height]];
+}
+function zonePath(ctx, points, w, h) {
+  ctx.beginPath(); points.forEach(([x,y],i)=>i ? ctx.lineTo(x*w,y*h) : ctx.moveTo(x*w,y*h)); ctx.closePath();
+}
+function paintZone(ctx, zone, w, h) {
+  const points=zonePoints(zone), radius=(zone.feather || 0)*Math.min(w,h);
+  // Nested translucent strokes preview the outward falloff. Inner half is
+  // covered by the solid exclusion fill; this is a visual guide, not a raster.
+  if(radius){
+    ctx.save(); ctx.lineJoin='round';ctx.strokeStyle='rgba(255,174,76,.035)';
+    for(let i=12;i>=1;i--){zonePath(ctx,points,w,h);ctx.lineWidth=2*radius*i/12;ctx.stroke();}
+    ctx.restore();
+  }
+  zonePath(ctx,points,w,h);ctx.fill();ctx.stroke();
+}
 function drawZones() {
-  const canvas = $('zone-canvas'), context = canvas.getContext('2d');
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  for (const [index, zone] of [...ignoreZones, ...(zoneDraft ? [zoneDraft] : [])].entries()) {
-    context.fillStyle = 'rgba(255,174,76,.28)'; context.strokeStyle = '#ffbf72'; context.lineWidth = 2;
-    context.fillRect(zone.x * canvas.width, zone.y * canvas.height, zone.width * canvas.width, zone.height * canvas.height);
-    context.strokeRect(zone.x * canvas.width, zone.y * canvas.height, zone.width * canvas.width, zone.height * canvas.height);
+  const canvas=$('zone-canvas'), ctx=canvas.getContext('2d');
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  [...ignoreZones,...(zoneDraft?[zoneDraft]:[])].forEach((zone,index)=>{
+    ctx.fillStyle='rgba(255,174,76,.28)';ctx.strokeStyle=index===selectedZone?'#fff':'#ffbf72';ctx.lineWidth=2;
+    paintZone(ctx,zone,canvas.width,canvas.height);
+    if(index===selectedZone && $('zone-mode').value==='edit'){
+      const bounds=canvas.getBoundingClientRect(), size=8*canvas.width/(bounds.width||320);
+      zonePoints(zone).forEach(([x,y],i,points)=>{
+        ctx.fillStyle='#fff';ctx.fillRect(x*canvas.width-size/2,y*canvas.height-size/2,size,size);
+        const next=points[(i+1)%points.length];ctx.fillStyle='#ffbf72';
+        ctx.fillRect((x+next[0])/2*canvas.width-size/3,(y+next[1])/2*canvas.height-size/3,size*2/3,size*2/3);
+      });
+    }
+  });
+  if(polygonDraft.length){
+    ctx.strokeStyle='#fff';ctx.fillStyle='#fff';ctx.beginPath();
+    polygonDraft.forEach(([x,y],i)=>{if(i)ctx.lineTo(x*canvas.width,y*canvas.height);else ctx.moveTo(x*canvas.width,y*canvas.height);ctx.fillRect(x*canvas.width-3,y*canvas.height-3,6,6);});ctx.stroke();
   }
 }
+function zoneChanged(message='Mask changed.') { renderZoneList();drawZones();$('zone-status').textContent=message+' Save settings to apply.'; }
 function renderZoneList() {
-  const list = $('zone-list'); list.replaceChildren();
-  ignoreZones.forEach((zone, index) => {
-    const row = document.createElement('div'); row.className = 'zone-row';
-    const label = document.createElement('span');
-    label.textContent = `Zone ${index + 1}: left ${(zone.x * 100).toFixed(1)}%, top ${(zone.y * 100).toFixed(1)}%, ${(zone.width * 100).toFixed(1)}% × ${(zone.height * 100).toFixed(1)}%`;
-    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'quiet'; remove.textContent = 'Remove';
-    remove.setAttribute('aria-label', `Remove ignore zone ${index + 1}`);
-    remove.onclick = () => { ignoreZones.splice(index, 1); renderZoneList(); drawZones(); $('zone-status').textContent = 'Zone removed. Save settings to apply.'; };
-    row.append(label, remove); list.append(row);
+  const list=$('zone-list');list.replaceChildren();
+  ignoreZones.forEach((zone,index)=>{
+    const row=document.createElement('div');row.className='zone-row';
+    const label=document.createElement('button');label.type='button';label.className='secondary';
+    label.textContent=`Zone ${index+1} · ${zone.points ? zone.points.length+' corners' : 'rectangle'} · edit`;
+    label.onclick=()=>{selectedZone=index;$('zone-mode').value='edit';$('zone-feather').value=(zone.feather||0)*100;zoneChanged('Drag a white corner or an amber side handle.');};
+    const remove=document.createElement('button');remove.type='button';remove.className='quiet';remove.textContent='Remove';
+    remove.setAttribute('aria-label',`Remove ignore zone ${index+1}`);
+    remove.onclick=()=>{ignoreZones.splice(index,1);selectedZone=-1;zoneChanged('Zone removed.');};
+    row.append(label,remove);list.append(row);
   });
 }
-function addZone(zone) {
-  if (ignoreZones.length >= 32) { $('zone-status').textContent = 'You can save up to 32 zones.'; return false; }
-  if (!Object.values(zone).every(Number.isFinite) || zone.x < 0 || zone.y < 0 || zone.width <= 0 || zone.height <= 0 || zone.x + zone.width > 1 || zone.y + zone.height > 1) {
-    $('zone-status').textContent = 'The rectangle must have a positive size and fit inside the image.'; return false;
+function validPolygon(points) {
+  if(points.length<3 || points.length>64)return false;
+  const cross=(a,b,c)=>(b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);
+  const on=(a,b,c)=>Math.abs(cross(a,b,c))<1e-12 && [0,1].every(k=>c[k]>=Math.min(a[k],b[k])-1e-12 && c[k]<=Math.max(a[k],b[k])+1e-12);
+  let area=0;
+  for(let i=0;i<points.length;i++){
+    const a=points[i],b=points[(i+1)%points.length];
+    if(a[0]===b[0] && a[1]===b[1])return false;
+    area+=a[0]*b[1]-b[0]*a[1];
+    for(let j=i+2;j<points.length;j++){
+      if(i===0 && j===points.length-1)continue;
+      const c=points[j],d=points[(j+1)%points.length];
+      if(cross(a,b,c)*cross(a,b,d)<0 && cross(c,d,a)*cross(c,d,b)<0 || on(a,b,c)||on(a,b,d)||on(c,d,a)||on(c,d,b))return false;
+    }
   }
-  ignoreZones.push(zone); renderZoneList(); drawZones();
-  $('zone-status').textContent = `${ignoreZones.length} ignore zone(s). Save settings to apply.`; return true;
+  return Math.abs(area)>=1e-10;
+}
+function addZone(zone) {
+  if(ignoreZones.length>=32){$('zone-status').textContent='You can save up to 32 zones.';return false;}
+  if(zone.points ? !validPolygon(zone.points) : ![zone.x,zone.y,zone.width,zone.height].every(Number.isFinite) || zone.x<0 || zone.y<0 || zone.width<=0 || zone.height<=0 || zone.x+zone.width>1 || zone.y+zone.height>1){
+    $('zone-status').textContent='Use a non-crossing shape with positive area inside the image.';return false;
+  }
+  zone.feather=Math.min(.1,Math.max(0,Number($('zone-feather').value)||0)/100);
+  ignoreZones.push(zone);selectedZone=ignoreZones.length-1;zoneChanged('Zone added.');return true;
 }
 async function loadZoneImage() {
   try {
@@ -499,13 +549,13 @@ async function loadZoneImage() {
 }
 $('zone-frame').onload = () => {
   const canvas = $('zone-canvas'), image = $('zone-frame');
-  canvas.width = image.naturalWidth || 320; canvas.height = image.naturalHeight || 180;
+  canvas.width = Math.max(640,image.naturalWidth || 320); canvas.height = Math.round(canvas.width*(image.naturalHeight || 180)/(image.naturalWidth || 320));
   zoneFrameReady = true; drawZones();
-  $('zone-status').textContent = 'Drag to exclude an area, or enter rectangle coordinates below. Save settings to apply.';
+  $('zone-status').textContent = 'Choose Polygon to click around an obstruction, or Edit to drag corners and sides. Save settings to apply.';
 };
 $('zone-refresh').onclick = loadZoneImage;
 $('zone-add').onclick = () => addZone(Object.fromEntries(['x', 'y', 'width', 'height'].map(key => [key, Number($('zone-' + key).value) / 100])));
-$('zone-clear').onclick = () => { ignoreZones = []; zoneDraft = null; zoneStart = null; renderZoneList(); drawZones(); $('zone-status').textContent = 'All zones cleared. Save settings to apply.'; };
+$('zone-clear').onclick = () => { ignoreZones = []; polygonDraft=[];selectedZone=-1;zoneDrag=null; zoneDraft = null; zoneStart = null; renderZoneList(); drawZones(); $('zone-status').textContent = 'All zones cleared. Save settings to apply.'; };
 function zonePoint(event) {
   const bounds = $('zone-canvas').getBoundingClientRect();
   if (!bounds.width || !bounds.height) return null;
@@ -515,23 +565,74 @@ function zoneRectangle(start, end) {
   const x = Math.min(start.x, end.x), y = Math.min(start.y, end.y);
   return {x, y, width: Math.min(Math.abs(start.x - end.x), 1 - x), height: Math.min(Math.abs(start.y - end.y), 1 - y)};
 }
-$('zone-canvas').onpointerdown = event => {
-  if (!zoneFrameReady || (event.button !== undefined && event.button !== 0)) return;
-  event.preventDefault(); zoneStart = zonePoint(event); zoneDraft = null;
-  if (zoneStart) $('zone-canvas').setPointerCapture(event.pointerId);
+function snapZonePoint(point) {
+  const bounds=$('zone-canvas').getBoundingClientRect();
+  return {x:point.x*bounds.width<6?0:(1-point.x)*bounds.width<6?1:point.x,
+    y:point.y*bounds.height<6?0:(1-point.y)*bounds.height<6?1:point.y};
+}
+$('zone-mode').onchange=()=>{polygonDraft=[];zoneDraft=null;zoneStart=null;zoneDrag=null;drawZones();};
+$('zone-finish').onclick=()=>{if(addZone({points:polygonDraft.map(p=>[...p])})){polygonDraft=[];$('zone-mode').value='edit';drawZones();}};
+$('zone-undo-point').onclick=()=>{polygonDraft.pop();drawZones();};
+$('zone-feather').oninput=()=>{
+  if(selectedZone>=0 && $('zone-mode').value==='edit'){
+    ignoreZones[selectedZone].feather=Math.min(.1,Math.max(0,Number($('zone-feather').value)||0)/100);zoneChanged('Soft boundary updated.');
+  }else drawZones();
 };
-$('zone-canvas').onpointermove = event => {
-  if (!zoneStart) return; const point = zonePoint(event); if (!point) return;
-  zoneDraft = zoneRectangle(zoneStart, point); drawZones();
+function zoneHit(point) {
+  const bounds=$('zone-canvas').getBoundingClientRect();
+  const distance=(a,b)=>Math.hypot((a[0]-b[0])*bounds.width,(a[1]-b[1])*bounds.height);
+  const order=ignoreZones.map((_,i)=>i).reverse();
+  if(selectedZone>=0){order.splice(order.indexOf(selectedZone),1);order.unshift(selectedZone);}
+  for(const index of order){
+    const p=zonePoints(ignoreZones[index]);
+    for(let k=0;k<p.length;k++)if(distance(p[k],[point.x,point.y])<=10)return {index,vertices:[k]};
+    for(let k=0;k<p.length;k++){
+      const a=p[k],b=p[(k+1)%p.length],dx=(b[0]-a[0])*bounds.width,dy=(b[1]-a[1])*bounds.height;
+      const t=Math.max(0,Math.min(1,((point.x-a[0])*bounds.width*dx+(point.y-a[1])*bounds.height*dy)/(dx*dx+dy*dy)));
+      if(distance([a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])],[point.x,point.y])<=10)return {index,vertices:[k,(k+1)%p.length]};
+    }
+  }
+  return null;
+}
+$('zone-canvas').onpointerdown=event=>{
+  if(!zoneFrameReady || (event.button!==undefined && event.button!==0))return;
+  event.preventDefault();const raw=zonePoint(event);if(!raw)return;
+  const point=snapZonePoint(raw),mode=$('zone-mode').value;
+  if(mode==='polygon'){
+    if(polygonDraft.length>=64){$('zone-status').textContent='Up to 64 corners per shape.';return;}
+    polygonDraft.push([point.x,point.y]);drawZones();return;
+  }
+  if(mode==='edit'){
+    const hit=zoneHit(raw);if(!hit)return;
+    selectedZone=hit.index;const original=JSON.parse(JSON.stringify(ignoreZones[hit.index]));
+    zoneDrag={...hit,original,start:point,points:zonePoints(original).map(p=>[...p])};
+    $('zone-feather').value=(original.feather||0)*100;drawZones();
+  }else{zoneStart=point;zoneDraft=null;}
+  $('zone-canvas').setPointerCapture(event.pointerId);
 };
-$('zone-canvas').onpointerup = event => {
-  if (!zoneStart) return; const point = zonePoint(event);
-  const zone = point ? zoneRectangle(zoneStart, point) : null;
-  zoneStart = null; zoneDraft = null;
-  if (zone && zone.width >= .005 && zone.height >= .005) addZone(zone);
-  drawZones();
+$('zone-canvas').onpointermove=event=>{
+  const raw=zonePoint(event);if(!raw)return;const point=snapZonePoint(raw);
+  if(zoneDrag){
+    const d=zoneDrag,points=d.points.map(p=>[...p]);
+    let dx=point.x-d.start.x,dy=point.y-d.start.y;
+    dx=Math.max(-Math.min(...d.vertices.map(i=>points[i][0])),Math.min(dx,1-Math.max(...d.vertices.map(i=>points[i][0]))));
+    dy=Math.max(-Math.min(...d.vertices.map(i=>points[i][1])),Math.min(dy,1-Math.max(...d.vertices.map(i=>points[i][1]))));
+    d.vertices.forEach(i=>{points[i][0]+=dx;points[i][1]+=dy;});
+    if(validPolygon(points)){ignoreZones[d.index]={points,feather:d.original.feather||0};drawZones();}
+    return;
+  }
+  if(zoneStart){zoneDraft=zoneRectangle(zoneStart,point);zoneDraft.feather=(Number($('zone-feather').value)||0)/100;drawZones();}
 };
-$('zone-canvas').onpointercancel = () => { zoneStart = null; zoneDraft = null; drawZones(); };
+$('zone-canvas').onpointerup=event=>{
+  if(zoneDrag){$('zone-canvas').onpointermove(event);zoneDrag=null;zoneChanged();return;}
+  if(!zoneStart)return;const raw=zonePoint(event),zone=raw?zoneRectangle(zoneStart,snapZonePoint(raw)):null;
+  zoneStart=null;zoneDraft=null;
+  if(zone && zone.width>=.005 && zone.height>=.005)addZone(zone);drawZones();
+};
+$('zone-canvas').onpointercancel=()=>{
+  if(zoneDrag)ignoreZones[zoneDrag.index]=zoneDrag.original;
+  zoneDrag=null;zoneStart=null;zoneDraft=null;drawZones();
+};
 setInterval(refresh, 2000); setInterval(refreshFrame, 1000);
 signedIn().then(refreshFrame).catch(loggedOut);
 

@@ -227,6 +227,33 @@ const base = process.argv[2];
     await archive.waitFor({state:'detached'});
     assert.equal(await page.locator(`#event-camera option[value="${removedId}"]`).count(),0);
     assert.equal(await archive.count(),0);
+    // Real canvas polygon editing and persistence through the settings API.
+    await page.setViewportSize({width:1600,height:1100});
+    await page.locator('#camera-links a').first().click();
+    await page.waitForFunction(()=>zoneFrameReady);
+    await page.locator('#zone-clear').click();
+    await page.locator('#zone-mode').selectOption('polygon');
+    await page.locator('#zone-feather').fill('2');
+    const canvas=page.locator('#zone-canvas');await canvas.scrollIntoViewIfNeeded();
+    const bounds=await canvas.boundingBox();
+    for(const [x,y] of [[.001,.55],[.35,.4],[.7,.65],[.999,.55],[.999,.999],[.001,.999]])await page.mouse.click(bounds.x+x*bounds.width,bounds.y+y*bounds.height);
+    await page.locator('#zone-finish').click();
+    assert.equal(await page.evaluate(()=>ignoreZones[0].points.length),6);
+    assert.equal(await page.evaluate(()=>ignoreZones[0].points[0][0]),0);
+    assert.equal(await page.evaluate(()=>ignoreZones[0].feather),.02);
+    await canvas.scrollIntoViewIfNeeded();
+    const rect=await canvas.boundingBox();
+    await page.mouse.move(rect.x+.35*rect.width,rect.y+.4*rect.height);
+    await page.mouse.down();await page.mouse.move(rect.x+.4*rect.width,rect.y+.3*rect.height,{steps:4});await page.mouse.up();
+    assert(Math.abs(await page.evaluate(()=>ignoreZones[0].points[1][0])-.4)<.005);
+    await page.screenshot({path:'dist/browser/polygon-mask.png',fullPage:true});
+    const expected=await page.evaluate(()=>JSON.stringify(ignoreZones));
+    await page.locator('#host').fill('synthetic.invalid');
+    // Synthetic station storage is below the production form's minimum size.
+    await page.evaluate(()=>document.querySelector('#settings-form').onsubmit({preventDefault(){},submitter:document.querySelector('#settings-form button[type=submit]')}));
+    await page.locator('#overview').waitFor({state:'visible'});
+    const saved=await page.evaluate(()=>api('/api/settings'));
+    assert.equal(JSON.stringify(saved.detection.ignore_zones),expected,'Polygon and feather survive settings save');
     assert.deepEqual(errors,[]);
     console.log('Chromium passed: simultaneous images, station event list, explicit camera playback, settings links, manual save, mobile layout.');
   } finally {await browser.close();}

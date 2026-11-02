@@ -147,11 +147,28 @@ const base = process.argv[2];
     assert(await page.locator('#show-tracker').isDisabled());
     await page.screenshot({path:'dist/browser/review-categories.png',fullPage:true});
     const next=rows[rows.findIndex(row=>row.id===event.id && row.camera===event.camera)+1];
-    await page.locator('#review-label-lightning').click();
+    let releaseArchive;
+    const blockedArchive=new Promise(resolve=>releaseArchive=resolve);
+    const holdArchive=async route=>{await blockedArchive;await route.continue();};
     if(next){
-      await page.waitForFunction(next=>document.getElementById('review-still').getAttribute('src')?.includes('/clips/'+next.id+'/') && document.getElementById('review-still').getAttribute('src')?.includes('/api/cameras/'+next.camera+'/'),next);
-      assert(!await page.locator('#review-video').isVisible(),'Next review opens on its image');
-    }else await page.waitForFunction(()=>document.getElementById('review-save-status').textContent.includes('Last matching event'));
+      await page.waitForFunction(()=>!document.getElementById('review-event-next').disabled);
+      await page.route('**/api/station/events/list',holdArchive);
+    }
+    try {
+      const started=Date.now();
+      const saved=page.waitForResponse(response=>response.url().endsWith('/api/station/events/update') && response.request().method()==='POST');
+      await page.locator('#review-label-lightning').click();
+      const saveResponse=await saved;assert(saveResponse.ok());await saveResponse.finished();
+      const savedAt=Date.now();
+      if(next){
+        await page.waitForFunction(next=>{const image=document.getElementById('review-still');return image.getAttribute('src')?.includes('/clips/'+next.id+'/') && image.getAttribute('src')?.includes('/api/cameras/'+next.camera+'/') && image.complete && image.naturalWidth>0;},next,{timeout:3000});
+        assert(!await page.locator('#review-video').isVisible(),'Next image must display while archive lookups remain blocked');
+        console.log(`Category timing on synthetic station: save response ${savedAt-started} ms; next image visible ${Date.now()-savedAt} ms after save (archive lookups blocked).`);
+      }else await page.waitForFunction(()=>document.getElementById('review-save-status').textContent.includes('Last matching event'));
+    } finally {
+      releaseArchive();
+      if(next)await page.unrouteAll({behavior:'wait'});
+    }
     await page.locator('#review-close').click();
     // Settings links select a camera, then Overview returns to all feeds.
     await page.locator(`aside a[href="/?camera=${event.camera}#settings"]`).click();

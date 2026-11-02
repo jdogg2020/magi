@@ -3,6 +3,7 @@ const MagiEvents = (()=>{
   const el=id=>document.getElementById(id), selected=new Map();
   let rows=[], total=0, offset=0, loaded=false, loading=false, lastRefresh=0, requestVersion=0, mutating=false, currentFilters=null;
   let neighbors={previous:null,next:null}, navigationVersion=0, reviewBusy=false;
+  let navigationTask=null, navigationKey=null, navigationFilter=-1, navigationReady=false;
   const quickLabels=[['ignore','Ignore'],['aircraft','Plane'],['bird/insect','Bird / insect'],['lightning','Lightning'],['weather','Cloud / weather'],['meteor','Meteor'],['satellite','Satellite'],['unknown','Unknown']];
   const presets=['ignore','bird/insect','aircraft','satellite','meteor','bird','insect','drone','star or planet','weather','lightning','artifact','unknown','interesting'];
   const human=value=>(value || 'unknown').replaceAll('_',' ');
@@ -62,7 +63,7 @@ const MagiEvents = (()=>{
     el('event-trash-note').classList.toggle('hidden',currentFilters?.trash==='active');selection();
   }
   async function refresh(force=false){
-    if(loading || !csrf || (!force && ((el('events').classList.contains('hidden') && el('overview').classList.contains('hidden')) || Date.now()-lastRefresh<8000)))return;
+    if(loading || !csrf || (!force && (el('review').open || (el('events').classList.contains('hidden') && el('overview').classList.contains('hidden')) || Date.now()-lastRefresh<8000)))return;
     loading=true;const version=requestVersion;
     try {if(!currentFilters)currentFilters=filters();const result=await api('/api/station/events/list',{...currentFilters,offset,limit:25});
       if(version!==requestVersion)return;rows=result.events;total=result.total;offset=result.offset;
@@ -91,15 +92,19 @@ const MagiEvents = (()=>{
     for(const [label] of quickLabels){const item=el('review-label-'+label.replace('/','-'));item.disabled=busy || review.trashed_at!=null || !!review.annotation_error;item.setAttribute('aria-pressed',String((review.labels || []).includes(label)));}
     el('review-trash').disabled=busy || !!review.annotation_error || (review.trashed_at==null && !!review.protected);
   }
-  async function loadNeighbors(event){
-    const version=++navigationVersion, query={...(currentFilters || filters())};
+  function loadNeighbors(event){
+    const version=++navigationVersion, query={...(currentFilters || filters())}, filterVersion=requestVersion;
+    navigationKey=eventKey(event);navigationFilter=filterVersion;navigationReady=false;
     neighbors={previous:null,next:null};reviewControls();
-    try {
-      const result=await api('/api/station/events/list',{...query,anchor:{id:event.id,camera_id:event.camera_id || selectedCamera,trigger_unix:event.trigger_unix || 0}});
-      if(version!==navigationVersion || !reviewEvent || eventKey(event)!==eventKey(reviewEvent))return;
-      if(result.unavailable_cameras?.length)throw new Error('Some camera archives are unavailable.');
-      neighbors={previous:result.previous,next:result.next};reviewControls();return true;
-    }catch(error){if(version===navigationVersion)el('review-save-status').textContent='Navigation unavailable: '+error.message;}
+    navigationTask=(async()=>{
+      try {
+        const result=await api('/api/station/events/list',{...query,anchor:{id:event.id,camera_id:event.camera_id || selectedCamera,trigger_unix:event.trigger_unix || 0}});
+        if(version!==navigationVersion || filterVersion!==requestVersion || !reviewEvent || eventKey(event)!==eventKey(reviewEvent))return false;
+        if(result.unavailable_cameras?.length)throw new Error('Some camera archives are unavailable.');
+        neighbors={previous:result.previous,next:result.next};navigationReady=true;reviewControls();return true;
+      }catch(error){if(version===navigationVersion)el('review-save-status').textContent='Navigation unavailable: '+error.message;return false;}
+    })();
+    return navigationTask;
   }
   function draftChanges(){return {labels:labels(el('review-labels').value),notes:el('review-notes').value,reviewed:el('review-reviewed').checked,protected:el('review-protected').checked};}
   function dirty(){
@@ -129,9 +134,16 @@ const MagiEvents = (()=>{
       if(action==='update' && 'protected' in changes)el('review-protected').checked=!!event.review.protected;
       el('review-save-status').textContent=action==='trash'?'Moved to trash. Use Restore from trash to undo; retention or storage pressure may remove trash.':action==='restore'?'Event restored.':'Review saved.';
       lastRefresh=0;clipSignature='';
-      // Confirm the write, then find neighbors once with the current filters.
-      // List redraws are background work and must not delay the next image.
-      const found=await loadNeighbors(event);
+      // Only this anchor changed. Its saved neighbors still describe the next
+      // matching event, even if the save removes the anchor from the filters.
+      // Reuse completed or in-flight navigation instead of scanning again.
+      let found=false;
+      if(advance){
+        el('review-save-status').textContent='Review saved. Opening next event…';
+        found=navigationKey===key && navigationFilter===requestVersion && navigationTask
+          ? (navigationReady || await navigationTask) : await loadNeighbors(event);
+        if(!found && reviewEvent && eventKey(reviewEvent)===key)el('review-save-status').textContent='Review saved. Navigation unavailable; reopen the event or refresh the list to retry.';
+      }
       if(advance && found && reviewEvent && eventKey(reviewEvent)===key){
         if(neighbors.next)openReview(neighbors.next);
         else el('review-save-status').textContent='Review saved. Last matching event — you’ve reached the end.';
@@ -204,10 +216,10 @@ const MagiEvents = (()=>{
         const video=el('review-video');if(reviewMode!=='video')el('review-play').onclick();else if(video.paused)video.play().catch(()=>{});else video.pause();
       }
     });
-    el('review').addEventListener('close',()=>{if(lastRefresh===0)refresh(true);});
+    el('review').addEventListener('close',()=>{refresh(true);});
     el('review').addEventListener('cancel',event=>{if(!mayLeave())event.preventDefault();});
   }
 
-  function reset(){selected.clear();rows=[];loaded=false;currentFilters=null;lastRefresh=0;requestVersion++;selection();}
+  function reset(){navigationVersion++;navigationTask=null;navigationKey=null;navigationReady=false;neighbors={previous:null,next:null};selected.clear();rows=[];loaded=false;currentFilters=null;lastRefresh=0;requestVersion++;selection();}
   return {init,mount,refresh,updateReview,reset,mayLeave,loaded:()=>loaded};
 })();

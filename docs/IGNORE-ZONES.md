@@ -1,10 +1,21 @@
 # Shaped masks and soft boundaries
 
-In camera Settings → Ignore zones, choose **Polygon**, click around an obstruction,
-then **Finish shape**. Select a zone to edit it: drag a white corner to reshape it
-or an amber side handle to move that side. Corners cannot cross other sides.
-Points drawn within six screen pixels of the image edge snap exactly to it, so a
-roof/ground mask can reach the bottom without leaving a thin active strip.
+In camera Settings → Ignore zones, **Add shape** places a box you can reshape.
+**Mask below skyline** starts a ground mask already reaching the left, right and
+bottom edges. Drag inside a shape to move it; drag a white corner or an amber
+side to reshape it. Double-click a side to add another corner.
+
+Pull a corner or side past the picture boundary to reach the frame edge exactly.
+The moved geometry snaps within 18 screen pixels, even if you grabbed slightly
+away from the corner or side. There is no need to hit the final image pixel.
+Invalid drags that fold a shape over itself keep its last valid shape.
+
+For a custom outline, choose **Draw outline** and click around the obstruction.
+Click the first corner again, press Enter while the canvas has focus, or select
+**Finish shape**. Saving settings also closes a valid unfinished outline. Undo
+last point and Cancel drawing let you correct mistakes. Repeated closing points
+are removed automatically; genuinely crossing outlines remain rejected.
+
 Rectangles and rectangle coordinate entry remain available. Existing rectangles
 are preserved until reshaped; dragging a rectangle converts it to a polygon.
 Save settings to apply. Recordings always retain the entire image.

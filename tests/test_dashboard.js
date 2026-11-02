@@ -1,3 +1,4 @@
+require('./test_mask_editor.js');
 require('./test_event_review.js');
 require('./test_live_refresh.js');
 // Lightweight DOM harness for the actual dashboard JavaScript against a running
@@ -378,9 +379,9 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert.equal(elements['zone-mode'].value,'edit');
  elements['zone-canvas'].onpointerdown(pointer(160,90));elements['zone-canvas'].onpointermove(pointer(192,108));elements['zone-canvas'].onpointerup(pointer(192,108));
  assert.equal(vm.runInContext('ignoreZones[0].points[2][0]',context),.6);
- elements['zone-canvas'].onpointerdown(pointer(80,0));elements['zone-canvas'].onpointermove(pointer(80,18));elements['zone-canvas'].onpointerup(pointer(80,18));
- assert.equal(vm.runInContext('ignoreZones[0].points[0][1]',context),.1);
- assert.equal(vm.runInContext('ignoreZones[0].points[1][1]',context),.1);
+ elements['zone-canvas'].onpointerdown(pointer(80,0));elements['zone-canvas'].onpointermove(pointer(80,36));elements['zone-canvas'].onpointerup(pointer(80,36));
+ assert.equal(vm.runInContext('ignoreZones[0].points[0][1]',context),.2);
+ assert.equal(vm.runInContext('ignoreZones[0].points[1][1]',context),.2);
  const beforeCancel=vm.runInContext('JSON.stringify(ignoreZones)',context);
  elements['zone-canvas'].onpointerdown(pointer(192,108));elements['zone-canvas'].onpointermove(pointer(200,110));elements['zone-canvas'].onpointercancel();
  assert.equal(vm.runInContext('JSON.stringify(ignoreZones)',context),beforeCancel);

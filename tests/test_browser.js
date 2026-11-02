@@ -247,6 +247,26 @@ const base = process.argv[2];
     await page.mouse.down();await page.mouse.move(rect.x+.4*rect.width,rect.y+.3*rect.height,{steps:4});await page.mouse.up();
     assert(Math.abs(await page.evaluate(()=>ignoreZones[0].points[1][0])-.4)<.005);
     await page.screenshot({path:'dist/browser/polygon-mask.png',fullPage:true});
+    await page.locator('#zone-clear').click();
+    await page.locator('#zone-new').click();
+    await canvas.scrollIntoViewIfNeeded();
+    const shapeBounds=await canvas.boundingBox();
+    const dragMask=async(x,y,ex,ey)=>{
+      await page.mouse.move(shapeBounds.x+x*shapeBounds.width,shapeBounds.y+y*shapeBounds.height);
+      await page.mouse.down();await page.mouse.move(shapeBounds.x+ex*shapeBounds.width,shapeBounds.y+ey*shapeBounds.height,{steps:5});await page.mouse.up();
+    };
+    await dragMask(.5,.5,.6,.6);
+    assert(Math.abs(await page.evaluate(()=>ignoreZones[0].points[0][0])-.35)<.005,'Drag inside moves the shape');
+    await dragMask(.35,.35,-.03,-.03);
+    assert.equal(await page.evaluate(()=>ignoreZones[0].points[0][0]),0);
+    assert.equal(await page.evaluate(()=>ignoreZones[0].points[0][1]),0);
+    await page.locator('.zone-panel').screenshot({path:'dist/browser/easier-mask-editor.png'});
+    // Starting-point click closes a custom outline without duplicating a corner.
+    await page.locator('#zone-mode').selectOption('polygon');
+    await canvas.scrollIntoViewIfNeeded();const closeBounds=await canvas.boundingBox();
+    for(const [x,y] of [[.2,.2],[.7,.2],[.7,.7],[.2,.7],[.2,.2]])await page.mouse.click(closeBounds.x+x*closeBounds.width,closeBounds.y+y*closeBounds.height);
+    assert.equal(await page.evaluate(()=>polygonDraft.length),0);
+    assert.equal(await page.evaluate(()=>ignoreZones[1].points.length),4);
     const expected=await page.evaluate(()=>JSON.stringify(ignoreZones));
     await page.locator('#host').fill('synthetic.invalid');
     // Synthetic station storage is below the production form's minimum size.

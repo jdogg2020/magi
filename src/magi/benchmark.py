@@ -27,7 +27,21 @@ Rules that matter, stated once here and enforced below:
   misplace every detection window. Frames are sampled at the policy rate
   from native frames whose presentation timestamps are known, and a
   detection's time is the sampled frame's decoded presentation time,
-  relative to the first frame.
+  relative to the first frame. Decoding uses ``-fps_mode passthrough``:
+  without it, FFmpeg's default constant-rate output duplicates and drops
+  frames, so decoded frame N no longer matches timestamp N even when
+  frame counts match.
+* Unknown time is excluded from scoring consistently, in numerator and
+  denominator alike: detections in unknown time count as neither hits
+  nor nuisance triggers, nuisance rates divide by scored nuisance time
+  only (unknown time inside a nuisance interval is removed), and a
+  target with no scored time at all is excluded, not counted as a hit
+  or a miss. A target partially overlapping unknown time is scored
+  only on its known portion.
+* Temporary-disk headroom budgets every native frame that will be
+  decoded, at the sampling geometry, not just the sampled subset. At a
+  low sampling rate the decoded file is much larger than a sampled
+  budget would suggest, which matters on a Pi.
 * Missing labels never produce an apparent zero-error score. A clip with
   no annotation, or with no covered target windows and no covered nuisance
   minutes, is reported as ``unscored`` with recall and nuisance rate set
@@ -452,6 +466,34 @@ def _covered(start, end, evaluated_duration):
     return start < evaluated_duration and end <= evaluated_duration + EPSILON
 
 
+def _segments(start, end, exclusions):
+    """Segments of [start, end] with every exclusion interval removed.
+
+    Used to make unknown time consistently unscored: a nuisance rate
+    must not divide by unknown minutes, and a target must not be scored
+    on time that is explicitly unknown. Exclusions are clipped to the
+    window; overlapping exclusions are handled by sweeping in order.
+    """
+    segments = [(start, end)] if end > start else []
+    for exclusion in sorted(exclusions, key=lambda item: item["start"]):
+        cut_start, cut_end = exclusion["start"], exclusion["end"]
+        next_segments = []
+        for seg_start, seg_end in segments:
+            if cut_end <= seg_start or cut_start >= seg_end:
+                next_segments.append((seg_start, seg_end))
+                continue
+            if seg_start < cut_start:
+                next_segments.append((seg_start, cut_start))
+            if cut_end < seg_end:
+                next_segments.append((cut_end, seg_end))
+        segments = next_segments
+    return segments
+
+
+def _scored_seconds(start, end, exclusions):
+    return sum(seg_end - seg_start for seg_start, seg_end in _segments(start, end, exclusions))
+
+
 def score_clip(clip, annotation, config_results, evaluated_duration):
     """Score one clip for every config, from internal detections.
 
@@ -464,20 +506,30 @@ def score_clip(clip, annotation, config_results, evaluated_duration):
                             key=lambda d: (d["seconds"], d["type"], d["y_norm"], d["x_norm"]))
         target_matched = set()
         targets = []
+        unknown_intervals = annotation["unknown"] if annotation else []
         if annotation is not None:
             for target in annotation["targets"]:
                 covered = _covered(target["start"], target["end"], evaluated_duration)
+                # Unknown time is not scored, even for a target: a
+                # detection in unknown time cannot count as a hit, and
+                # a target with no scored time at all is excluded, not
+                # counted as a miss or a hit.
+                scored_seconds = (_scored_seconds(target["start"], target["end"],
+                                                  unknown_intervals) if covered else 0.0)
+                excluded_by_unknown = covered and scored_seconds <= EPSILON
                 matched = []
-                if covered:
+                if covered and not excluded_by_unknown:
                     for index, detection in enumerate(detections):
                         if (target["start"] <= detection["seconds"] < target["end"]
+                                and not _in_intervals(detection["seconds"], unknown_intervals)
                                 and ("region" in target or "path" in target)
                                 and spatial_match(detection, target, detection["seconds"])):
                             matched.append(index)
                 temporal = []
-                if covered and "region" not in target and "path" not in target:
+                if covered and not excluded_by_unknown and "region" not in target and "path" not in target:
                     temporal = [i for i, d in enumerate(detections)
-                                if target["start"] <= d["seconds"] < target["end"]]
+                                if target["start"] <= d["seconds"] < target["end"]
+                                and not _in_intervals(d["seconds"], unknown_intervals)]
                 target_matched.update(matched)
                 track_ids = {detections[i]["track_id"] for i in matched}
                 targets.append({
@@ -485,6 +537,8 @@ def score_clip(clip, annotation, config_results, evaluated_duration):
                     "kind": target["kind"], "covered": covered,
                     "spatial": "region" in target or "path" in target,
                     "truncated_passage": target["truncated_passage"],
+                    "excluded_by_unknown": excluded_by_unknown,
+                    "scored_seconds": round(scored_seconds, 6),
                     "matched": bool(matched), "temporal_only_matched": bool(temporal),
                     "matched_detections": len(matched),
                     "matched_tracks": len(track_ids),
@@ -494,9 +548,8 @@ def score_clip(clip, annotation, config_results, evaluated_duration):
                             if target["start"] <= d["seconds"] < target["end"]
                             and i not in target_matched
                             and not _in_intervals(d["seconds"], annotation["unknown"]))
-                        if covered else 0),
+                        if covered and not excluded_by_unknown else 0),
                 })
-        unknown_intervals = annotation["unknown"] if annotation else []
         nuisance = []
         nuisance_triggers = 0
         nuisance_minutes = 0.0
@@ -505,6 +558,12 @@ def score_clip(clip, annotation, config_results, evaluated_duration):
                 covered = _covered(interval["start"], interval["end"], evaluated_duration)
                 triggers = set()
                 events = 0
+                # The rate denominator is scored nuisance time only:
+                # unknown time inside a nuisance interval is removed,
+                # so triggers in the remaining time are not diluted by
+                # minutes in which triggers were excluded by design.
+                effective_seconds = (_scored_seconds(interval["start"], interval["end"],
+                                                     unknown_intervals) if covered else 0.0)
                 if covered:
                     for index, detection in enumerate(detections):
                         if (interval["start"] <= detection["seconds"] < interval["end"]
@@ -513,11 +572,12 @@ def score_clip(clip, annotation, config_results, evaluated_duration):
                             events += 1
                             triggers.add(detection["track_id"])
                     nuisance_triggers += len(triggers)
-                    nuisance_minutes += (interval["end"] - interval["start"]) / 60.0
+                    nuisance_minutes += effective_seconds / 60.0
                 nuisance.append({"id": interval["id"], "start": interval["start"],
                                  "end": interval["end"], "kind": interval["kind"],
                                  "covered": covered, "triggers": len(triggers),
-                                 "detection_events": events})
+                                 "detection_events": events,
+                                 "effective_minutes": round(effective_seconds / 60.0, 6)})
         unknown_minutes = 0.0
         unknown_events = 0
         unlabeled_events = 0
@@ -539,7 +599,8 @@ def score_clip(clip, annotation, config_results, evaluated_duration):
                     continue  # counted as a spatial miss on that target
                 else:
                     unlabeled_events += 1
-        spatial_targets = [t for t in targets if t["spatial"] and t["covered"]]
+        spatial_targets = [t for t in targets
+                           if t["spatial"] and t["covered"] and not t["excluded_by_unknown"]]
         covered_targets = len(spatial_targets)
         matched_targets = sum(1 for t in spatial_targets if t["matched"])
         scored_status = "scored" if (covered_targets or nuisance_minutes > 0) else "unscored"
@@ -561,6 +622,7 @@ def score_clip(clip, annotation, config_results, evaluated_duration):
                                     if nuisance_minutes > 0 else None),
             "fragmented_targets": sum(1 for t in targets if t["fragmented"]),
             "uncovered_targets": sum(1 for t in targets if not t["covered"]),
+            "unknown_excluded_targets": sum(1 for t in targets if t["excluded_by_unknown"]),
             "unknown_minutes": round(unknown_minutes, 6),
             "unknown_detections": unknown_events,
             "unlabeled_detections": unlabeled_events,
@@ -685,6 +747,8 @@ def load_candidates(path):
         if not isinstance(item, dict) or set(item) != {"name", "override"}:
             raise ValueError("Each candidate needs exactly name and override")
         name, override = item["name"], item["override"]
+        if name == "baseline":
+            raise ValueError("Candidate name 'baseline' is reserved for the real baseline")
         if not isinstance(name, str) or not NAME.fullmatch(name) or name in seen:
             raise ValueError("Candidate names must be unique and use letters, digits, - or _")
         seen.add(name)
@@ -735,6 +799,71 @@ def prepare_clips(dataset_path, candidates, max_seconds):
     return dataset, prepared
 
 
+def native_decoded_bytes(width, height, frame_count):
+    """Raw-video bytes for every native frame at the sampling geometry.
+
+    This is the quantity the temporary-disk budget must cover. It is
+    *not* the sampled-frame count: decoding writes every native frame
+    before sampling discards most of them, so budgeting only sampled
+    frames understates disk use by roughly native_fps / sampling_fps,
+    which matters most at low sampling rates on a Pi.
+    """
+    return width * height * frame_count
+
+
+def decode_command(temp_path, width, height, frame_count):
+    """Timestamp-preserving decode command for one bounded video copy.
+
+    ``-fps_mode passthrough`` is the fix for variable-frame-timing
+    drift: without it, FFmpeg's default constant-rate output duplicates
+    and drops frames to a steady rate, so decoded frame N no longer
+    corresponds to presentation timestamp N. On the long cloud clip
+    that divergence started at frame 334, with frame counts still
+    matching, which would silently invalidate target matching.
+    ``-frames:v`` limits by frame count, not by time, because ``-t``
+    drops a final frame whose end lands exactly on the limit.
+    """
+    return ["ffmpeg", "-nostdin", "-v", "error", "-threads", "1",
+            "-i", str(temp_path), "-map", "0:v:0", "-an",
+            "-vf", f"scale={width}:{height}",
+            "-frames:v", str(frame_count),
+            "-fps_mode", "passthrough",
+            "-pix_fmt", "gray", "-threads", "1",
+            "-f", "rawvideo", "pipe:1"]
+
+
+def iter_native_frames(temp_path, width, height, frame_count, timing=None):
+    """Yield native frames in presentation order, one at a time.
+
+    Frames are decoded once into a temporary file (bounded by
+    ``frame_count``), then streamed, so memory stays at one frame even
+    for a long clip. ``timing``, when given, receives ``decode_seconds``
+    once the decode finishes, before the first frame is yielded.
+    """
+    frame_size = width * height
+    with tempfile.TemporaryFile() as decoded:
+        started = time.perf_counter()
+        try:
+            subprocess.run(decode_command(temp_path, width, height, frame_count),
+                           stdout=decoded, stderr=subprocess.DEVNULL,
+                           check=True, timeout=300)
+        except subprocess.SubprocessError:
+            raise ValueError("FFmpeg failed to decode the source video") from None
+        if timing is not None:
+            timing["decode_seconds"] = time.perf_counter() - started
+        total_bytes = decoded.tell()
+        if total_bytes == 0 or total_bytes % frame_size:
+            raise ValueError("No complete video frames decoded")
+        if total_bytes // frame_size != frame_count:
+            raise ValueError("Decoded frame count does not match frame timestamps")
+        decoded.seek(0)
+        for _ in range(frame_count):
+            pixels = decoded.read(frame_size)
+            if len(pixels) != frame_size:
+                raise ValueError("No complete video frames decoded")
+            yield np.frombuffer(pixels, dtype=np.uint8).reshape(height, width)
+
+
 def run_clip(prepared, max_seconds):
     """Decode one clip once and run every config on the same sampled frames."""
     sampling = {"width": prepared["baseline_settings"]["width"],
@@ -750,65 +879,43 @@ def run_clip(prepared, max_seconds):
     sampled_pts = [eligible_pts[p] for p in selected_positions]
     temp_path = None
     try:
+        # replay.acquire_source budgets width*height*fps*requested_seconds
+        # for decoded frames, so passing native_frame_count / fps budgets
+        # every native frame that will actually be decoded, not just the
+        # sampled subset. At a low sampling rate the difference is large:
+        # for example 2 fps sampling of a 10 fps native clip decodes five
+        # times more frames than the sampled budget would suggest.
+        acquire_seconds = len(eligible_indices) / fps
         temp_path, _digest, _size = replay.acquire_source(
-            prepared["video"], width, height, fps, int(math.ceil(evaluated)))
-        started = time.perf_counter()
+            prepared["video"], width, height, fps, acquire_seconds)
+        timing = {}
         try:
-            with tempfile.TemporaryFile() as decoded:
-                # Limit by frame count, not by time: -t drops a final
-                # frame whose end lands exactly on the limit, while
-                # -frames:v delivers exactly the eligible frames (those
-                # with pts < evaluated_duration), in presentation order.
-                command = ["ffmpeg", "-nostdin", "-v", "error", "-threads", "1",
-                           "-i", str(temp_path), "-map", "0:v:0", "-an",
-                           "-vf", f"scale={width}:{height}",
-                           "-frames:v", str(len(eligible_indices)),
-                           "-pix_fmt", "gray", "-threads", "1",
-                           "-f", "rawvideo", "pipe:1"]
-                try:
-                    subprocess.run(command, stdout=decoded, stderr=subprocess.DEVNULL,
-                                   check=True, timeout=300)
-                except subprocess.SubprocessError:
-                    raise ValueError("FFmpeg failed to decode the source video") from None
-                decode_seconds = time.perf_counter() - started
-                frame_size = width * height
-                total_bytes = decoded.tell()
-                if total_bytes == 0 or total_bytes % frame_size:
-                    raise ValueError("No complete video frames decoded")
-                decoded_frames = total_bytes // frame_size
-                if decoded_frames != len(eligible_indices):
-                    raise ValueError("Decoded frame count does not match frame timestamps")
-                decoded.seek(0)
-                trackers = [(name, Tracker(settings)) for name, settings in prepared["configs"]]
-                results = {name: {"detections": [], "tracker_seconds": 0.0}
-                           for name, _settings in prepared["configs"]}
-                for native_index in range(decoded_frames):
-                    pixels = decoded.read(frame_size)
-                    if len(pixels) != frame_size:
-                        raise ValueError("No complete video frames decoded")
-                    if native_index >= len(eligible_indices):
-                        continue  # at most one boundary frame past the evaluated end
-                    if native_index not in sampled_native:
-                        continue
-                    stamp = prepared["frame_pts"][native_index]
-                    frame = np.frombuffer(pixels, dtype=np.uint8).reshape(height, width)
-                    for name, tracker in trackers:
-                        tracker_started = time.perf_counter()
-                        _objects, events = tracker.update(frame, stamp)
-                        results[name]["tracker_seconds"] += time.perf_counter() - tracker_started
-                        for event in events:
-                            results[name]["detections"].append({
-                                "seconds": round(float(stamp), 6),
-                                "type": event.get("detection_type", "motion"),
-                                "x_norm": round(float(event["x"]) / width, 6),
-                                "y_norm": round(float(event["y"]) / height, 6),
-                                "box_norm": [round(event["box"][0] / width, 6),
-                                             round(event["box"][1] / height, 6),
-                                             round(event["box"][2] / width, 6),
-                                             round(event["box"][3] / height, 6)],
-                                "pixels": int(event.get("pixels", 0)),
-                                "track_id": event.get("track_id", ""),
-                            })
+            trackers = [(name, Tracker(settings)) for name, settings in prepared["configs"]]
+            results = {name: {"detections": [], "tracker_seconds": 0.0}
+                       for name, _settings in prepared["configs"]}
+            for native_index, frame in enumerate(
+                    iter_native_frames(temp_path, width, height, len(eligible_indices), timing)):
+                if native_index not in sampled_native:
+                    continue
+                stamp = prepared["frame_pts"][native_index]
+                for name, tracker in trackers:
+                    tracker_started = time.perf_counter()
+                    _objects, events = tracker.update(frame, stamp)
+                    results[name]["tracker_seconds"] += time.perf_counter() - tracker_started
+                    for event in events:
+                        results[name]["detections"].append({
+                            "seconds": round(float(stamp), 6),
+                            "type": event.get("detection_type", "motion"),
+                            "x_norm": round(float(event["x"]) / width, 6),
+                            "y_norm": round(float(event["y"]) / height, 6),
+                            "box_norm": [round(event["box"][0] / width, 6),
+                                         round(event["box"][1] / height, 6),
+                                         round(event["box"][2] / width, 6),
+                                         round(event["box"][3] / height, 6)],
+                            "pixels": int(event.get("pixels", 0)),
+                            "track_id": event.get("track_id", ""),
+                        })
+            decode_seconds = timing["decode_seconds"]
         finally:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
@@ -836,6 +943,8 @@ def run(dataset_path, candidates=None, max_seconds=DEFAULT_MAX_SECONDS,
             or len(code_revision) > 120 or any(not c.isprintable() for c in code_revision)):
         raise ValueError("Code revision must be a short printable string")
     candidates = candidates or []
+    if any(c.get("name") == "baseline" for c in candidates):
+        raise ValueError("Candidate name 'baseline' is reserved for the real baseline")
     dataset, prepared = prepare_clips(dataset_path, candidates, max_seconds)
     config_names = [name for name, _settings in prepared[0]["configs"]] if prepared else ["baseline"]
     per_clip = []

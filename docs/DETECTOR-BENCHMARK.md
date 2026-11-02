@@ -102,7 +102,9 @@ because ignore zones can differ between clips). Candidates cannot
 change width, height or fps: sampling is a dataset-level policy, so
 every config is judged on the same frames at the same cadence. Unknown
 or out-of-range override fields are rejected by the same validation
-replay uses.
+replay uses. The name `baseline` is reserved: a candidate with that
+name would collide with the real baseline in results and settings
+dictionaries, so it is rejected in the candidate file and in `run()`.
 
 ### Sampling: decoded presentation timestamps, not frame counts
 
@@ -117,7 +119,15 @@ The benchmark instead:
    them to be strictly increasing; a non-monotonic sequence fails
    rather than being silently reordered.
 2. Decodes the native frames (scaled to the sampling geometry, no
-   `fps` filter) from the bounded temporary copy.
+   `fps` filter) from the bounded temporary copy, with
+   `-fps_mode passthrough`. This flag is load-bearing: without it,
+   FFmpeg's default constant-rate output duplicates and drops frames
+   to a steady rate, so decoded frame N no longer corresponds to
+   presentation timestamp N. On a long variable-rate clip that
+   divergence started at frame 334 even though frame counts still
+   matched, which would silently invalidate target matching. With
+   passthrough, every native frame is decoded exactly once, in
+   presentation order.
 3. Samples at the policy rate by timestamp: the first native frame at
    or after each successive `k / fps` target time, in presentation
    order. A detection's time is that sampled frame's decoded
@@ -187,9 +197,18 @@ Rules:
   a distinct tracker track whose first detection falls in a covered
   nuisance interval. The rate is triggers per labelled background
   minute, not per clip, so clips of different lengths are comparable.
-* `unknown` intervals are explicitly unscored time: detections there
+* `unknown` intervals are explicitly unscored time, excluded
+  consistently from numerator *and* denominator: detections there
   are reported as unknown detections, never as nuisance triggers and
-  never as target hits unless they spatially match a target.
+  never as target hits, even if they spatially match a target in
+  unknown time. A nuisance rate divides by scored nuisance time
+  only, so unknown time inside a nuisance interval is removed from
+  the denominator (otherwise triggers in a small scored remainder
+  are diluted by minutes that were excluded by design). A target
+  with no scored time at all is reported as
+  `excluded_by_unknown` and excluded from recall, not counted as a
+  hit or a miss; a target partially overlapping unknown time is
+  scored only on its known portion.
 * `truncated_passage` marks a target whose passage continues past the
   end of the supplied footage. Such a target is useful as a detection
   sample, but it cannot establish capture of an entire passage.
@@ -220,10 +239,12 @@ For each config, per clip:
 * Target recall is matched spatial targets over *covered* spatial
   targets. Uncovered targets (beyond the evaluated duration) are
   listed separately, never counted as misses.
-* Precedence for a single detection, in order: target-matched, then
-  unknown, then nuisance, then spatial-miss-in-a-target-window, then
-  unlabeled. A target-matched detection is never also a nuisance
-  trigger, even if its time falls in a nuisance interval.
+* Precedence for a single detection, in order: unknown, then
+  target-matched, then nuisance, then spatial-miss-in-a-target-window,
+  then unlabeled. Unknown time is checked first, so a detection in
+  unknown time is unknown even if it would spatially match a target.
+  A target-matched detection is never also a nuisance trigger, even
+  if its time falls in a nuisance interval.
 * Per-clip results report: detection events, distinct tracks, target
   recall and misses, per-target match details, nuisance triggers per
   labelled minute, duplicate/fragmented targets, actual evaluated
@@ -259,9 +280,14 @@ from that comparison by design.
 Runs are sequential by default, which is the right default for a Pi 4:
 one clip, one decode, all configs on the same frames, then the next
 clip. FFmpeg runs single-threaded, as in replay. The temporary-copy
-headroom check (source size plus decoded frames for the evaluated
-duration) fails before a run that would not fit. Progress is printed
-to stderr, one line per clip, so stdout stays a clean summary.
+headroom check (source size plus decoded frames) fails before a run
+that would not fit, and it budgets every native frame at the sampling
+geometry, not just the sampled subset: decoding writes all native
+frames before sampling discards most of them, so a sampled-frame
+budget would understate disk use by roughly native_fps /
+sampling_fps, most dangerously at low sampling rates on a Pi.
+Progress is printed to stderr, one line per clip, so stdout stays a
+clean summary.
 Cancellation (Ctrl+C) takes effect between clips: the run stops, a
 partial report is still written with `status: "cancelled"` and a
 per-clip-complete result set, and the exit code is 130. A cancelled

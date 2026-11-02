@@ -11,8 +11,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from magi.benchmark import (
-    aggregate, capture_baseline, comparable, load_annotation, load_candidates,
-    load_dataset, load_event_export, main, run, sampled_indices, score_clip,
+    aggregate, capture_baseline, comparable, iter_native_frames,
+    load_annotation, load_candidates,
+    load_dataset, load_event_export, main, native_decoded_bytes,
+    prepare_clips, probe_video, run, run_clip, sampled_indices, score_clip,
     spatial_match, validate_sampling)
 from magi.replay import settings
 
@@ -127,6 +129,67 @@ class PureTests(unittest.TestCase):
         self.assertEqual(result["nuisance_triggers"], 0)
         self.assertEqual(result["scored_status"], "unscored")
 
+    def test_score_unknown_time_excluded_from_nuisance_denominator(self):
+        # Regression: unknown time was excluded from the numerator but
+        # still counted in the denominator, diluting 60/min to 6/min.
+        # Nuisance [0, 60], unknown [0, 54]: only 6 scored minutes remain
+        # (0.1 min), and 6 triggers there must rate 60/min, not 6/min.
+        annotation = _annotation(
+            nuisance=[{"id": "cloud", "start": 0, "end": 60, "kind": "cloud",
+                       "spatial_tolerance": 0.08, "truncated_passage": False}],
+            unknown=[{"id": "unk", "start": 0, "end": 54, "kind": None,
+                      "spatial_tolerance": 0.08, "truncated_passage": False}])
+        detections = [_detection(54 + i, 0.5, 0.5, track=f"t{i}") for i in range(6)]
+        result = score_clip({}, annotation, _config_result(detections), 70)["baseline"]
+        self.assertEqual(result["nuisance_triggers"], 6)
+        self.assertAlmostEqual(result["nuisance_minutes"], 0.1)
+        self.assertAlmostEqual(result["nuisance_per_minute"], 60.0)
+
+    def test_score_target_entirely_inside_unknown_is_excluded_not_detected(self):
+        # Regression: a target fully inside unknown time scored as a hit
+        # when a detection matched it there. Unknown time is not scored.
+        annotation = _annotation(
+            targets=[_target(start=10, end=20,
+                             region={"x": 0.4, "y": 0.4, "width": 0.2, "height": 0.2})],
+            unknown=[{"id": "unk", "start": 0, "end": 30, "kind": None,
+                      "spatial_tolerance": 0.08, "truncated_passage": False}])
+        result = score_clip({}, annotation,
+                            _config_result([_detection(15, 0.5, 0.5)]), 40)["baseline"]
+        self.assertEqual(result["covered_targets"], 0)
+        self.assertEqual(result["matched_targets"], 0)
+        self.assertEqual(result["unknown_excluded_targets"], 1)
+        self.assertTrue(result["targets"][0]["excluded_by_unknown"])
+        self.assertIsNone(result["target_recall"])
+        self.assertEqual(result["scored_status"], "unscored")
+
+    def test_score_target_partially_overlapping_unknown_scores_only_known_time(self):
+        annotation = _annotation(
+            targets=[_target(start=10, end=20,
+                             region={"x": 0.4, "y": 0.4, "width": 0.2, "height": 0.2})],
+            unknown=[{"id": "unk", "start": 15, "end": 20, "kind": None,
+                      "spatial_tolerance": 0.08, "truncated_passage": False}])
+        known = score_clip({}, annotation,
+                           _config_result([_detection(12, 0.5, 0.5)]), 40)["baseline"]
+        self.assertEqual(known["matched_targets"], 1)
+        unknown_only = score_clip({}, annotation,
+                                  _config_result([_detection(17, 0.5, 0.5)]), 40)["baseline"]
+        self.assertEqual(unknown_only["matched_targets"], 0)
+        self.assertEqual(unknown_only["unknown_detections"], 1)
+
+    def test_candidate_named_baseline_is_reserved(self):
+        # The reserved-name check in run() runs before any dataset is
+        # loaded, so this needs no dataset; the file-based check is in
+        # DatasetTests below.
+        with self.assertRaises(ValueError):
+            run("nonexistent-dataset.json",
+                candidates=[{"name": "baseline", "override": {"threshold": 14}}])
+
+    def test_native_decoded_bytes_covers_every_native_frame(self):
+        # Regression: budgeting sampled frames only understates disk use.
+        # 2 fps sampling of a 16-frame clip decodes 16 frames, not 4.
+        self.assertEqual(native_decoded_bytes(320, 180, 16), 320 * 180 * 16)
+        self.assertGreater(native_decoded_bytes(320, 180, 16), 320 * 180 * 2 * 2)
+
     def test_score_truncated_windows_are_uncovered_not_misses(self):
         annotation = _annotation(targets=[_target(start=9, end=12)])
         result = score_clip({}, annotation, _config_result([]), 10)["baseline"]
@@ -221,6 +284,86 @@ class DatasetTests(unittest.TestCase):
             {"name": "bad", "override": {"width": 320}}]}))
         with self.assertRaises(ValueError):
             load_candidates(candidates)
+
+    def test_candidate_named_baseline_rejected_from_file(self):
+        candidates = self.tmp / "candidates-baseline.json"
+        candidates.write_text(json.dumps({"candidates": [
+            {"name": "baseline", "override": {"threshold": 14}}]}))
+        with self.assertRaises(ValueError):
+            load_candidates(candidates)
+
+    def test_vfr_decode_preserves_frame_timing(self):
+        # Regression: without -fps_mode passthrough, FFmpeg's default
+        # constant-rate output duplicates/drops frames, so decoded frame
+        # N no longer matches presentation timestamp N (on the long
+        # cloud clip this diverged from frame 334, with counts still
+        # matching). Build a synthetic VFR clip with the concat
+        # demuxer: alternating 0.05s / 0.15s frame durations, each
+        # frame a distinct gray level, then require benchmark's decode
+        # to match a timestamp-preserving reference decode exactly.
+        frames_dir = self.tmp / "vfr-frames"
+        frames_dir.mkdir()
+        count = 24
+        for i in range(count):
+            gray = i * 10
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                            f"color=c=0x{gray:02x}{gray:02x}{gray:02x}:size=64x36",
+                            "-frames:v", "1", str(frames_dir / f"f{i:02d}.png")],
+                           check=True, timeout=30)
+        concat = self.tmp / "vfr-concat.txt"
+        lines = []
+        for i in range(count):
+            lines.append(f"file 'vfr-frames/f{i:02d}.png'")
+            if i < count - 1:
+                lines.append(f"duration {0.05 if i % 2 == 0 else 0.15}")
+        lines.append(f"file 'vfr-frames/f{count - 1:02d}.png'")
+        concat.write_text("\n".join(lines) + "\n")
+        video = self.tmp / "vfr.mp4"
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
+                        "-i", str(concat), "-vsync", "vfr", "-c:v", "libx264",
+                        "-pix_fmt", "yuv420p", str(video)],
+                       check=True, timeout=30, cwd=self.tmp)
+        _duration, _width, _height, pts = probe_video(video)
+        intervals = [b - a for a, b in zip(pts, pts[1:])]
+        # The fixture must actually be variable-rate, or this test
+        # would pass vacuously on a constant-rate clip.
+        self.assertGreater(max(intervals) - min(intervals), 0.05)
+        benchmark_frames = [frame.copy() for frame in
+                            iter_native_frames(video, 64, 36, len(pts))]
+        self.assertEqual(len(benchmark_frames), len(pts))
+        reference = subprocess.run(
+            ["ffmpeg", "-nostdin", "-v", "error", "-threads", "1", "-i", str(video),
+             "-map", "0:v:0", "-an", "-vf", "scale=64:36",
+             "-frames:v", str(len(pts)), "-fps_mode", "passthrough",
+             "-pix_fmt", "gray", "-threads", "1", "-f", "rawvideo", "pipe:1"],
+            capture_output=True, check=True, timeout=30)
+        size = 64 * 36
+        self.assertEqual(len(reference.stdout), size * len(pts))
+        for index, frame in enumerate(benchmark_frames):
+            self.assertEqual(frame.tobytes(),
+                             reference.stdout[index * size:(index + 1) * size])
+
+    def test_disk_budget_uses_native_frames_not_sampled_frames(self):
+        # Regression: at 2 fps sampling of an 8 fps native clip, the
+        # decoded file holds 16 native frames, not 4 sampled ones.
+        # Free space between the sampled budget and the native budget
+        # must therefore fail, not silently pass.
+        import shutil
+        from unittest import mock
+        dataset = self._write_dataset(
+            [self._clip(EVENT_A)], sampling={"width": 320, "height": 180, "fps": 2})
+        _dataset, prepared = prepare_clips(dataset, [], 2)
+        clip = prepared[0]
+        source_size = clip["video"].stat().st_size
+        sampled_budget = source_size + 320 * 180 * 2 * 2 + 1_048_576
+        native_budget = source_size + native_decoded_bytes(320, 180, 16) + 1_048_576
+        self.assertGreater(native_budget, sampled_budget)
+        free = (sampled_budget + native_budget) // 2
+        usage = mock.Mock()
+        usage.free = free
+        with mock.patch.object(shutil, "disk_usage", return_value=usage):
+            with self.assertRaises(ValueError):
+                run_clip(clip, 2)
 
     def test_annotation_must_match_clip_and_not_overlap_within_category(self):
         video = self.dataset_dir / "clip.mp4"

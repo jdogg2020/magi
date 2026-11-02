@@ -93,3 +93,14 @@ The original camera retains its station configuration and an internal forgotten
 marker, because that configuration also holds dashboard login and station defaults;
 it no longer appears in the UI, including after restart. Recordings belonging to
 other cameras under the same parent directory are never removed.
+
+### Purge feedback (0.20.14)
+
+Starting a purge brings its status panel into view. The panel shows the selected
+camera scope, elapsed time, and an indeterminate indicator during preview. After
+confirmation it shows checked/total events, deleted events and skipped/failed
+events as each batch completes. Purge buttons are disabled during the operation.
+The final counts or interruption message remain visible after usage refreshes.
+Pending review saves must finish before purging. Keep the tab open until the purge
+finishes; it remains a browser-driven sequence of confirmed batches. A lost
+response can leave the final batch outcome uncertain, so refresh before retrying.

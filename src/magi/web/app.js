@@ -1097,7 +1097,7 @@ async function refreshStorage() {
       if(!camera.archived)card.append(cameraSettingsLink(camera,'Edit storage limits',true));
       const actions=document.createElement('div');actions.className='update-actions';
       for(const [mode,label] of [['unprotected','Purge unprotected events'],['trash','Empty trash'],...(camera.archived?[['remove_archive','Delete archived camera']]:[])]){
-        const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent=label;button.onclick=()=>purgeStorage(camera.id,mode);actions.append(button);
+        const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent=label;button.dataset.purgeAction='true';button.disabled=purgeBusy;button.onclick=()=>purgeStorage(camera.id,mode);actions.append(button);
       }
       card.append(actions);$('storage-cameras').append(card);
     }
@@ -1111,25 +1111,39 @@ function focusStorageLimits(){
   $('max_gb').focus({preventScroll:true});
 }
 let purgeBusy=false;
+function purgeControls(){
+  for(const button of [$('storage-purge-all'),$('storage-empty-trash'),...document.querySelectorAll('[data-purge-action]')])button.disabled=purgeBusy;
+}
 async function purgeStorage(camera,mode){
   if(purgeBusy)return;
-  purgeBusy=true;
-  const status=$('storage-purge-status');status.textContent='Preparing deletion preview…';
+  const status=$('storage-purge-status'),feedback=$('storage-purge-feedback'),progress=$('storage-purge-progress');
+  feedback.classList.remove('hidden');feedback.scrollIntoView({block:'center',behavior:'auto'});feedback.focus({preventScroll:true});
+  if(MagiEvents.hasPending()){status.textContent='Wait for pending review saves to finish before purging events.';return;}
+  purgeBusy=true;purgeControls();feedback.setAttribute('aria-busy','true');
+  progress.classList.remove('hidden');progress.removeAttribute('value');
+  const started=Date.now();let phase='Preparing deletion preview',scope=camera==='all'?'All cameras':'Selected camera',total=0,processed=0,deleted=0,failed=0,retained=0,finished=false;
+  const working=()=>{status.textContent=`${scope}: ${phase}${phase==='Deleting events' ? ` — ${processed} of ${total} checked; ${deleted} deleted, ${failed} skipped or failed` : '…'} · ${Math.floor((Date.now()-started)/1000)}s elapsed. Keep this tab open.`;};
+  working();const timer=setInterval(working,1000);
   try {
     const preview=await api('/api/station/storage/purge',{action:'preview',camera_id:camera,mode});
-    if(!preview.count && mode!=='remove_archive'){await api('/api/station/storage/purge',{action:'cancel',token:preview.token});status.textContent='No eligible events to purge.';return;}
+    scope=preview.scope;total=preview.count;retained=preview.retained;
+    if(!preview.count && mode!=='remove_archive'){await api('/api/station/storage/purge',{action:'cancel',token:preview.token});status.textContent=`${scope}: No eligible events to purge. ${retained} protected, unfinished or unreadable entries retained.`;return;}
     const message=`${preview.scope}: permanently delete ${preview.count} unprotected events (about ${bytes(preview.estimated_bytes)} of files)? This includes originals, previews, notes and metadata. ${preview.retained} protected/unfinished/unreadable entries retained. Events in use will be rechecked and skipped. ${mode==='remove_archive'?'The removed camera will also disappear from Storage and Events; its leftover buffers will be deleted. ':''}This cannot be undone. File size is not guaranteed reclaimed space.`;
     if(!confirm(message)){await api('/api/station/storage/purge',{action:'cancel',token:preview.token});status.textContent='Cancelled. No files deleted.';return;}
+    phase='Deleting events';progress.max=Math.max(1,total);progress.value=0;working();
     let step=0,result;
     do {
       result=await api('/api/station/storage/purge',{action:'confirm',token:preview.token,step});
-      step=result.step;
-      status.textContent=`Deleted ${result.deleted} events; ${result.failed} skipped or failed. Working…`;
+      step=result.step;deleted=result.deleted;failed=result.failed;retained=result.retained;processed=deleted+failed;
+      progress.value=processed;working();
     } while(!result.done && csrf);
-    status.textContent=`Deleted ${result.deleted} events. ${result.failed} skipped or failed; ${result.retained} retained.${result.removed?' Archived camera removed.':''}${result.error?' '+result.error:''}`;
+    clearInterval(timer);
+    if(!result.done)throw new Error('Session ended before purge completion.');
+    finished=true;progress.value=progress.max;
+    status.textContent=`${scope}: Purge complete. ${deleted} events deleted; ${failed} skipped or failed; ${retained} retained.${result.removed?' Archived camera removed.':''}${result.error?' '+result.error:''} Finished in ${Math.floor((Date.now()-started)/1000)}s.`;
     await refreshStorage();await refreshCameras();await MagiEvents.refresh(true);
-  }catch(error){status.textContent='Deletion stopped: '+error.message+' Refresh before retrying; completed deletions are permanent.';}
-  finally{purgeBusy=false;}
+  }catch(error){status.textContent=finished ? status.textContent+' Could not refresh all dashboard data: '+error.message : phase!=='Deleting events' ? `Could not prepare deletion preview: ${error.message} No deletion requested.` : `Deletion stopped: ${error.message} ${deleted} deletions confirmed; ${failed} skipped or failed. The last request may have completed. Refresh before retrying; completed deletions are permanent.`;}
+  finally{clearInterval(timer);purgeBusy=false;purgeControls();feedback.setAttribute('aria-busy','false');progress.classList.toggle('hidden',!finished);}
 }
 $('storage-purge-all').onclick=()=>purgeStorage('all','unprotected');
 $('storage-empty-trash').onclick=()=>purgeStorage('all','trash');

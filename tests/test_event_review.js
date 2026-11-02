@@ -43,6 +43,15 @@ const settle=async()=>{for(let i=0;i<20;i++)await new Promise(resolve=>setImmedi
  key('r');await settle();assert(ctx.reviewEvent.review.reviewed);
  let played=0,paused=0;el('review-play').onclick=()=>{played++;ctx.reviewMode='video';};el('review-video').paused=false;el('review-video').pause=()=>paused++;
  key(' ');key(' ');assert.equal(played,1);assert.equal(paused,1);
+ // Adding a typed or quick label marks reviewed; removal alone does not undo it.
+ ctx.openReview(records[200]);await settle();el('review-labels').value='custom label';
+ await el('review-save').onclick();assert(records[200].review.reviewed);
+ await el('review-mark').onclick();assert(!records[200].review.reviewed);
+ el('review-labels').value='CUSTOM LABEL';await el('review-save').onclick();assert(!records[200].review.reviewed);
+ ctx.openReview(records[201]);await settle();await el('review-label-weather').onclick();await settle();
+ assert(records[201].review.reviewed,'Category addition must persist reviewed with the label');
+ ctx.openReview(records[201]);await settle();await el('review-label-weather').onclick();await settle();
+ assert(records[201].review.reviewed,'Removing a category must not unreview');
  const pending=()=>vm.runInContext('MagiEvents.hasPending()',ctx);
  const findButton=(title)=>el('review-background-saves').children.flatMap(n=>n.children || []).find(n=>n.textContent===title);
  const resetDraft=()=>{el('review-notes').value='';el('review-labels').value='';el('review-protected').checked=false;};

@@ -19,6 +19,27 @@ function cameraSettingsLink(camera, label, storage=false){
   };
   return link;
 }
+// Match the detector's pixel-center inclusion rule, including narrow edge gaps.
+function drawOverviewZones(tile) {
+  const {img, overlay, zoneToggle, zoneNote} = tile;
+  const zones = tile.zones, known = Array.isArray(zones);
+  zoneToggle.disabled = !known;
+  zoneNote.textContent = !known ? 'Ignore zones unavailable' : zones.length ? `${zones.length} saved ignore zone${zones.length===1?'':'s'} · shaded areas excluded from detection` : 'No saved ignore zones';
+  const width=img.naturalWidth, height=img.naturalHeight;
+  const visible=known && zones.length>0 && zoneToggle.checked && width>0 && height>0 && !img.classList.contains('hidden');
+  overlay.classList.toggle('hidden', !visible);
+  if(!visible)return;
+  overlay.width=width;overlay.height=height;
+  const ctx=overlay.getContext('2d');
+  ctx.clearRect(0,0,width,height);
+  ctx.fillStyle='rgba(255, 180, 60, 0.32)';
+  for(const z of zones) {
+    if(!z || ![z.x,z.y,z.width,z.height].every(Number.isFinite) || z.x<0 || z.y<0 || z.width<=0 || z.height<=0 || z.x+z.width>1 || z.y+z.height>1)continue;
+    const left=Math.max(0,Math.ceil(z.x*width-.5)), top=Math.max(0,Math.ceil(z.y*height-.5));
+    const right=Math.min(width,Math.ceil((z.x+z.width)*width-.5)), bottom=Math.min(height,Math.ceil((z.y+z.height)*height-.5));
+    ctx.fillRect(left,top,right-left,bottom-top);
+  }
+}
 async function refreshCameras() {
   if (!csrf || cameraRefreshBusy) return;
   cameraRefreshBusy = true;
@@ -58,14 +79,24 @@ async function refreshCameras() {
         const title=document.createElement('h2'), state=document.createElement('span'), count=document.createElement('small'), analysis=document.createElement('small');
         const img=document.createElement('img');img.alt=camera.name+' latest detection frame';img.classList.add('hidden');
         const empty=document.createElement('p');empty.textContent='Waiting for a fresh camera image.';
+        const view=document.createElement('div');view.className='camera-tile-view';
+        const overlay=document.createElement('canvas');overlay.className='overview-zone-overlay hidden';overlay.setAttribute('aria-hidden','true');
+        view.append(img,overlay);
+        const zoneLabel=document.createElement('label');zoneLabel.className='check';
+        const zoneToggle=document.createElement('input');zoneToggle.type='checkbox';zoneToggle.checked=true;
+        const zoneText=document.createElement('span');zoneText.textContent='Show ignore zones';zoneLabel.append(zoneToggle,zoneText);
+        const zoneNote=document.createElement('small');zoneNote.className='muted';
         const actions=document.createElement('div');actions.className='camera-tile-actions';
         const link=cameraSettingsLink(camera,'Settings');
         const save=document.createElement('button');save.type='button';save.className='secondary';save.textContent='＋ Save an event';
         const feedback=document.createElement('p');feedback.setAttribute('role','status');feedback.className='muted';
-        tile={card,title,state,count,analysis,img,empty,save,feedback,url:null,pendingEvent:null,saving:false};
+        tile={card,title,state,count,analysis,img,empty,save,feedback,overlay,zoneToggle,zoneNote,zones:null,url:null,pendingEvent:null,saving:false};
         save.onclick=async()=>{tile.saving=true;save.disabled=true;try{const result=await api('/api/trigger',{},camera.id);tile.pendingEvent=result.event_id;tile.eventStatusFailures=0;feedback.textContent='Event started. Waiting for post-roll and assembly.';}catch(error){feedback.textContent=error.message;}finally{tile.saving=false;save.disabled=!!tile.pendingEvent;}};
-        actions.append(save,link);card.append(title,state,count,analysis,img,empty,actions,feedback);grid.append(card);cameraTiles.set(camera.id,tile);
+        img.addEventListener('load',()=>drawOverviewZones(tile));
+        zoneToggle.onchange=()=>drawOverviewZones(tile);
+        actions.append(save,link);card.append(title,state,count,analysis,view,empty,zoneLabel,zoneNote,actions,feedback);grid.append(card);cameraTiles.set(camera.id,tile);
       }
+      tile.zones=camera.ignore_zones;
       tile.title.textContent=camera.name;tile.img.alt=camera.name+' latest detection frame';
       tile.state.textContent=`Main: ${camera.state.replaceAll('_',' ')} · Substream: ${(camera.substream?.state || 'idle').replaceAll('_',' ')} · Detection: ${(camera.analysis?.state || 'idle').replaceAll('_',' ')}`;
       tile.count.textContent=`${camera.event_count_since_start || 0} events this session · ${bytes(camera.storage_used_bytes)} used`;
@@ -83,6 +114,7 @@ async function refreshCameras() {
       tile.save.disabled=tile.saving || !!tile.pendingEvent || camera.state!=='buffering';
       tile.save.textContent=tile.saving || tile.pendingEvent ? 'Saving event…' : '＋ Save an event';
       if(camera.state==='worker_failed' || camera.frame_age_seconds==null || camera.frame_age_seconds>=10){tile.img.classList.add('hidden');tile.empty.classList.remove('hidden');}
+      drawOverviewZones(tile);
     }
     const recording=result.cameras.filter(c=>c.state==='buffering').length;
     $('connection').textContent=`${recording}/${result.cameras.length} cameras recording`;$('connection').classList.toggle('warning',recording!==result.cameras.length);
@@ -390,6 +422,7 @@ async function updateLiveFrame(identity, image, empty, owner) {
     if(owner.url)URL.revokeObjectURL(owner.url);owner.url=null;
   }finally {
     clearTimeout(timer);frameRequests.delete(identity);
+    if(owner.overlay)drawOverviewZones(owner);
   }
 }
 const settingsFrame = {url:null};
@@ -398,7 +431,7 @@ async function refreshFrame() {
   const requests=[];
   if(!$('overview').classList.contains('hidden'))for(const camera of stationCameras){
     const tile=cameraTiles.get(camera.id);if(!tile)continue;
-    if(camera.state==='worker_failed'){tile.img.classList.add('hidden');tile.empty.classList.remove('hidden');continue;}
+    if(camera.state==='worker_failed'){tile.img.classList.add('hidden');tile.empty.classList.remove('hidden');drawOverviewZones(tile);continue;}
     requests.push(updateLiveFrame(camera.id,tile.img,tile.empty,tile));
   }
   if(!$('settings').classList.contains('hidden'))requests.push(updateLiveFrame(selectedCamera,$('camera-frame'),$('camera-empty'),settingsFrame));

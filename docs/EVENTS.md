@@ -192,3 +192,12 @@ Event review offers **Download low quality** when the native camera substream
 recording is available, beside **Download original (high quality)**. The low-quality
 download copies the saved substream MP4 without re-encoding and includes camera
 and event IDs in its filename. It does not download the sampled detection replay.
+
+## Live ignore-zone overlay (0.20.7)
+
+Each Overview camera image shows its saved ignore zones as translucent amber
+rectangles. **Show ignore zones** hides or shows them without changing detection.
+The overlay uses each camera's saved settings, never unsaved edits in Settings.
+Pixel boundaries follow the detector's pixel-center rule, so small unmasked edge
+gaps remain visible. The shading disappears when the camera image is unavailable.
+These are current zones, not the zones used by a historical event.

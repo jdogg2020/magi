@@ -155,8 +155,10 @@ class Station:
                     archived.append({'id': item['id'], 'name': item['name']})
                     continue
                 worker = self.workers[item['id']]
-                status = worker.app.read()['status'] if worker.app else {'state':'worker_failed','analysis':{'state':'unavailable'},'substream':{'state':'unavailable'},'event_count_since_start':0,'frame_age_seconds':None}
+                snapshot = worker.app.read() if worker.app else {}
+                status = snapshot['status'] if worker.app else {'state':'worker_failed','analysis':{'state':'unavailable'},'substream':{'state':'unavailable'},'event_count_since_start':0,'frame_age_seconds':None}
                 result.append({**item, 'state': 'worker_failed' if worker.failed else 'stopping' if worker.stop.is_set() else status['state'],
+                               'ignore_zones': snapshot.get('settings', {}).get('detection', {}).get('ignore_zones'),
                                'analysis': status['analysis'], 'substream': status['substream'],
                                'event_count_since_start': status['event_count_since_start'],
                                'storage_used_bytes': status.get('storage_used_bytes', 0),

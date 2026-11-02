@@ -268,6 +268,21 @@ class StationTests(unittest.TestCase):
         self.assertNotIn('private-camera-password', json.dumps(station.cameras()))
         self.assertNotIn('private-camera-password', json.dumps(station.camera(identity).read()))
 
+    def test_overview_zones_use_each_workers_published_settings(self):
+        station = self.station()
+        identity = station.manage_camera({'action':'add','name':'East'})['id']
+        zone = {'x':.69, 'y':.48, 'width':.3083, 'height':.52}
+        first = station.camera('primary').read()
+        second = station.camera(identity).read()
+        first['settings']['detection']['ignore_zones'] = []
+        second['settings']['detection']['ignore_zones'] = [zone]
+        with patch.object(station.camera('primary'), 'read', return_value=first), patch.object(station.camera(identity), 'read', return_value=second):
+            rows = {row['id']:row for row in station.cameras()['cameras']}
+            self.assertEqual(rows['primary']['ignore_zones'], [])
+            self.assertEqual(rows[identity]['ignore_zones'], [zone])
+            second['settings']['detection']['ignore_zones'] = []
+            self.assertEqual(station.cameras()['cameras'][1]['ignore_zones'], [])
+
     def test_slow_camera_restart_keeps_other_camera_controls_available(self):
         station = self.station()
         identity = station.manage_camera({'action':'add','name':'East'})['id']

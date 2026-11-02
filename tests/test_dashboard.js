@@ -64,6 +64,26 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert.equal(vm.runInContext("cameraPath('/api/session')",context),'/api/session','Sign-in remains station-wide');
  assert(vm.runInContext('[...cameraTiles.values()].filter(tile=>tile.img.src?.startsWith("blob:")).length>=2',context),'Both live images should load on the overview');
  assert(elements['camera-links'].children.length>=2);
+ // Saved masks are per camera, rasterized exactly, and never cover a missing image.
+ const overlayTile=vm.runInContext('cameraTiles.get(selectedCamera)',context);
+ const savedZones=overlayTile.zones;
+ overlayTile.img.naturalWidth=640;overlayTile.img.naturalHeight=360;
+ overlayTile.img.classList.remove('hidden');
+ overlayTile.zones=[{x:.69,y:.48,width:.3083,height:.52}];
+ const painted=[];overlayTile.overlay.getContext=()=>({clearRect(){painted.length=0;},fillRect(...args){painted.push(args);}});
+ vm.runInContext('drawOverviewZones(cameraTiles.get(selectedCamera))',context);
+ assert.deepEqual(painted,[[442,173,197,187]],'Rightmost pixel must remain unmasked when the saved zone stops short');
+ assert(!overlayTile.overlay.classList.contains('hidden'));
+ overlayTile.zoneToggle.checked=false;overlayTile.zoneToggle.onchange();
+ assert(overlayTile.overlay.classList.contains('hidden'));
+ overlayTile.zoneToggle.checked=true;overlayTile.img.classList.add('hidden');overlayTile.zoneToggle.onchange();
+ assert(overlayTile.overlay.classList.contains('hidden'));
+ overlayTile.img.classList.remove('hidden');overlayTile.zones=null;overlayTile.zoneToggle.onchange();
+ assert(overlayTile.zoneToggle.disabled);assert(overlayTile.zoneNote.textContent.includes('unavailable'));
+ overlayTile.zones=[];overlayTile.zoneToggle.onchange();
+ assert(!overlayTile.zoneToggle.disabled);assert.equal(overlayTile.zoneNote.textContent,'No saved ignore zones');
+ overlayTile.zones=savedZones;
+
  assert(elements['camera-links'].children.every(link=>link.href.endsWith('#settings')),'Left camera links open individual settings');
  assert.equal(vm.runInContext("cameraPath('/api/station/events/list')",context),'/api/station/events/list','Combined archive must be independent of settings selection');
  assert(elements['detection-mode'].textContent.includes('detecting'));

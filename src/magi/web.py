@@ -171,8 +171,10 @@ class Handler(BaseHTTPRequestHandler):
             if hasattr(station, 'cameras'):
                 self.reply(200, station.cameras())
             else:
-                status = station.read()['status']
-                self.reply(200, {'cameras': [{'id':'primary','name':'Camera 1', **status}], 'max_cameras':1})
+                snapshot = station.read()
+                status = snapshot['status']
+                zones = snapshot.get('settings', {}).get('detection', {}).get('ignore_zones')
+                self.reply(200, {'cameras': [{'id':'primary','name':'Camera 1', **status, 'ignore_zones': zones}], 'max_cameras':1})
             return
         try:
             app, path = self.camera_route(path)

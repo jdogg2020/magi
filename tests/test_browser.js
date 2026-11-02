@@ -32,6 +32,28 @@ const base = process.argv[2];
     assert.deepEqual(await page.evaluate(()=>{window.stationTextObserver.disconnect();return window.stationTextViolations;}),[],'Station indicators must not flash per-camera labels between polls');
 
     fs.mkdirSync('dist/browser',{recursive:true});
+
+    const maskRoute=async route=>{
+      const response=await route.fetch(), data=await response.json();
+      data.cameras.forEach((camera,index)=>{camera.ignore_zones=index===0?[{x:.69,y:.48,width:.3083,height:.52}]:[];});
+      await route.fulfill({response,json:data});
+    };
+    await page.route('**/api/cameras',maskRoute);
+    await page.evaluate(()=>refreshCameras());
+    const maskTile=page.locator('#camera-grid article').first();
+    const mask=maskTile.locator('canvas');await mask.waitFor({state:'visible'});
+    assert.equal(await page.locator('#camera-grid article').nth(1).locator('canvas').isVisible(),false);
+    const dimensions=await mask.evaluate(c=>({w:c.width,h:c.height,rect:c.getBoundingClientRect().toJSON()}));
+    const imageDimensions=await maskTile.locator('img').evaluate(i=>({w:i.naturalWidth,h:i.naturalHeight,rect:i.getBoundingClientRect().toJSON()}));
+    assert.equal(dimensions.w,imageDimensions.w);assert.equal(dimensions.h,imageDimensions.h);
+    assert(Math.abs(dimensions.rect.width-imageDimensions.rect.width)<1);
+    assert(Math.abs(dimensions.rect.height-imageDimensions.rect.height)<1);
+    await page.screenshot({path:'dist/browser/overview-masks.png',fullPage:true});
+    await maskTile.getByLabel('Show ignore zones').uncheck();assert(!await mask.isVisible());
+    await page.evaluate(()=>refreshCameras());assert(!await mask.isVisible(),'Polling preserves display toggle');
+    await maskTile.getByLabel('Show ignore zones').check();assert(await mask.isVisible());
+    await page.unroute('**/api/cameras',maskRoute);
+    await page.evaluate(()=>refreshCameras());
     await page.screenshot({path:'dist/browser/overview.png',fullPage:true});
     await page.locator('.nav[data-tab=storage]').click();
     await page.locator('#storage-status').filter({hasText:'Removed-camera archives:'}).waitFor();

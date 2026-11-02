@@ -53,11 +53,11 @@ from PIL import Image, ImageDraw
 from .calibration import CalibrationError, frame_time, source_fingerprint
 from .identification import configured as identification_configured
 from .identification import validate as validate_identification
-from .night import DEFAULT_NIGHT_ALTITUDE_DEG, is_night, night_start_unix
+from .night import DEFAULT_NIGHT_ALTITUDE_DEG, NIGHT_START_STEP_SECONDS, is_night, night_start_unix
 from .sensors import effective as sensor_effective
 from .star_catalog import ensure_catalog, visible_catalog_stars
 from .star_detection import detect_stars
-from .star_solve import SOLVER_VERSION, SOLVE_MAG_LIMIT, geometry_to_basis_scales, points_from_rays, _angular_errors, _check_deadline, _match_projected, rays_from_points
+from .star_solve import SOLVER_VERSION, SOLVE_MAG_LIMIT, SolverCancelled, geometry_to_basis_scales, points_from_rays, _angular_errors, _check_deadline, _match_projected, rays_from_points
 from .star_solve import solve as blind_solve
 from .storage import atomic_json
 
@@ -89,6 +89,29 @@ SNAPSHOT_SECRET_KEYS = ('opensky_client_id', 'opensky_client_secret')
 
 class AutoCalibrationError(ValueError):
     pass
+
+
+def _check_guard(cancel_event):
+    """Raise if a solve guard (SearchGuard or an event) blocks work.
+
+    SearchGuard.is_set() raises ValueError with a 'Star search
+    stopped:' message when the Pi is hot or throttling, and never
+    returns True; a plain event returns True when set. Both are
+    converted here to AutoCalibrationError so stage-boundary checks
+    in the retry worker report a thermal/cancelled stop, not a raw
+    guard exception. The guard throttles its own checks (about every
+    5 seconds), so calling this at every stage boundary is cheap.
+    """
+    if cancel_event is None:
+        return
+    try:
+        blocked = cancel_event.is_set()
+    except ValueError as exc:
+        if str(exc).startswith('Star search stopped:'):
+            raise AutoCalibrationError(str(exc)) from exc
+        raise
+    if blocked:
+        raise AutoCalibrationError('Star search stopped: solve cancelled.')
 
 
 def candidate_path(root, camera_id):
@@ -346,8 +369,7 @@ def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=N
     cache_path = Path(catalog_path) if catalog_path else Path(cfg.root) / 'star-catalog.json'
     cache = ensure_catalog(cache_path)
     visible = visible_catalog_stars(cache, stamp, latitude, longitude, elevation)
-    if cancel_event is not None and cancel_event.is_set():
-        raise AutoCalibrationError('Solve cancelled before detection.')
+    _check_guard(cancel_event)
     detections = detect_stars(image, deadline=deadline, cancel_event=cancel_event)
     if gate_detections and len(detections) < gate_detections:
         result = {'status': 'skipped', 'reason': 'insufficient_detections',
@@ -639,8 +661,14 @@ def discover_camera_configs(primary_config_path):
     """Active cameras for the timer retry, mirroring Station.__init__.
 
     Returns [(camera_id, config_path)] in registry order, primary
-    first. Archived and forgotten cameras are skipped; a missing
-    registry means primary only. A secondary config is
+    first when it is active. Archived and forgotten cameras are
+    skipped and are never added back: a primary that was archived
+    (and possibly forgotten) must not be reinserted, or the worker
+    would waste its one solve attempt on a removed camera. A missing
+    registry means primary only, mirroring Station's default when no
+    registry file exists — that is the only case primary is assumed.
+    A corrupt or unparseable registry also solves nothing rather
+    than guessing a removed primary back in. A secondary config is
     <primary config parent>/camera-configs/<id>.json. This function
     reads the registry only — Config loading happens per camera in the
     worker, so one bad secondary config cannot hide the other cameras.
@@ -654,7 +682,9 @@ def discover_camera_configs(primary_config_path):
         entries = registry.get('cameras', [])
         forgotten = set(registry.get('forgotten_cameras') or [])
     except (OSError, ValueError):
-        return [('primary', primary_config_path)]
+        return []
+    if not isinstance(entries, list):
+        return []
     result = []
     for item in entries:
         if not isinstance(item, dict) or not item.get('id'):
@@ -665,9 +695,35 @@ def discover_camera_configs(primary_config_path):
             result.append(('primary', primary_config_path))
         else:
             result.append((item['id'], primary_config_path.parent / 'camera-configs' / (item['id'] + '.json')))
-    if not result or result[0][0] != 'primary':
-        result = [('primary', primary_config_path)] + [r for r in result if r[0] != 'primary']
     return result
+
+
+def _scheduler_root(primary_config_path, cameras):
+    """Root directory for the retry scheduler file, independent of
+    which cameras are active.
+
+    The scheduler (rotation pointer) must live in a stable place even
+    when the primary camera itself is archived or forgotten and the
+    active list is secondary-only. It therefore comes from the
+    primary config when one is given (the primary config always
+    exists — Station requires it), from the primary camera's root
+    when the caller passed cameras explicitly, and only as a last
+    resort from the first active camera's root. Deriving it from
+    cameras[0] would move the scheduler file whenever the active
+    list changes, losing the rotation state.
+    """
+    if primary_config_path is not None:
+        try:
+            from .config import Config
+            return Path(Config.load(primary_config_path).root)
+        except Exception:
+            pass
+    for camera_id, cfg in cameras:
+        if camera_id == 'primary':
+            return Path(cfg.root)
+    if cameras:
+        return Path(cameras[0][1].root)
+    return None
 
 
 def read_scheduler(primary_root):
@@ -692,9 +748,14 @@ def fresh_event_for_night(cfg, latitude, longitude, now_unix, night_start):
 
     A frame qualifies only if its capture time (frame_time, from the
     segment timeline — not trigger time, not "now") satisfies
-    night_start <= frame_time <= now AND the sun was below the night
-    threshold at frame_time. Yesterday's frame, a daytime frame, and a
-    frame from before tonight's night start are all rejected, so the
+    night_start - one grid step <= frame_time <= now AND the sun was
+    below the night threshold at frame_time. The one-step allowance
+    compensates for night_start's grid quantization (it is the first
+    grid sample at night, up to 5 minutes after the true crossing);
+    the is_night check below still rejects any frame taken before
+    the true crossing, so the allowance cannot admit a daytime or
+    twilight frame. Yesterday's frame, a daytime frame, and a frame
+    from before tonight's night start are all rejected, so the
     worker never repeatedly solves a stale frame. Returns
     (event_id, stamp, reason); reason is '' on success.
     With event-only images, "first clear night" stays conditional on
@@ -714,7 +775,7 @@ def fresh_event_for_night(cfg, latitude, longitude, now_unix, night_start):
         return None, None, f'invalid_frame: {exc}'
     if night_start is None:
         return None, None, 'no_night_start'
-    if stamp < night_start or stamp > now_unix:
+    if stamp < night_start - NIGHT_START_STEP_SECONDS or stamp > now_unix:
         return None, None, 'no_fresh_night_frame'
     if not is_night(latitude, longitude, stamp, threshold_deg=DEFAULT_NIGHT_ALTITUDE_DEG):
         return None, None, 'frame_not_at_night'
@@ -818,7 +879,8 @@ def process_pending_apply(app):
     return True
 
 
-def run_retry_attempt(primary_config_path, cameras=None, deadline=None, now_unix=None, sensors=None):
+def run_retry_attempt(primary_config_path, cameras=None, deadline=None, now_unix=None, sensors=None,
+                    cancel_event=None, scheduler_root=None):
     """One hourly timer invocation for all active cameras.
 
     State machine, per camera, in rotation order:
@@ -862,7 +924,10 @@ def run_retry_attempt(primary_config_path, cameras=None, deadline=None, now_unix
                 continue
     if not cameras:
         return {'status': 'skipped', 'reason': 'no_cameras', 'cameras_checked': []}
-    primary_root = Path(cameras[0][1].root)
+    # Scheduler storage is independent of the active-camera list (see
+    # _scheduler_root): it must not move when the primary camera is
+    # archived or the rotation order changes.
+    primary_root = Path(scheduler_root) if scheduler_root is not None else _scheduler_root(primary_config_path, cameras)
     scheduler = read_scheduler(primary_root)
     last_id = scheduler.get('last_camera_id')
     ids = [c[0] for c in cameras]
@@ -904,7 +969,14 @@ def run_retry_attempt(primary_config_path, cameras=None, deadline=None, now_unix
             calibrated = identification_configured(cfg.identification)
             if not calibrated:
                 expensive_started = True
+                # Thermal guard: checked before the expensive stage
+                # starts, and passed into the solve itself so a rise
+                # mid-solve stops it (detection and solver check the
+                # guard periodically). A guard trip here raises and is
+                # reported as a thermal skip by the except below.
+                _check_guard(cancel_event)
                 record = solve_event(cfg, event_id, camera_id=camera_id, deadline=deadline,
+                                     cancel_event=cancel_event,
                                      options={'gps_required': True}, gate_detections=GATE_DETECTIONS)
                 if record.get('status') == 'skipped':
                     update_status(root, camera_id=camera_id, last_outcome='skipped',
@@ -914,7 +986,13 @@ def run_retry_attempt(primary_config_path, cameras=None, deadline=None, now_unix
                                     'reason': 'insufficient_detections'})
                     continue
                 full_attempt_camera = camera_id
-                if record.get('status') == 'solved':
+                # solve_event's success record status is 'candidate',
+                # not the solver's 'solved': the solver returns
+                # 'solved', solve_event converts it to a candidate
+                # record (and writes the candidate file). Checking
+                # for 'solved' here meant no success was ever filed
+                # as pending-apply, so automatic apply never happened.
+                if record.get('status') == 'candidate':
                     file_pending_apply(root, camera_id, record, reason='first_solve')
                     update_status(root, camera_id=camera_id, completed_night=night_start,
                                   last_outcome='pending_apply', last_reason='first_solve',
@@ -932,7 +1010,9 @@ def run_retry_attempt(primary_config_path, cameras=None, deadline=None, now_unix
                 break
             # Calibrated: verify first, on the same shared deadline.
             expensive_started = True
+            _check_guard(cancel_event)
             verification = verify_geometry(cfg, event_id, camera_id=camera_id, deadline=deadline,
+                                           cancel_event=cancel_event,
                                            options={'gps_required': True})
             if verification.get('outcome') == 'skipped':
                 update_status(root, camera_id=camera_id, last_outcome='skipped',
@@ -965,10 +1045,14 @@ def run_retry_attempt(primary_config_path, cameras=None, deadline=None, now_unix
                 break
             # Verification failed (gate passed, geometry did not match):
             # blind-solve with the REMAINING shared deadline, never a
-            # fresh budget.
+            # fresh budget. Guard checked again before this second
+            # expensive stage, in case the Pi heated up during
+            # verification.
+            _check_guard(cancel_event)
             record = solve_event(cfg, event_id, camera_id=camera_id, deadline=deadline,
+                                 cancel_event=cancel_event,
                                  options={'gps_required': True}, gate_detections=GATE_DETECTIONS)
-            if record.get('status') == 'solved':
+            if record.get('status') == 'candidate':
                 file_pending_apply(root, camera_id, record, reason='verification_failed_resolve')
                 update_status(root, camera_id=camera_id, completed_night=night_start,
                               last_outcome='pending_apply', last_reason='verification_failed_resolve',
@@ -998,7 +1082,33 @@ def run_retry_attempt(primary_config_path, cameras=None, deadline=None, now_unix
             # consume the invocation's one full attempt, so the worker
             # continues to the next camera; a full attempt that raised
             # has consumed it, so the invocation stops there.
-            checked.append({'camera_id': camera_id, 'outcome': 'failed', 'reason': str(exc)[:200]})
+            # Thermal and cancellation stops are system-wide, not
+            # per-camera failures: they are reported as skips (the
+            # next hourly invocation retries), the night is left
+            # open, and no other camera is attempted — solving
+            # another camera on a hot Pi would only heat it further.
+            message = str(exc)
+            if message.startswith('Star search stopped:'):
+                checked.append({'camera_id': camera_id, 'outcome': 'skipped', 'reason': 'thermal_block'})
+                try:
+                    update_status(root, camera_id=camera_id, last_outcome='skipped',
+                                  last_reason='thermal_block')
+                except Exception:
+                    pass
+                outcome = {'status': 'skipped', 'reason': 'thermal_block', 'camera_id': camera_id,
+                           'cameras_checked': checked}
+                break
+            if isinstance(exc, SolverCancelled):
+                checked.append({'camera_id': camera_id, 'outcome': 'skipped', 'reason': 'cancelled'})
+                try:
+                    update_status(root, camera_id=camera_id, last_outcome='skipped',
+                                  last_reason='cancelled')
+                except Exception:
+                    pass
+                outcome = {'status': 'skipped', 'reason': 'cancelled', 'camera_id': camera_id,
+                           'cameras_checked': checked}
+                break
+            checked.append({'camera_id': camera_id, 'outcome': 'failed', 'reason': message[:200]})
             try:
                 update_status(root, camera_id=camera_id, last_outcome='failed',
                               last_reason=f'worker_error: {exc}'[:200])

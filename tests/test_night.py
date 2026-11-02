@@ -45,6 +45,23 @@ class NightTests(unittest.TestCase):
         self.assertFalse(is_night(LAT, LON, noon))
         self.assertTrue(is_night(LAT, LON, noon, threshold_deg=40.0))
 
+    def test_night_start_stable_within_one_night(self):
+        # Regression: the night start must not depend on the
+        # invocation's exact seconds. An earlier implementation
+        # walked back from ``now`` in 5-minute steps, so two calls a
+        # second apart (as the timer's randomized delay produces)
+        # returned different identifiers for the same night and the
+        # once-per-night check never matched. The grid-anchored
+        # version returns one value for the whole night.
+        base = stamp('2026-11-02T06:00:00')  # midnight CST
+        start = night_start_unix(LAT, LON, base)
+        self.assertIsNotNone(start)
+        for offset in (1, 61, 1799, 3601, 7200):
+            self.assertEqual(night_start_unix(LAT, LON, base + offset), start,
+                             f'night start shifted at +{offset}s')
+        # A different night gets a different identifier.
+        self.assertNotEqual(night_start_unix(LAT, LON, base + 24 * 3600), start)
+
     def test_no_crossing_polar_day(self):
         # 78N in late June: the sun never gets below -12, so even at
         # local "night" there is no crossing in the last 24 hours.

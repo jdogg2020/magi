@@ -101,8 +101,19 @@ class SolverCancelled(StarSolveError):
 
 
 def _check_deadline(deadline, cancel_event=None):
-    if cancel_event is not None and cancel_event.is_set():
-        raise SolverCancelled('Star solve cancelled.')
+    if cancel_event is not None:
+        try:
+            blocked = cancel_event.is_set()
+        except ValueError as exc:
+            # SearchGuard raises (it never returns True) when the Pi
+            # is hot or throttling; convert that into a cancellation
+            # so the solver reports cancelled instead of leaking a
+            # thermal ValueError up through solve_event.
+            if str(exc).startswith('Star search stopped:'):
+                raise SolverCancelled(str(exc)) from exc
+            raise
+        if blocked:
+            raise SolverCancelled('Star solve cancelled.')
     if deadline is not None and time.monotonic() > deadline:
         raise SolverTimeout('Star solve exceeded its time budget.')
 

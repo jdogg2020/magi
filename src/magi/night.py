@@ -16,7 +16,15 @@ import math
 from datetime import datetime, timezone
 
 DEFAULT_NIGHT_ALTITUDE_DEG = -12.0
-_NIGHT_START_STEP_SECONDS = 300
+# Grid step for the night-start search. The returned night start is
+# always on this epoch-aligned grid, so it is a stable identifier for
+# one night: two invocations an hour apart, or a second apart, return
+# the same value, and the retry worker's once-per-night check works
+# despite the timer's randomized delay. (A value derived from the
+# invocation's own seconds would shift with every call and the
+# completed-night check would almost never match.)
+NIGHT_START_STEP_SECONDS = 300
+_NIGHT_START_STEP_SECONDS = NIGHT_START_STEP_SECONDS
 _NIGHT_START_MAX_BACK_SECONDS = 24 * 3600
 
 
@@ -74,15 +82,26 @@ def night_start_unix(latitude, longitude, now_unix, threshold_deg=DEFAULT_NIGHT_
     Returns None when it is currently day, and when no crossing is
     found in the last 24 hours (for example polar day or polar night:
     in that case tonight cannot be established from this rule, and the
-    caller must skip rather than guess). The returned value is the
-    first 5-minute sample at or below the threshold, so it is within
-    5 minutes after the true crossing.
+    caller must skip rather than guess).
+
+    The search grid is anchored to the Unix epoch, not to
+    ``now_unix``: samples are ``floor(now / 300) * 300 - k * 300``.
+    The returned value is therefore the first grid sample at or below
+    the threshold, within 5 minutes after the true crossing, and it
+    is identical for every invocation in the same night — it is safe
+    to store as the night's identifier (see ``completed_night``).
+    Returns None when the night began within the current grid step:
+    the first grid sample at night is still in the future, so the
+    next invocation (which will see the same grid value) handles it
+    rather than this one inventing a start time.
     """
     if not is_night(latitude, longitude, now_unix, threshold_deg):
         return None
-    steps = _NIGHT_START_MAX_BACK_SECONDS // _NIGHT_START_STEP_SECONDS
-    for step in range(1, steps + 1):
-        candidate = now_unix - step * _NIGHT_START_STEP_SECONDS
+    grid_now = (int(now_unix) // NIGHT_START_STEP_SECONDS) * NIGHT_START_STEP_SECONDS
+    steps = _NIGHT_START_MAX_BACK_SECONDS // NIGHT_START_STEP_SECONDS
+    for step in range(0, steps + 1):
+        candidate = grid_now - step * NIGHT_START_STEP_SECONDS
         if not is_night(latitude, longitude, candidate, threshold_deg):
-            return candidate + _NIGHT_START_STEP_SECONDS
+            night_start = candidate + NIGHT_START_STEP_SECONDS
+            return night_start if night_start <= now_unix else None
     return None

@@ -52,7 +52,8 @@ def main():
                     print(json.dumps({'status': 'skipped', 'reason': 'thermal_block',
                                       'detail': str(exc)}))
                     return 0
-                summary = run_retry_attempt(sys.argv[1], deadline=time.monotonic() + 115)
+                summary = run_retry_attempt(sys.argv[1], deadline=time.monotonic() + 115,
+                                            cancel_event=guard)
                 print(json.dumps(summary))
                 return 0
             guard.is_set()

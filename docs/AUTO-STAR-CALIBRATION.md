@@ -255,7 +255,11 @@ calibrated?
 * **Not calibrated:** fresh nighttime frame? → stars-visible gate? →
   blind solve → success files pending-apply and marks the night
   solved; failure or skip keeps the old (empty) state for the next
-  hourly attempt.
+  hourly attempt. (Status vocabulary matters here: the solver
+  returns `solved`, but `solve_event` converts a success into a
+  `candidate` record, and the worker files a pending-apply on
+  `candidate` — checking for `solved` in the worker meant no success
+  was ever filed.)
 * **Calibrated:** fresh nighttime frame? → gate? → verify → verified
   marks the night complete; failed (gate passed, geometry did not
   match) blind-solves with the remaining shared deadline → success
@@ -272,14 +276,23 @@ sun altitude below −12 degrees (provisional, not a validated field
 threshold). The current night's start is the most recent downward
 crossing of −12 degrees, searched back at most 24 hours in 5-minute
 steps; if there is no crossing, or it is currently day, the worker
-skips. A daytime boot therefore exits cheaply.
+skips. A daytime boot therefore exits cheaply. The start is computed
+on an epoch-anchored 5-minute grid, so it is identical for every
+invocation in the same night and is safe to store as the night's
+identifier: with the timer's randomized delay, a start derived from
+the invocation's own seconds would shift every call and the
+once-per-night check would almost never match.
 
 **Fresh nighttime frame.** The frame's capture time is checked, not
 just whether it is night now. `frame_time` (from the segment
-timeline) must satisfy night_start ≤ frame_time ≤ now, and the sun
-must have been below −12 degrees at frame_time. Yesterday's frame, a
-daytime frame, and a frame from before tonight's night start are all
-rejected, so the worker never repeatedly solves a stale frame.
+timeline) must satisfy night_start − one grid step ≤ frame_time ≤
+now, and the sun must have been below −12 degrees at frame_time.
+The one-step allowance compensates for the grid quantization of
+night_start (up to 5 minutes after the true crossing); the
+is_night check still rejects any frame taken before the true
+crossing. Yesterday's frame, a daytime frame, and a frame from
+before tonight's night start are all rejected, so the worker never
+repeatedly solves a stale frame.
 **Event-only limitation, stated plainly:** Magi's only
 full-resolution frames come from recorded events. "First clear night"
 therefore remains conditional on an event producing a suitable image
@@ -307,14 +320,19 @@ fully verifies.
 
 **Multi-camera rotation.** The old timer solved primary only. The
 retry worker discovers active cameras from `cameras.json` next to the
-primary config (archived and forgotten cameras skipped; secondary
-configs in `camera-configs/<id>.json`, mirroring `Station`), walks
-them in rotation order from a persisted pointer
+primary config (archived and forgotten cameras skipped and never
+added back — an archived primary is not reinserted, or the worker
+would waste its one attempt on a removed camera; secondary configs
+in `camera-configs/<id>.json`, mirroring `Station`), walks them in
+rotation order from a persisted pointer
 (`<primary root>/auto-calibration/scheduler.json`), and serializes
 jobs: at most one full attempt (verification, or a blind solve, or a
 verify-then-solve for the same camera) per invocation, under the same
 `star-solve.lock` the dashboard jobs use, so the Pi never solves two
-cameras simultaneously. A gate failure is not a full attempt, so the
+cameras simultaneously. The scheduler file's location comes from
+the primary config, not from the first active camera, so it stays
+put even when the primary camera itself is archived and the active
+list is secondary-only. A gate failure is not a full attempt, so the
 worker may gate-check the next camera in the same invocation, but it
 never starts a second full solve/verify. Successful
 verification/application finishes that camera's night
@@ -325,12 +343,19 @@ audit history) lives in persisted files under each camera's
 `auto-calibration/` directory, written with `atomic_json`, so a
 reboot never re-solves a calibrated camera from scratch.
 
-**One bounded attempt.** Verification and any follow-on blind solve
-for the same camera share one deadline: the worker's start + 115
-seconds, passed through, never reset. That sits inside the
-application supervisor's 120-second budget and the service's
-150-second `TimeoutStartSec`. There is no daemon loop and no
-parallel solving.
+**One bounded attempt, with the thermal guard throughout.**
+Verification and any follow-on blind solve for the same camera share
+one deadline: the worker's start + 115 seconds, passed through,
+never reset. That sits inside the application supervisor's
+120-second budget and the service's 150-second `TimeoutStartSec`.
+There is no daemon loop and no parallel solving. The worker's
+thermal guard (`SearchGuard`, which stops work at 75°C or on
+throttling/undervoltage) is checked before each expensive stage
+and passed into verification and solving, so a Pi that heats up
+mid-attempt stops: detection and the solver check the guard
+periodically, and a guard trip is reported as a thermal skip (the
+next hourly invocation retries), not as a failed solve, with the
+old calibration preserved and no other camera attempted.
 
 **Strengthened apply check and apply through the service.** The old
 configuration fingerprint covers stream URLs only. A solve now also

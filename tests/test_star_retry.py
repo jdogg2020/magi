@@ -293,15 +293,20 @@ class RotationTests(RetryTestBase):
         return cameras
 
     def _fake_solve(self, calls, behaviour):
+        # The success status is 'candidate': that is what the real
+        # solve_event returns (the solver's 'solved' is converted by
+        # solve_event). An earlier version of this fake returned
+        # 'solved', which masked the worker checking for 'solved'
+        # and never filing a pending-apply.
         def _solve(cfg, event_id, camera_id='primary', **kwargs):
             calls.append(camera_id)
-            mode = behaviour.get(camera_id, 'solved')
+            mode = behaviour.get(camera_id, 'candidate')
             if mode == 'skipped':
                 return {'status': 'skipped', 'result': {'reason': 'insufficient_detections',
                                                         'detection_count': 5},
                         'created_unix': 123.0, 'source_event': event_id,
                         'image_sha256': 'x' * 64, 'geometry': TRUTH, 'solve_snapshot': {}}
-            return {'status': 'solved', 'result': {'reason': '', 'verification': {}},
+            return {'status': 'candidate', 'result': {'reason': '', 'verification': {}},
                     'created_unix': 123.0, 'source_event': event_id,
                     'image_sha256': 'x' * 64, 'geometry': TRUTH, 'solve_snapshot': {}}
         return _solve
@@ -344,7 +349,7 @@ class RotationTests(RetryTestBase):
                                  'image_timestamp_unix': NOW, 'source_event': EVENT,
                                  'detection_count': 30}) as verify_mock, \
                 patch('magi.auto_calibration.solve_event') as solve_mock:
-            solve_mock.return_value = {'status': 'solved', 'result': {}, 'created_unix': 1.0,
+            solve_mock.return_value = {'status': 'candidate', 'result': {}, 'created_unix': 1.0,
                                        'source_event': EVENT, 'image_sha256': 'x' * 64,
                                        'geometry': TRUTH, 'solve_snapshot': {}}
             run_retry_attempt(None, cameras=[('primary', cfg)], deadline=12345.0, now_unix=NOW)
@@ -363,6 +368,170 @@ class RotationTests(RetryTestBase):
         self.assertEqual(len(entries), 100)
         self.assertEqual(entries[0]['timestamp_unix'], 5.0)
         self.assertEqual(entries[-1]['timestamp_unix'], 104.0)
+
+class ReviewFixTests(RetryTestBase):
+    """Regression tests for the PR #46 review fixes."""
+
+    def _fake_solve(self, calls, behaviour):
+        def _solve(cfg, event_id, camera_id='primary', **kwargs):
+            calls.append(camera_id)
+            mode = behaviour.get(camera_id, 'candidate')
+            if mode == 'skipped':
+                return {'status': 'skipped', 'result': {'reason': 'insufficient_detections',
+                                                        'detection_count': 5},
+                        'created_unix': 123.0, 'source_event': event_id,
+                        'image_sha256': 'x' * 64, 'geometry': TRUTH, 'solve_snapshot': {}}
+            return {'status': 'candidate', 'result': {'reason': '', 'verification': {}},
+                    'created_unix': 123.0, 'source_event': event_id,
+                    'image_sha256': 'x' * 64, 'geometry': TRUTH, 'solve_snapshot': {}}
+        return _solve
+
+    def test_real_solve_event_status_files_pending_apply(self):
+        # Issue 1, end to end with the real solve_event (no mocked
+        # status at all): the solver returns 'solved', solve_event
+        # converts it to a 'candidate' record, and the worker must
+        # file that as pending-apply. An earlier worker checked for
+        # 'solved' and reported every success as a failure.
+        root = Path(self.temp.name) / 'cam'
+        cfg = make_cfg(root)
+        make_event(root, EVENT, NOW - 7200)
+        with patch('magi.auto_calibration.detect_stars',
+                   return_value=detections_for(spread_points() * 2)), \
+                patch('magi.auto_calibration.visible_catalog_stars', return_value=[]), \
+                patch('magi.auto_calibration.blind_solve',
+                      return_value={'status': 'solved', 'geometry': TRUTH, 'verification': {}}):
+            outcome = run_retry_attempt(None, cameras=[('primary', cfg)],
+                                        deadline=time.monotonic() + 115, now_unix=NOW)
+        self.assertEqual(outcome['status'], 'pending_apply')
+        self.assertTrue((root / 'auto-calibration' / 'pending-apply.json').exists())
+        self.assertEqual(read_status(root).get('completed_night'), NIGHT_START)
+
+    def test_guard_passed_to_verify_and_solve(self):
+        # Issue 2, threading: the guard given to the worker must
+        # reach both verification and the follow-on solve.
+        root = Path(self.temp.name) / 'cam'
+        cfg = make_cfg(root, calibrated=True, geometry=TRUTH)
+        make_event(root, EVENT, NOW - 7200)
+        guard = SimpleNamespace(is_set=lambda: False)
+        with patch('magi.auto_calibration.verify_geometry',
+                   return_value={'outcome': 'failed', 'reason': 'verification_failed',
+                                 'evidence': {}, 'image_sha256': 'x' * 64,
+                                 'image_timestamp_unix': NOW, 'source_event': EVENT,
+                                 'detection_count': 30}) as verify_mock, \
+                patch('magi.auto_calibration.solve_event',
+                      return_value={'status': 'candidate', 'result': {}, 'created_unix': 1.0,
+                                    'source_event': EVENT, 'image_sha256': 'x' * 64,
+                                    'geometry': TRUTH, 'solve_snapshot': {}}) as solve_mock:
+            run_retry_attempt(None, cameras=[('primary', cfg)], deadline=12345.0, now_unix=NOW,
+                              cancel_event=guard)
+        self.assertIs(verify_mock.call_args.kwargs['cancel_event'], guard)
+        self.assertIs(solve_mock.call_args.kwargs['cancel_event'], guard)
+
+    def test_guard_rise_mid_attempt_stops_solve(self):
+        # Issue 2, mid-attempt rise: a guard that trips during the
+        # solve (second is_set call, as SearchGuard raises when the
+        # Pi heats up) must stop the attempt as a thermal skip, with
+        # no pending-apply and no completed night.
+        root = Path(self.temp.name) / 'cam'
+        cfg = make_cfg(root)
+        make_event(root, EVENT, NOW - 7200)
+
+        class RisingGuard:
+            def __init__(self):
+                self.calls = 0
+
+            def is_set(self):
+                self.calls += 1
+                if self.calls >= 2:
+                    raise ValueError('Star search stopped: CPU temperature reached 75°C. '
+                                     'Let the station cool before retrying.')
+                return False
+
+        guard = RisingGuard()
+        calls = []
+
+        def _solve(cfg, event_id, camera_id='primary', **kwargs):
+            calls.append(camera_id)
+            kwargs['cancel_event'].is_set()  # solver's periodic guard check
+            return {'status': 'candidate', 'result': {}, 'created_unix': 1.0,
+                    'source_event': event_id, 'image_sha256': 'x' * 64,
+                    'geometry': TRUTH, 'solve_snapshot': {}}
+
+        with patch('magi.auto_calibration.solve_event', side_effect=_solve):
+            outcome = run_retry_attempt(None, cameras=[('primary', cfg)],
+                                        deadline=time.monotonic() + 115, now_unix=NOW,
+                                        cancel_event=guard)
+        self.assertEqual(outcome['status'], 'skipped')
+        self.assertEqual(outcome['reason'], 'thermal_block')
+        self.assertEqual(calls, ['primary'])
+        self.assertFalse((root / 'auto-calibration' / 'pending-apply.json').exists())
+        self.assertIsNone(read_status(root).get('completed_night'))
+
+    def test_completed_night_stable_across_invocation_seconds(self):
+        # Issue 3: a second invocation an hour and one second later
+        # (timer randomized delay) must see the same night identifier
+        # and skip as already completed, not re-solve.
+        root = Path(self.temp.name) / 'cam'
+        cfg = make_cfg(root)
+        make_event(root, EVENT, NOW - 7200)
+        calls = []
+        with patch('magi.auto_calibration.solve_event',
+                   side_effect=self._fake_solve(calls, {})):
+            first = run_retry_attempt(None, cameras=[('primary', cfg)],
+                                      deadline=time.monotonic() + 115, now_unix=NOW)
+            self.assertEqual(first['status'], 'pending_apply')
+            second = run_retry_attempt(None, cameras=[('primary', cfg)],
+                                       deadline=time.monotonic() + 115, now_unix=NOW + 3601)
+        self.assertEqual(second['status'], 'skipped')
+        # The already-completed skip is recorded per camera in
+        # cameras_checked (the top-level reason stays 'no_attempt'
+        # when no camera attempted, as in the original worker).
+        self.assertEqual(second['cameras_checked'][0]['reason'], 'already_completed')
+        self.assertEqual(calls, ['primary'])  # no re-solve
+
+    def test_discover_archived_primary_not_reinserted(self):
+        # Issue 4: a primary that was archived and forgotten must
+        # not come back in the active list, even though the registry
+        # exists and other cameras are active.
+        base = Path(self.temp.name)
+        primary = base / 'config.json'
+        primary.write_text('{}')
+        (base / 'camera-configs').mkdir()
+        (base / 'camera-configs' / 'second.json').write_text('{}')
+        (base / 'cameras.json').write_text(json.dumps({
+            'schema': 1,
+            'cameras': [{'id': 'primary', 'name': 'One', 'archived': True},
+                        {'id': 'second', 'name': 'Two'}],
+            'forgotten_cameras': ['primary']}))
+        found = discover_camera_configs(primary)
+        self.assertEqual([c[0] for c in found], ['second'])
+
+    def test_discover_archived_primary_only_returns_empty(self):
+        base = Path(self.temp.name)
+        primary = base / 'config.json'
+        primary.write_text('{}')
+        (base / 'cameras.json').write_text(json.dumps({
+            'schema': 1,
+            'cameras': [{'id': 'primary', 'name': 'One', 'archived': True}],
+            'forgotten_cameras': ['primary']}))
+        self.assertEqual(discover_camera_configs(primary), [])
+
+    def test_scheduler_root_independent_of_active_list(self):
+        # Issue 4: scheduler storage must not follow the active list.
+        # With a primary config given, its root wins even when the
+        # active list is secondary-only; without one, the primary
+        # camera's root wins over list order.
+        from magi.auto_calibration import _scheduler_root
+        primary_root = Path(self.temp.name) / 'primary-root'
+        secondary_root = Path(self.temp.name) / 'secondary-root'
+        cfg_primary = make_cfg(primary_root)
+        cfg_secondary = make_cfg(secondary_root)
+        self.assertEqual(_scheduler_root(None, [('secondary', cfg_secondary),
+                                                ('primary', cfg_primary)]), primary_root)
+        with patch('magi.config.Config.load',
+                   return_value=SimpleNamespace(root=primary_root)):
+            self.assertEqual(_scheduler_root(Path(self.temp.name) / 'config.json',
+                                             [('secondary', cfg_secondary)]), primary_root)
 
     def test_discover_skips_archived_and_forgotten(self):
         base = Path(self.temp.name)

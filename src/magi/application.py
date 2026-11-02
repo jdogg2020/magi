@@ -20,7 +20,7 @@ from .config import Config
 from .camera_info import CameraInfo
 from .reolink_setup import Setup, SetupError
 from .calibration import CalibrationError, GEOMETRY_KEYS, active_report, source_fingerprint, frame_time, visible_stars, solve_geometry
-from .auto_calibration import AutoCalibrationError, AutoCalibrationJob, apply_candidate, latest_event_with_frame, read_candidate, read_status
+from .auto_calibration import AutoCalibrationError, AutoCalibrationJob, apply_candidate, latest_event_with_frame, process_pending_apply, read_candidate, read_status
 from .detection import Analysis
 from .health import metrics, cpu_counters
 from .event_review import ReviewError, read as read_review, changes as review_changes, filters as event_filters, matches as event_matches, optional_json
@@ -278,6 +278,14 @@ class Application:
     def tick(self):
         if self._auto_job is not None:
             self._auto_job.poll()
+        # Timer retry pending-apply: one cheap existence check per tick;
+        # only parsed when a pending file is present. The service, not
+        # the timer worker, applies, so a solve can never race live
+        # settings from a separate process.
+        try:
+            process_pending_apply(self)
+        except Exception:
+            LOG.warning('pending auto-calibration apply failed', exc_info=True)
         if self.archive_only:
             self._commands()
             return

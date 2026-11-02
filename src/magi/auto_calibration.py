@@ -11,12 +11,21 @@ Records, under <station root>/auto-calibration/:
 * <camera_id>-candidate.json: the latest solved candidate (or the
   applied record once applied). Solving never touches live settings.
 * status.json: the latest job outcome, including the movement flag.
+* pending-apply.json: a solved candidate the timer worker filed for
+  the running service to apply (see below); the worker never applies.
+* history.json: a capped audit history of applied, rejected,
+  superseded and verified events (skips are status-only, not history).
 
-Solving never applies. Applying is always an explicit operator step
-(dashboard route or ``magi star-apply`` while the service is stopped)
-and reuses the manual apply's validation: camera match, configuration
-fingerprint, source event still present, image hash unchanged, and
-geometry inside magi.identification.validate limits.
+Solving never applies by itself. Applying is an explicit operator step
+on the manual/dashboard path (dashboard route or ``magi star-apply``
+while the service is stopped). On the timer retry path, and only there,
+a verified solve is filed as pending-apply and the running service
+applies it in-process through the same validation: camera match,
+candidate identity, configuration fingerprint plus a solve snapshot
+(see take_snapshot), source event still present, image hash unchanged,
+and geometry inside magi.identification.validate limits. If the
+service is not running, the pending file simply waits; calibration is
+not claimed applied until the service applies it.
 
 Movement semantics: a new solution that points more than 0.5 degrees
 from the applied solution, or changes either field of view by more
@@ -42,17 +51,40 @@ import time
 from PIL import Image, ImageDraw
 
 from .calibration import CalibrationError, frame_time, source_fingerprint
+from .identification import configured as identification_configured
 from .identification import validate as validate_identification
+from .night import DEFAULT_NIGHT_ALTITUDE_DEG, is_night, night_start_unix
 from .sensors import effective as sensor_effective
 from .star_catalog import ensure_catalog, visible_catalog_stars
 from .star_detection import detect_stars
-from .star_solve import SOLVER_VERSION, geometry_to_basis_scales, _check_deadline
+from .star_solve import SOLVER_VERSION, SOLVE_MAG_LIMIT, geometry_to_basis_scales, points_from_rays, _angular_errors, _check_deadline, _match_projected, rays_from_points
 from .star_solve import solve as blind_solve
 from .storage import atomic_json
 
 MOVEMENT_BORESIGHT_DEG = 0.5
 MOVEMENT_FOV_DEG = 1.0
 STATUS_DIRNAME = 'auto-calibration'
+# Provisional retry settings, not validated field thresholds. The
+# stars-visible gate and the night threshold are starting values an
+# operator can adjust after real-sky experience; see the docs.
+GATE_DETECTIONS = 20
+VERIFY_MIN_MATCHES = 12
+VERIFY_MIN_CELLS = 6
+VERIFY_MIN_X_SPREAD = 0.35
+VERIFY_MIN_Y_SPREAD = 0.25
+VERIFY_RMS_DEG = 0.2
+VERIFY_MAX_DEG = 0.4
+HISTORY_MAX_ENTRIES = 100
+# Material-change tolerance for the solve snapshot's station location:
+# this is a change detector, not exact GPS jitter. A move larger than
+# these bounds while solving rejects the apply; smaller drift does not.
+LOCATION_TOL_DEG = 0.001
+LOCATION_TOL_ELEV_M = 50.0
+RETRY_WORKER_SECONDS = 115
+# Identification keys that must never be stored in a solve snapshot or
+# a pending-apply file: they are credentials, and a credential rotation
+# is not a calibration-relevant settings change.
+SNAPSHOT_SECRET_KEYS = ('opensky_client_id', 'opensky_client_secret')
 
 
 class AutoCalibrationError(ValueError):
@@ -65,6 +97,115 @@ def candidate_path(root, camera_id):
 
 def status_path(root):
     return Path(root) / STATUS_DIRNAME / 'status.json'
+
+
+def pending_path(root, camera_id):
+    return Path(root) / STATUS_DIRNAME / 'pending-apply.json'
+
+
+def history_path(root):
+    return Path(root) / STATUS_DIRNAME / 'history.json'
+
+
+def scheduler_path(primary_root):
+    return Path(primary_root) / STATUS_DIRNAME / 'scheduler.json'
+
+
+def read_pending(root, camera_id):
+    path = pending_path(root, camera_id)
+    if not path.is_file():
+        return None
+    return read_json_file(path)
+
+
+def read_history(root):
+    path = history_path(root)
+    if not path.is_file():
+        return []
+    try:
+        raw = read_json_file(path)
+    except AutoCalibrationError:
+        return []
+    entries = raw.get('entries') if isinstance(raw, dict) else None
+    return entries if isinstance(entries, list) else []
+
+
+def append_history(root, entry):
+    """Append one audit entry, capped at HISTORY_MAX_ENTRIES (oldest dropped)."""
+    _ensure_status_dir(root)
+    entries = read_history(root)
+    entries.append(entry)
+    entries = entries[-HISTORY_MAX_ENTRIES:]
+    atomic_json(history_path(root), {'schema': 1, 'entries': entries})
+    return entries
+
+
+def update_status(root, **fields):
+    """Merge fields into status.json (unlike solve_event's legacy wholesale
+    status write, this preserves retry state such as completed_night)."""
+    _ensure_status_dir(root)
+    status = read_status(root)
+    if status.get('status') == 'never_run':
+        status = {}
+    status.update(fields)
+    status['updated_unix'] = time.time()
+    atomic_json(status_path(root), status)
+    return status
+
+
+def take_snapshot(cfg, location):
+    """Settings/location snapshot taken at solve start.
+
+    The existing source_fingerprint covers stream URLs only, so a
+    solve that ran while the operator changed calibration, relevant
+    settings, or station location would otherwise apply stale geometry.
+    The snapshot therefore also captures the full identification dict
+    (minus OpenSky credentials) and the effective station location.
+    Location is compared with tolerance at apply time, not exactly, so
+    ordinary GPS jitter does not reject a good solve.
+    """
+    identification = {k: v for k, v in (cfg.identification or {}).items()
+                      if k not in SNAPSHOT_SECRET_KEYS}
+    loc = location or {}
+    return {
+        'source_fingerprint': source_fingerprint(cfg),
+        'identification': identification,
+        'location': {k: loc.get(k) for k in ('latitude', 'longitude', 'elevation_m',
+                                             'location_effective_source', 'altitude_effective_source')},
+    }
+
+
+def snapshot_matches(snapshot, cfg, location):
+    """True when nothing material changed since the snapshot was taken.
+
+    Returns (matches, reason). Location coordinates are compared with
+    LOCATION_TOL_DEG / LOCATION_TOL_ELEV_M; source labels are metadata
+    and do not by themselves reject. Identification is compared exactly
+    (after the same secret exclusion), because any relevant settings
+    change is material for a calibration apply.
+    """
+    if not isinstance(snapshot, dict):
+        return False, 'missing solve snapshot'
+    current = take_snapshot(cfg, location)
+    if snapshot.get('source_fingerprint') != current['source_fingerprint']:
+        return False, 'camera configuration changed while solving'
+    if snapshot.get('identification') != current['identification']:
+        return False, 'identification settings changed while solving'
+    old_loc, new_loc = snapshot.get('location') or {}, current['location']
+    for key, tol in (('latitude', LOCATION_TOL_DEG), ('longitude', LOCATION_TOL_DEG)):
+        old, new = old_loc.get(key), new_loc.get(key)
+        if (old is None) != (new is None):
+            return False, 'station location changed while solving'
+        if old is not None:
+            diff = abs(((new - old + 180.0) % 360.0 - 180.0) if key == 'longitude' else (new - old))
+            if diff > tol:
+                return False, 'station location changed while solving'
+    old_elev, new_elev = old_loc.get('elevation_m'), new_loc.get('elevation_m')
+    if (old_elev is None) != (new_elev is None):
+        return False, 'station location changed while solving'
+    if old_elev is not None and abs(new_elev - old_elev) > LOCATION_TOL_ELEV_M:
+        return False, 'station location changed while solving'
+    return True, ''
 
 
 def read_json_file(path):
@@ -118,13 +259,16 @@ def _ensure_status_dir(root):
     (root / STATUS_DIRNAME).mkdir(parents=True, exist_ok=True)
 
 
-def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=None,
-                location_override=None, deadline=None, cancel_event=None, options=None):
-    """Solve one event frame blind and record the outcome.
+def _load_event_frame(cfg, event_id, location_override=None, sensors=None, options=None,
+                      deadline=None, cancel_event=None):
+    """Validate and load one event frame, exactly as solve_event did.
 
-    cfg is a magi.config.Config. Location comes from sensor_effective
-    (the station sensor status file), never from the modem: this
-    function opens no serial ports and starts no time daemon.
+    Shared by solve_event and verify_geometry so verification checks
+    the same frame, metadata, dimensions and location a solve would.
+    Returns a dict with directory, stamp, width, height, image bytes,
+    image (decoded PIL image), image_sha256 and the effective location
+    dict. Raises AutoCalibrationError for an invalid frame or a missing
+    GPS location; it does not decide night, freshness or calibration.
     """
     if not re.fullmatch(r'\d{8}T\d{6}-[a-f0-9]{12}', event_id or ''):
         raise AutoCalibrationError('Invalid event ID.')
@@ -167,9 +311,6 @@ def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=N
         latitude, longitude, elevation = (location.get(k) for k in ('latitude', 'longitude', 'elevation_m'))
         if latitude is None or longitude is None:
             raise AutoCalibrationError('GPS fix required before solving. Check station sensors.')
-    cache_path = Path(catalog_path) if catalog_path else Path(cfg.root) / 'star-catalog.json'
-    cache = ensure_catalog(cache_path)
-    visible = visible_catalog_stars(cache, stamp, latitude, longitude, elevation)
     try:
         image = Image.open(io.BytesIO(image_bytes))
         if image.size != (width, height):
@@ -177,11 +318,44 @@ def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=N
         image.load()
     except (OSError, ValueError) as exc:
         raise AutoCalibrationError(f'Cannot decode the full-resolution frame: {exc}') from exc
+    return {'directory': directory, 'stamp': stamp, 'width': width, 'height': height,
+            'image_bytes': image_bytes, 'image': image, 'image_sha256': image_sha256,
+            'location': location, 'latitude': latitude, 'longitude': longitude, 'elevation': elevation}
+
+
+def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=None,
+                location_override=None, deadline=None, cancel_event=None, options=None,
+                gate_detections=0):
+    """Solve one event frame blind and record the outcome.
+
+    cfg is a magi.config.Config. Location comes from sensor_effective
+    (the station sensor status file), never from the modem: this
+    function opens no serial ports and starts no time daemon.
+    With gate_detections set (the timer retry path), a frame whose
+    detection count is below the gate returns a 'skipped' record
+    without running the solver, without touching the candidate, and
+    without claiming a failure: a cloudy frame is not a failed solve.
+    The record always carries a solve_snapshot, taken here at solve
+    start, for the strengthened apply check.
+    """
+    loaded = _load_event_frame(cfg, event_id, location_override, sensors, options, deadline, cancel_event)
+    stamp, width, height = loaded['stamp'], loaded['width'], loaded['height']
+    image, image_bytes, image_sha256 = loaded['image'], loaded['image_bytes'], loaded['image_sha256']
+    location, latitude, longitude, elevation = loaded['location'], loaded['latitude'], loaded['longitude'], loaded['elevation']
+    snapshot = take_snapshot(cfg, location)
+    cache_path = Path(catalog_path) if catalog_path else Path(cfg.root) / 'star-catalog.json'
+    cache = ensure_catalog(cache_path)
+    visible = visible_catalog_stars(cache, stamp, latitude, longitude, elevation)
     if cancel_event is not None and cancel_event.is_set():
         raise AutoCalibrationError('Solve cancelled before detection.')
     detections = detect_stars(image, deadline=deadline, cancel_event=cancel_event)
-    result = blind_solve(detections, visible, width, height, deadline=deadline,
-                         cancel_event=cancel_event, options=options)
+    if gate_detections and len(detections) < gate_detections:
+        result = {'status': 'skipped', 'reason': 'insufficient_detections',
+                  'detection_count': len(detections),
+                  'detail': f'Only {len(detections)} stars detected; gate is {gate_detections}.'}
+    else:
+        result = blind_solve(detections, visible, width, height, deadline=deadline,
+                             cancel_event=cancel_event, options=options)
     record = {'schema': 1, 'camera_id': camera_id, 'source_event': event_id,
               'image_sha256': image_sha256, 'image_timestamp_unix': stamp,
               'image_timestamp_utc': datetime.fromtimestamp(stamp, timezone.utc).isoformat(),
@@ -189,6 +363,7 @@ def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=N
                            'location_effective_source': location.get('location_effective_source'),
                            'altitude_effective_source': location.get('altitude_effective_source')},
               'source_fingerprint': source_fingerprint(cfg),
+              'solve_snapshot': snapshot,
               'solver_version': SOLVER_VERSION,
               'catalog': {'source': cache.get('source'), 'retrieved_from': cache.get('retrieved_from'),
                           'retrieved_sha256': cache.get('retrieved_sha256'), 'star_count': len(cache['stars']),
@@ -205,10 +380,16 @@ def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=N
         record['geometry'] = result['geometry']
         _ensure_status_dir(cfg.root)
         atomic_json(candidate_path(cfg.root, camera_id), record)
+    elif result['status'] == 'skipped':
+        record['status'] = 'skipped'
     else:
         record['status'] = 'failed'
     status_file = status_path(cfg.root)
     previous = read_status(cfg.root)
+    # Retry state is persisted, not in-memory: a solve must not drop a
+    # completed night recorded by the retry worker.
+    if previous.get('completed_night') is not None:
+        status['completed_night'] = previous['completed_night']
     current = previous.get('applied_geometry')
     if cfg.identification.get('calibrated'):
         from .calibration import GEOMETRY_KEYS
@@ -230,6 +411,97 @@ def solve_event(cfg, event_id, camera_id='primary', catalog_path=None, sensors=N
     return record
 
 
+def _verification_evidence(matches, detections, errors):
+    """Coverage + residual evidence for a projection-only verification.
+
+    matches are _match_projected triples (catalog_index, detection_index,
+    distance_px); errors are angular errors in degrees for those matches,
+    in the same order. Spatial coverage is a 3x3 grid over the image:
+    clustered matches, however low their residuals, must not verify.
+    """
+    if not matches:
+        return {'matches': 0, 'rms_deg': None, 'max_deg': None,
+                'cells_occupied': 0, 'cells': [], 'x_spread': 0.0, 'y_spread': 0.0}
+    points = [(detections[di]['x'], detections[di]['y']) for _, di, _ in matches]
+    cells = sorted({min(2, int(x * 3)) + 3 * min(2, int(y * 3)) for x, y in points})
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    errors = [float(e) for e in errors]
+    return {'matches': len(matches),
+            'rms_deg': float((sum(e * e for e in errors) / len(errors)) ** 0.5),
+            'max_deg': float(max(errors)),
+            'cells_occupied': len(cells), 'cells': cells,
+            'x_spread': float(max(xs) - min(xs)), 'y_spread': float(max(ys) - min(ys))}
+
+
+def verify_geometry(cfg, event_id, camera_id='primary', catalog_path=None, sensors=None,
+                    location_override=None, deadline=None, cancel_event=None, options=None):
+    """Verify the CURRENT geometry against one event frame, no refit.
+
+    Projection only: tier 1/2 visible catalog stars are projected
+    through cfg.identification's geometry (geometry_to_basis_scales +
+    points_from_rays + _match_projected, same tol_px as solve) and
+    matched to detected stars. A refit here would always pass, so none
+    is done. Returns a tri-state dict:
+    * verified: >=12 independent matches, RMS <=0.2 deg, max <=0.4 deg,
+      at least 6 of 9 grid cells occupied, x-spread >=0.35, y-spread >=0.25.
+    * failed: the gate passed (>=20 detections) but verification did
+      not. This is the ONLY outcome that triggers a blind re-solve.
+    * skipped: could not verify (not calibrated, too few detections,
+      no location, invalid frame). Skipped must never be read as
+      "camera moved" and never triggers a re-solve or an apply.
+    Raises AutoCalibrationError only for an invalid frame/location;
+    the retry worker treats that as a skip, not a failure.
+    """
+    if not identification_configured(cfg.identification):
+        return {'outcome': 'skipped', 'reason': 'not_calibrated', 'detection_count': 0,
+                'evidence': None, 'source_event': event_id, 'image_sha256': None,
+                'image_timestamp_unix': None}
+    loaded = _load_event_frame(cfg, event_id, location_override, sensors, options, deadline, cancel_event)
+    stamp, width, height = loaded['stamp'], loaded['width'], loaded['height']
+    latitude, longitude, elevation = loaded['latitude'], loaded['longitude'], loaded['elevation']
+    geometry = {'latitude': cfg.identification.get('latitude'), 'longitude': cfg.identification.get('longitude'),
+                'elevation_m': cfg.identification.get('elevation_m', 0),
+                'azimuth_deg': cfg.identification.get('azimuth_deg'),
+                'elevation_deg': cfg.identification.get('elevation_deg'),
+                'roll_deg': cfg.identification.get('roll_deg', 0),
+                'horizontal_fov_deg': cfg.identification.get('horizontal_fov_deg', 93.2),
+                'vertical_fov_deg': cfg.identification.get('vertical_fov_deg', 48.2)}
+    cache_path = Path(catalog_path) if catalog_path else Path(cfg.root) / 'star-catalog.json'
+    cache = ensure_catalog(cache_path)
+    visible_all = visible_catalog_stars(cache, stamp, latitude, longitude, elevation)
+    visible = [s for s in visible_all if s['magnitude'] <= SOLVE_MAG_LIMIT]
+    detections = detect_stars(loaded['image'], deadline=deadline, cancel_event=cancel_event)
+    base = {'source_event': event_id, 'image_sha256': loaded['image_sha256'],
+            'image_timestamp_unix': stamp, 'detection_count': len(detections)}
+    if len(detections) < GATE_DETECTIONS:
+        return {**base, 'outcome': 'skipped', 'reason': 'insufficient_detections', 'evidence': None}
+    basis, scales = geometry_to_basis_scales(geometry)
+    import numpy as _np
+    directions = _np.array([s['direction'] for s in visible])
+    if len(directions) == 0:
+        return {**base, 'outcome': 'skipped', 'reason': 'no_visible_stars', 'evidence': None}
+    projected, in_front = points_from_rays(directions, basis, scales)
+    tol_px = max(4.0, 0.0015 * width)
+    matches = _match_projected(projected, in_front, detections, tol_px, width, height)
+    if matches:
+        match_points = _np.array([[detections[di]['x'], detections[di]['y']] for _, di, _ in matches])
+        match_dirs = _np.array([visible[ci]['direction'] for ci, _, _ in matches])
+        errors = _angular_errors(rays_from_points(match_points, basis, scales), match_dirs)
+    else:
+        errors = _np.array([])
+    evidence = _verification_evidence(matches, detections, errors)
+    verified = (evidence['matches'] >= VERIFY_MIN_MATCHES
+                and evidence['rms_deg'] is not None and evidence['rms_deg'] <= VERIFY_RMS_DEG
+                and evidence['max_deg'] is not None and evidence['max_deg'] <= VERIFY_MAX_DEG
+                and evidence['cells_occupied'] >= VERIFY_MIN_CELLS
+                and evidence['x_spread'] >= VERIFY_MIN_X_SPREAD
+                and evidence['y_spread'] >= VERIFY_MIN_Y_SPREAD)
+    if verified:
+        return {**base, 'outcome': 'verified', 'reason': '', 'evidence': evidence}
+    return {**base, 'outcome': 'failed', 'reason': 'verification_failed', 'evidence': evidence}
+
+
 def read_candidate(root, camera_id):
     path = candidate_path(root, camera_id)
     if not path.is_file():
@@ -244,33 +516,74 @@ def read_status(root):
     return read_json_file(path)
 
 
-def apply_candidate(app, candidate=None):
+def apply_candidate(app, candidate=None, reason='manual_apply'):
     """Apply a solved candidate through the normal settings path.
 
     app is a magi.application.Application. This mirrors the manual
     apply's validation and never runs when the candidate is stale,
-    for another camera, or from a changed frame.
+    for another camera, or from a changed frame. In addition to the
+    existing stream-URL fingerprint, a candidate that carries a
+    solve_snapshot is rejected when calibration, relevant settings, or
+    station location changed while it was solving (see
+    snapshot_matches). Every decided outcome — applied or rejected —
+    is appended to the audit history; the caller (not this function)
+    owns removing a pending-apply file and clearing night completion
+    on rejection, so a manual apply and a service pending apply cannot
+    double-audit the same rejection.
     """
     if candidate is None:
         candidate = read_candidate(app.cfg.root, app.camera_id)
+    previous_status = read_status(app.cfg.root)
+    previous_geometry = previous_status.get('applied_geometry')
+    if previous_geometry is None and identification_configured(app.cfg.identification):
+        previous_geometry = {'latitude': app.cfg.identification.get('latitude'),
+                             'longitude': app.cfg.identification.get('longitude'),
+                             'elevation_m': app.cfg.identification.get('elevation_m', 0),
+                             'azimuth_deg': app.cfg.identification.get('azimuth_deg'),
+                             'elevation_deg': app.cfg.identification.get('elevation_deg'),
+                             'roll_deg': app.cfg.identification.get('roll_deg', 0),
+                             'horizontal_fov_deg': app.cfg.identification.get('horizontal_fov_deg', 93.2),
+                             'vertical_fov_deg': app.cfg.identification.get('vertical_fov_deg', 48.2)}
+    def _reject(message):
+        append_history(app.cfg.root, {'timestamp_unix': time.time(), 'camera_id': app.camera_id,
+                                      'outcome': 'rejected', 'reason': message,
+                                      'previous_geometry': previous_geometry, 'new_geometry': None,
+                                      'source_event': candidate.get('source_event'),
+                                      'image_sha256': candidate.get('image_sha256'),
+                                      'image_timestamp_unix': candidate.get('image_timestamp_unix'),
+                                      'verification': None})
+        raise AutoCalibrationError(message)
     if candidate.get('schema') != 1 or candidate.get('status') != 'candidate':
-        raise AutoCalibrationError('No solvable automatic candidate to apply. Solve again.')
+        _reject('No solvable automatic candidate to apply. Solve again.')
     if candidate.get('camera_id') != app.camera_id:
-        raise AutoCalibrationError('This candidate belongs to a different camera.')
+        _reject('This candidate belongs to a different camera.')
     if candidate.get('source_fingerprint') != source_fingerprint(app.cfg):
-        raise AutoCalibrationError('Camera configuration changed. Solve again.')
+        _reject('Camera configuration changed. Solve again.')
+    if candidate.get('solve_snapshot') is not None:
+        try:
+            current_location = sensor_effective(app.cfg.identification)
+        except Exception:
+            current_location = {}
+        matches, why = snapshot_matches(candidate['solve_snapshot'], app.cfg, current_location)
+        if not matches:
+            _reject(why or 'Settings changed while solving. Solve again.')
     geometry = candidate.get('geometry') or {}
     location = candidate.get('location') or {}
     full_geometry = {**location, **geometry}
     try:
         settings = validate_identification({**full_geometry, 'calibrated': True})
     except (ValueError, TypeError, KeyError) as exc:
-        raise AutoCalibrationError(f'Candidate geometry is invalid: {exc}') from exc
+        _reject(f'Candidate geometry is invalid: {exc}')
     if not all(settings.get(k) is not None for k in ('latitude', 'longitude', 'azimuth_deg', 'elevation_deg')):
-        raise AutoCalibrationError('Candidate geometry is incomplete.')
-    path = app.clip_path(candidate['source_event'], 'frame')
-    if hashlib.sha256(path.read_bytes()).hexdigest() != candidate['image_sha256']:
-        raise AutoCalibrationError('The calibration frame changed. Solve again before applying.')
+        _reject('Candidate geometry is incomplete.')
+    try:
+        path = app.clip_path(candidate['source_event'], 'frame')
+        if hashlib.sha256(path.read_bytes()).hexdigest() != candidate['image_sha256']:
+            _reject('The calibration frame changed. Solve again before applying.')
+    except AutoCalibrationError:
+        raise
+    except (OSError, ValueError) as exc:
+        _reject(f'The calibration frame is unavailable: {exc}')
     result = candidate['result']
     report = {'schema': 1, 'method': 'auto_blind_star_match', 'source_event': candidate['source_event'],
               'source_fingerprint': candidate['source_fingerprint'], 'image_sha256': candidate['image_sha256'],
@@ -294,6 +607,14 @@ def apply_candidate(app, candidate=None):
     status.update({'applied_geometry': report['geometry'], 'movement_suspect': False, 'movement': None,
                    'updated_unix': time.time()})
     atomic_json(status_path(app.cfg.root), status)
+    append_history(app.cfg.root, {'timestamp_unix': time.time(), 'camera_id': app.camera_id,
+                                  'outcome': 'applied', 'reason': reason,
+                                  'previous_geometry': previous_geometry,
+                                  'new_geometry': report['geometry'],
+                                  'source_event': candidate.get('source_event'),
+                                  'image_sha256': candidate.get('image_sha256'),
+                                  'image_timestamp_unix': candidate.get('image_timestamp_unix'),
+                                  'verification': result.get('verification')})
     return saved
 
 
@@ -312,6 +633,386 @@ def render_overlay(image_path, matches, output_path):
         draw.text((x + radius + 2, y - radius - 2), str(match['catalog_id']), fill=(255, 220, 0))
     image.save(output_path, 'JPEG', quality=90)
     return Path(output_path)
+
+
+def discover_camera_configs(primary_config_path):
+    """Active cameras for the timer retry, mirroring Station.__init__.
+
+    Returns [(camera_id, config_path)] in registry order, primary
+    first. Archived and forgotten cameras are skipped; a missing
+    registry means primary only. A secondary config is
+    <primary config parent>/camera-configs/<id>.json. This function
+    reads the registry only — Config loading happens per camera in the
+    worker, so one bad secondary config cannot hide the other cameras.
+    """
+    primary_config_path = Path(primary_config_path)
+    registry_path = primary_config_path.with_name('cameras.json')
+    if not registry_path.is_file():
+        return [('primary', primary_config_path)]
+    try:
+        registry = json.loads(registry_path.read_text())
+        entries = registry.get('cameras', [])
+        forgotten = set(registry.get('forgotten_cameras') or [])
+    except (OSError, ValueError):
+        return [('primary', primary_config_path)]
+    result = []
+    for item in entries:
+        if not isinstance(item, dict) or not item.get('id'):
+            continue
+        if item.get('archived') or item['id'] in forgotten:
+            continue
+        if item['id'] == 'primary':
+            result.append(('primary', primary_config_path))
+        else:
+            result.append((item['id'], primary_config_path.parent / 'camera-configs' / (item['id'] + '.json')))
+    if not result or result[0][0] != 'primary':
+        result = [('primary', primary_config_path)] + [r for r in result if r[0] != 'primary']
+    return result
+
+
+def read_scheduler(primary_root):
+    path = scheduler_path(primary_root)
+    if not path.is_file():
+        return {}
+    try:
+        raw = read_json_file(path)
+    except AutoCalibrationError:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def write_scheduler(primary_root, last_camera_id):
+    _ensure_status_dir(primary_root)
+    atomic_json(scheduler_path(primary_root),
+                {'schema': 1, 'last_camera_id': last_camera_id, 'updated_unix': time.time()})
+
+
+def fresh_event_for_night(cfg, latitude, longitude, now_unix, night_start):
+    """Latest event frame that belongs to the current night, or None.
+
+    A frame qualifies only if its capture time (frame_time, from the
+    segment timeline — not trigger time, not "now") satisfies
+    night_start <= frame_time <= now AND the sun was below the night
+    threshold at frame_time. Yesterday's frame, a daytime frame, and a
+    frame from before tonight's night start are all rejected, so the
+    worker never repeatedly solves a stale frame. Returns
+    (event_id, stamp, reason); reason is '' on success.
+    With event-only images, "first clear night" stays conditional on
+    an event producing a suitable image: this function does not invent
+    a frame, and this PR adds no dedicated sky snapshots.
+    """
+    try:
+        event_id = latest_event_with_frame(cfg.root)
+    except AutoCalibrationError:
+        return None, None, 'no_frame'
+    try:
+        directory = Path(cfg.root) / 'events' / event_id
+        meta = read_json_file(directory / 'event.json')
+        media = read_json_file(directory / 'media.json')
+        stamp = frame_time(meta, media)
+    except (AutoCalibrationError, ValueError, OSError) as exc:
+        return None, None, f'invalid_frame: {exc}'
+    if night_start is None:
+        return None, None, 'no_night_start'
+    if stamp < night_start or stamp > now_unix:
+        return None, None, 'no_fresh_night_frame'
+    if not is_night(latitude, longitude, stamp, threshold_deg=DEFAULT_NIGHT_ALTITUDE_DEG):
+        return None, None, 'frame_not_at_night'
+    return event_id, stamp, ''
+
+
+def file_pending_apply(root, camera_id, candidate, reason):
+    """File a solved candidate for the running service to apply.
+
+    The timer worker never applies: it writes pending-apply.json
+    (atomic, mode 0600 via atomic_json) and the service applies it
+    in-process on its next tick (see process_pending_apply). The
+    pending file carries the solve snapshot so the service can
+    re-validate at apply time.
+    """
+    _ensure_status_dir(root)
+    pending = {'schema': 1, 'camera_id': camera_id,
+               'candidate_created_unix': candidate.get('created_unix'),
+               'source_event': candidate.get('source_event'),
+               'image_sha256': candidate.get('image_sha256'),
+               'image_timestamp_unix': candidate.get('image_timestamp_unix'),
+               'geometry': candidate.get('geometry'),
+               'solve_snapshot': candidate.get('solve_snapshot'),
+               'reason': reason, 'created_unix': time.time()}
+    atomic_json(pending_path(root, camera_id), pending)
+    return pending
+
+
+def process_pending_apply(app):
+    """Apply a filed pending-apply from inside the running service.
+
+    Called from Application.tick (cheap existence check; only parsed
+    when present). Archived cameras never apply. Outcomes:
+    * candidate applied: pending removed; history 'applied' was
+      written by apply_candidate; night completion is kept.
+    * candidate already applied by an operator (manual apply): pending
+      is superseded — discarded, audited as superseded, never
+      re-applied, night completion kept.
+    * candidate changed since filing: pending is superseded the same way.
+    * apply rejected (snapshot/geometry/frame check): pending removed,
+      rejection audited by apply_candidate, and night completion is
+      cleared so the next hourly worker run can retry with a fresh
+      snapshot. The old calibration is preserved in all reject cases.
+    Returns True when a pending file was consumed, else False.
+    """
+    if getattr(app, 'archive_only', False):
+        return False
+    path = pending_path(app.cfg.root, app.camera_id)
+    if not path.is_file():
+        return False
+    try:
+        pending = read_pending(app.cfg.root, app.camera_id)
+    except AutoCalibrationError:
+        append_history(app.cfg.root, {'timestamp_unix': time.time(), 'camera_id': app.camera_id,
+                                      'outcome': 'rejected', 'reason': 'invalid pending-apply file',
+                                      'previous_geometry': read_status(app.cfg.root).get('applied_geometry'),
+                                      'new_geometry': None, 'source_event': None, 'image_sha256': None,
+                                      'image_timestamp_unix': None, 'verification': None})
+        path.unlink(missing_ok=True)
+        return True
+    if not isinstance(pending, dict) or pending.get('camera_id') != app.camera_id:
+        path.unlink(missing_ok=True)
+        return True
+    try:
+        candidate = read_candidate(app.cfg.root, app.camera_id)
+    except AutoCalibrationError:
+        candidate = None
+    if (candidate is None
+            or candidate.get('created_unix') != pending.get('candidate_created_unix')
+            or candidate.get('status') != 'candidate'):
+        # Superseded: an operator applied it, or a newer solve replaced
+        # it. Discard without re-applying; the calibration that is live
+        # (or the newer candidate) is the operator's, not this file's.
+        previous_status = read_status(app.cfg.root)
+        previous_geometry = previous_status.get('applied_geometry')
+        append_history(app.cfg.root, {'timestamp_unix': time.time(), 'camera_id': app.camera_id,
+                                      'outcome': 'superseded',
+                                      'reason': 'candidate already applied or replaced before service apply',
+                                      'previous_geometry': previous_geometry, 'new_geometry': None,
+                                      'source_event': pending.get('source_event'),
+                                      'image_sha256': pending.get('image_sha256'),
+                                      'image_timestamp_unix': pending.get('image_timestamp_unix'),
+                                      'verification': None})
+        path.unlink(missing_ok=True)
+        return True
+    try:
+        apply_candidate(app, candidate, reason=pending.get('reason') or 'timer_retry')
+    except Exception:
+        # apply_candidate already audited the rejection. Clear night
+        # completion so the next hourly run retries with a fresh
+        # snapshot; the old calibration is untouched by the rejection.
+        path.unlink(missing_ok=True)
+        status = read_status(app.cfg.root)
+        if status.get('status') != 'never_run':
+            status['completed_night'] = None
+            status['last_outcome'] = 'rejected'
+            status['updated_unix'] = time.time()
+            atomic_json(status_path(app.cfg.root), status)
+        return True
+    path.unlink(missing_ok=True)
+    return True
+
+
+def run_retry_attempt(primary_config_path, cameras=None, deadline=None, now_unix=None, sensors=None):
+    """One hourly timer invocation for all active cameras.
+
+    State machine, per camera, in rotation order:
+    night? -> already completed this night? -> calibrated?
+    * Not calibrated: fresh frame? -> gate? -> blind solve (shared
+      deadline) -> success files pending-apply and marks the night
+      solved; failure keeps the old state.
+    * Calibrated: fresh frame? -> gate? -> verify (shared deadline)
+      -> verified marks the night complete + history; failed blind-
+      solves with the REMAINING deadline -> success files
+      pending-apply (reason verification_failed_resolve) and marks the
+      night solved; skipped does nothing and leaves the night open.
+    At most one full attempt (verification, or a blind solve, or a
+    verify-then-solve for the same camera) happens per invocation.
+    A gate failure (too few detections) is not a full attempt: the
+    worker may gate-check the next camera in the same invocation, but
+    it never starts a second full solve/verify. All state lives in
+    persisted files under each camera's auto-calibration/ directory
+    (plus scheduler.json under the primary root), so a reboot never
+    re-solves a calibrated camera from scratch.
+    Bounded attempt: verification and any follow-on blind solve share
+    ONE deadline (the timer worker's start + 115 seconds, matching the
+    existing worker; the application supervisor allows 120 seconds and
+    the service 150 seconds). The deadline is a monotonic timestamp
+    passed through, never reset to a fresh 115 seconds.
+    ``cameras`` is [(camera_id, cfg)] in registry order; when omitted
+    it is discovered from primary_config_path and each config is
+    loaded (a camera whose config fails to load is skipped cheaply).
+    Returns a bounded summary dict for the worker's stdout.
+    """
+    now = now_unix if now_unix is not None else time.time()
+    if deadline is None:
+        deadline = time.monotonic() + RETRY_WORKER_SECONDS
+    if cameras is None:
+        cameras = []
+        for camera_id, config_path in discover_camera_configs(primary_config_path):
+            try:
+                from .config import Config
+                cameras.append((camera_id, Config.load(config_path)))
+            except Exception:
+                continue
+    if not cameras:
+        return {'status': 'skipped', 'reason': 'no_cameras', 'cameras_checked': []}
+    primary_root = Path(cameras[0][1].root)
+    scheduler = read_scheduler(primary_root)
+    last_id = scheduler.get('last_camera_id')
+    ids = [c[0] for c in cameras]
+    start = (ids.index(last_id) + 1) % len(ids) if last_id in ids else 0
+    ordered = cameras[start:] + cameras[:start]
+    checked = []
+    full_attempt_camera = None
+    last_checked = None
+    outcome = {'status': 'skipped', 'reason': 'no_attempt', 'cameras_checked': checked}
+    for camera_id, cfg in ordered:
+        last_checked = camera_id
+        root = Path(cfg.root)
+        expensive_started = False
+        try:
+            # The retry worker requires a validated GPS location, as
+            # the old timer worker did (solve_event is called below
+            # with gps_required=True); a manual-only station therefore
+            # skips here with no_location rather than solving blind.
+            location = sensor_effective({**cfg.identification, 'location_source': 'gnss'}, sensors)
+            latitude, longitude = location.get('latitude'), location.get('longitude')
+            if latitude is None or longitude is None:
+                update_status(root, camera_id=camera_id, last_outcome='skipped', last_reason='no_location')
+                checked.append({'camera_id': camera_id, 'outcome': 'skipped', 'reason': 'no_location'})
+                continue
+            if not is_night(latitude, longitude, now, threshold_deg=DEFAULT_NIGHT_ALTITUDE_DEG):
+                update_status(root, camera_id=camera_id, last_outcome='skipped', last_reason='not_night')
+                checked.append({'camera_id': camera_id, 'outcome': 'skipped', 'reason': 'not_night'})
+                continue
+            night_start = night_start_unix(latitude, longitude, now, threshold_deg=DEFAULT_NIGHT_ALTITUDE_DEG)
+            status = read_status(root)
+            if status.get('completed_night') is not None and status.get('completed_night') == night_start:
+                checked.append({'camera_id': camera_id, 'outcome': 'skipped', 'reason': 'already_completed'})
+                continue
+            event_id, _stamp, fresh_reason = fresh_event_for_night(cfg, latitude, longitude, now, night_start)
+            if event_id is None:
+                update_status(root, camera_id=camera_id, last_outcome='skipped', last_reason=fresh_reason)
+                checked.append({'camera_id': camera_id, 'outcome': 'skipped', 'reason': fresh_reason})
+                continue
+            calibrated = identification_configured(cfg.identification)
+            if not calibrated:
+                expensive_started = True
+                record = solve_event(cfg, event_id, camera_id=camera_id, deadline=deadline,
+                                     options={'gps_required': True}, gate_detections=GATE_DETECTIONS)
+                if record.get('status') == 'skipped':
+                    update_status(root, camera_id=camera_id, last_outcome='skipped',
+                                  last_reason=record.get('result', {}).get('reason', 'insufficient_detections'),
+                                  last_detection_count=record.get('result', {}).get('detection_count'))
+                    checked.append({'camera_id': camera_id, 'outcome': 'skipped',
+                                    'reason': 'insufficient_detections'})
+                    continue
+                full_attempt_camera = camera_id
+                if record.get('status') == 'solved':
+                    file_pending_apply(root, camera_id, record, reason='first_solve')
+                    update_status(root, camera_id=camera_id, completed_night=night_start,
+                                  last_outcome='pending_apply', last_reason='first_solve',
+                                  last_source_event=event_id)
+                    outcome = {'status': 'pending_apply', 'reason': 'first_solve',
+                               'camera_id': camera_id, 'source_event': event_id,
+                               'cameras_checked': checked}
+                else:
+                    update_status(root, camera_id=camera_id, last_outcome='failed',
+                                  last_reason=record.get('result', {}).get('reason', 'solve_failed'),
+                                  last_source_event=event_id)
+                    outcome = {'status': 'failed', 'reason': record.get('result', {}).get('reason'),
+                               'camera_id': camera_id, 'source_event': event_id,
+                               'cameras_checked': checked}
+                break
+            # Calibrated: verify first, on the same shared deadline.
+            expensive_started = True
+            verification = verify_geometry(cfg, event_id, camera_id=camera_id, deadline=deadline,
+                                           options={'gps_required': True})
+            if verification.get('outcome') == 'skipped':
+                update_status(root, camera_id=camera_id, last_outcome='skipped',
+                              last_reason=verification.get('reason'),
+                              last_detection_count=verification.get('detection_count'))
+                checked.append({'camera_id': camera_id, 'outcome': 'skipped',
+                                'reason': verification.get('reason')})
+                continue
+            full_attempt_camera = camera_id
+            if verification.get('outcome') == 'verified':
+                current = {'latitude': cfg.identification.get('latitude'),
+                           'longitude': cfg.identification.get('longitude'),
+                           'elevation_m': cfg.identification.get('elevation_m', 0),
+                           'azimuth_deg': cfg.identification.get('azimuth_deg'),
+                           'elevation_deg': cfg.identification.get('elevation_deg'),
+                           'roll_deg': cfg.identification.get('roll_deg', 0),
+                           'horizontal_fov_deg': cfg.identification.get('horizontal_fov_deg', 93.2),
+                           'vertical_fov_deg': cfg.identification.get('vertical_fov_deg', 48.2)}
+                append_history(root, {'timestamp_unix': time.time(), 'camera_id': camera_id,
+                                      'outcome': 'verified', 'reason': '',
+                                      'previous_geometry': current, 'new_geometry': current,
+                                      'source_event': event_id,
+                                      'image_sha256': verification.get('image_sha256'),
+                                      'image_timestamp_unix': verification.get('image_timestamp_unix'),
+                                      'verification': verification.get('evidence')})
+                update_status(root, camera_id=camera_id, completed_night=night_start,
+                              last_outcome='verified', last_source_event=event_id)
+                outcome = {'status': 'verified', 'camera_id': camera_id, 'source_event': event_id,
+                           'cameras_checked': checked}
+                break
+            # Verification failed (gate passed, geometry did not match):
+            # blind-solve with the REMAINING shared deadline, never a
+            # fresh budget.
+            record = solve_event(cfg, event_id, camera_id=camera_id, deadline=deadline,
+                                 options={'gps_required': True}, gate_detections=GATE_DETECTIONS)
+            if record.get('status') == 'solved':
+                file_pending_apply(root, camera_id, record, reason='verification_failed_resolve')
+                update_status(root, camera_id=camera_id, completed_night=night_start,
+                              last_outcome='pending_apply', last_reason='verification_failed_resolve',
+                              last_source_event=event_id)
+                outcome = {'status': 'pending_apply', 'reason': 'verification_failed_resolve',
+                           'camera_id': camera_id, 'source_event': event_id,
+                           'cameras_checked': checked}
+            elif record.get('status') == 'skipped':
+                update_status(root, camera_id=camera_id, last_outcome='failed',
+                              last_reason='solve_skipped_after_verification_failed',
+                              last_source_event=event_id)
+                outcome = {'status': 'failed', 'reason': 'solve_skipped_after_verification_failed',
+                           'camera_id': camera_id, 'source_event': event_id,
+                           'cameras_checked': checked}
+            else:
+                update_status(root, camera_id=camera_id, last_outcome='failed',
+                              last_reason=record.get('result', {}).get('reason', 'solve_failed'),
+                              last_source_event=event_id)
+                outcome = {'status': 'failed', 'reason': record.get('result', {}).get('reason'),
+                           'camera_id': camera_id, 'source_event': event_id,
+                           'cameras_checked': checked}
+            break
+        except Exception as exc:
+            # One camera's failure must not crash the whole invocation
+            # before the scheduler pointer is written. A cheap-check
+            # failure (location, night, status, fresh frame) does not
+            # consume the invocation's one full attempt, so the worker
+            # continues to the next camera; a full attempt that raised
+            # has consumed it, so the invocation stops there.
+            checked.append({'camera_id': camera_id, 'outcome': 'failed', 'reason': str(exc)[:200]})
+            try:
+                update_status(root, camera_id=camera_id, last_outcome='failed',
+                              last_reason=f'worker_error: {exc}'[:200])
+            except Exception:
+                pass
+            if not expensive_started:
+                continue
+            full_attempt_camera = camera_id
+            outcome = {'status': 'failed', 'reason': 'worker_error', 'camera_id': camera_id,
+                       'cameras_checked': checked}
+            break
+    write_scheduler(primary_root, full_attempt_camera or last_checked)
+    outcome['cameras_checked'] = checked
+    return outcome
 
 
 class AutoCalibrationJob:

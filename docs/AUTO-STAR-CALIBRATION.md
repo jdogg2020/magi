@@ -118,9 +118,10 @@ Nightly (systemd timer):
 systemctl enable --now magi-auto-calibration.timer
 ```
 
-The optional timer runs the isolated worker with `--latest` at about 03:30 nightly.
-It solves the most recent event with a full-resolution frame and
-writes the candidate and status records. It never applies.
+The optional timer runs the isolated worker with `--retry` hourly.
+The worker is night-gated and self-calibrating; see "Automatic retry
+(hourly timer)" below. The old behaviour — a single solve of the most
+recent event at about 03:30, never applying — is superseded by it.
 
 On demand (operator, SSH or dashboard):
 
@@ -205,7 +206,7 @@ service never fights a second writer over the config file.
   per-camera records, overlay, background job.
 * `src/magi/cli.py`: `star-solve` and `star-apply` commands.
 * `systemd/magi-auto-calibration.service`,
-  `systemd/magi-auto-calibration.timer`: nightly job.
+  `systemd/magi-auto-calibration.timer`: hourly retry job (night-gated).
 
 ## Dashboard and optional scheduling (v0.19)
 
@@ -226,15 +227,147 @@ sudo systemctl daemon-reload
 ```
 
 Only if scheduled solving is wanted, enable `magi-auto-calibration.timer`.
-It solves the latest primary-camera event; it does not capture a fresh frame,
-check whether stars are visible, or apply a candidate. The generated unit uses
-paths from `/etc/magi/config.json`, so it works with microSD or mounted storage.
-Do not copy the `.service` template directly: its path placeholders must be
-rendered by the installer. It does not own/remove the main runtime directory.
-The timer adds a 768 MiB memory limit and 25% CPU quota; hard limits can cause a
-solve to fail safely on expensive images. Other cameras use on-demand solving.
+The generated unit uses paths from `/etc/magi/config.json`, so it works
+with microSD or mounted storage. Do not copy the `.service` template
+directly: its path placeholders must be rendered by the installer. It
+does not own/remove the main runtime directory. The timer adds a 768
+MiB memory limit and 25% CPU quota; hard limits can cause a solve to
+fail safely on expensive images.
 
 No real sky-frame or Pi throughput claim is made by synthetic verification.
+
+## Automatic retry (hourly timer)
+
+A fresh station starts with no live calibration. The timer's job is to
+set it on the first clear night and then leave it alone except for a
+nightly check — with nobody at the station to confirm anything. The
+timer fires hourly (`OnCalendar` hourly, `RandomizedDelaySec` 600,
+`Persistent=true`); the worker decides, per camera, whether there is
+anything to do. The worker never applies: a successful solve is filed
+as pending-apply and the running service applies it on its next tick
+(see below). If the service is not running, the pending file waits;
+calibration is not claimed applied until the service applies it.
+
+State machine, per camera per invocation, in rotation order (see
+multi-camera below): night? → already completed this night? →
+calibrated?
+
+* **Not calibrated:** fresh nighttime frame? → stars-visible gate? →
+  blind solve → success files pending-apply and marks the night
+  solved; failure or skip keeps the old (empty) state for the next
+  hourly attempt.
+* **Calibrated:** fresh nighttime frame? → gate? → verify → verified
+  marks the night complete; failed (gate passed, geometry did not
+  match) blind-solves with the remaining shared deadline → success
+  files pending-apply (reason `verification_failed_resolve`) and
+  marks the night solved; skipped does nothing and leaves the night
+  open for a later attempt.
+
+**Night, from location and time, not a clock.** The worker computes
+the sun's altitude from station GPS latitude/longitude and time with
+a pure-math solar approximation (`src/magi/night.py`, NOAA style,
+offline — no ephemeris download, because Magi ships no Sun ephemeris
+and a download in the field would use the cellular link). Night means
+sun altitude below −12 degrees (provisional, not a validated field
+threshold). The current night's start is the most recent downward
+crossing of −12 degrees, searched back at most 24 hours in 5-minute
+steps; if there is no crossing, or it is currently day, the worker
+skips. A daytime boot therefore exits cheaply.
+
+**Fresh nighttime frame.** The frame's capture time is checked, not
+just whether it is night now. `frame_time` (from the segment
+timeline) must satisfy night_start ≤ frame_time ≤ now, and the sun
+must have been below −12 degrees at frame_time. Yesterday's frame, a
+daytime frame, and a frame from before tonight's night start are all
+rejected, so the worker never repeatedly solves a stale frame.
+**Event-only limitation, stated plainly:** Magi's only
+full-resolution frames come from recorded events. "First clear night"
+therefore remains conditional on an event producing a suitable image
+that night. This change adds no dedicated sky snapshots; a quiet
+night with no events produces no new frame to solve or verify
+against, and the worker simply skips.
+
+**Stars-visible gate.** After detection, a frame with fewer than 20
+detections is skipped, not failed: a cloudy frame is not a failed
+solve and must not trigger a re-solve. 20 is a provisional starting
+value, adjustable after real-sky experience.
+
+**Verification is projection only, and needs coverage.** The current
+geometry projects tier 1/2 visible catalog stars onto the frame
+(same tolerance as solve); there is no refit, because a refit would
+always pass. Verified requires ≥12 independent matches, RMS ≤ 0.2°,
+max ≤ 0.4°, at least 6 of 9 grid cells occupied, and x-spread ≥ 0.35
+with y-spread ≥ 0.25. Clustered matches with low residuals do not
+verify. Outcomes are tri-state: verified, failed (gate passed but
+verification did not — the only outcome that triggers a blind
+re-solve), and skipped (too few detections, no fresh frame, no
+location, not night — never "camera moved", never a re-solve, never
+an apply). The old calibration is preserved unless a replacement
+fully verifies.
+
+**Multi-camera rotation.** The old timer solved primary only. The
+retry worker discovers active cameras from `cameras.json` next to the
+primary config (archived and forgotten cameras skipped; secondary
+configs in `camera-configs/<id>.json`, mirroring `Station`), walks
+them in rotation order from a persisted pointer
+(`<primary root>/auto-calibration/scheduler.json`), and serializes
+jobs: at most one full attempt (verification, or a blind solve, or a
+verify-then-solve for the same camera) per invocation, under the same
+`star-solve.lock` the dashboard jobs use, so the Pi never solves two
+cameras simultaneously. A gate failure is not a full attempt, so the
+worker may gate-check the next camera in the same invocation, but it
+never starts a second full solve/verify. Successful
+verification/application finishes that camera's night
+(`completed_night` = night_start in its `status.json`); cloudy skips
+do not finish the night and allow another attempt later that night.
+All retry state (calibration, night completion, rotation pointer,
+audit history) lives in persisted files under each camera's
+`auto-calibration/` directory, written with `atomic_json`, so a
+reboot never re-solves a calibrated camera from scratch.
+
+**One bounded attempt.** Verification and any follow-on blind solve
+for the same camera share one deadline: the worker's start + 115
+seconds, passed through, never reset. That sits inside the
+application supervisor's 120-second budget and the service's
+150-second `TimeoutStartSec`. There is no daemon loop and no
+parallel solving.
+
+**Strengthened apply check and apply through the service.** The old
+configuration fingerprint covers stream URLs only. A solve now also
+records a snapshot at solve start: the full identification dict
+(minus OpenSky credentials) plus the effective station location.
+At apply time the service recomputes it and rejects on any material
+difference — identification exactly, location within 0.001° latitude/
+longitude and 50 m elevation (a change detector, not exact GPS
+jitter). Existing checks stay: camera match, candidate identity
+(`created_unix`) and status `candidate`, source event still present,
+image hash unchanged, geometry inside `identification.validate`
+limits. On rejection the service removes the pending file, audits
+the rejection, and clears that camera's night completion so the next
+hourly run can retry with a fresh snapshot; the old calibration is
+preserved. If an operator manually applies the same candidate first,
+the service discards the pending file as superseded (audited) rather
+than applying twice. Manual dashboard apply is unchanged.
+
+**Audit history.** `<root>/auto-calibration/history.json`
+(`atomic_json`, capped at 100 entries, oldest dropped) records every
+applied, rejected, superseded, and verified event with timestamp,
+camera, outcome, reason, previous geometry (null when the station
+was empty), new geometry, source event, image hash and timestamp,
+and verification evidence (matches, RMS, max, cells, spread). Skips
+(cloudy, no frame, not night) go to `status.json` only, not history,
+to avoid hourly spam.
+
+**Picking up the new timer.** Existing installations must regenerate
+the units and reload systemd to get the hourly timer and the
+`--retry` service command:
+
+```bash
+sudo python3 /opt/magi/scripts/install_auto_calibration.py
+sudo systemctl daemon-reload
+```
+
+The installer still never enables the timer; enablement is unchanged.
 
 ## Star search workflow (v0.20)
 
@@ -270,5 +403,7 @@ Pi throttling/undervoltage bits are set. Historical flags alone do not block a
 search. Workers check health about every five seconds and the dashboard parent
 also uses the station's cached health. Missing temperature readings are shown
 explicitly; memory/time limits still apply. These are conservative workload
-controls, not a guarantee of thermal safety, and stopped work is not retried
-automatically. Prior calibration is preserved.
+controls, not a guarantee of thermal safety, and stopped dashboard work
+is not retried automatically (the hourly timer is the exception: it
+retries on its own schedule, see "Automatic retry" above). Prior
+calibration is preserved.

@@ -1,5 +1,5 @@
 [Unit]
-Description=Magi automatic blind star calibration
+Description=Magi automatic blind star calibration retry
 Wants=network-online.target
 After=network-online.target
 RequiresMountsFor=@ROOT@
@@ -10,7 +10,7 @@ User=magi
 Group=magi
 WorkingDirectory=/opt/magi
 Environment=PYTHONPATH=/opt/magi/src
-ExecStart=/usr/bin/python3 -m magi.star_worker @CONFIG@ --latest primary
+ExecStart=/usr/bin/python3 -m magi.star_worker @CONFIG@ --retry
 UMask=0077
 TimeoutStartSec=150
 NoNewPrivileges=true

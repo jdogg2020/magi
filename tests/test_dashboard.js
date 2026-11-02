@@ -217,6 +217,13 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(elements['motion-overlay'].drawn,'Changed pixel overlay should draw');elements['show-pixels'].checked=false;elements['show-pixels'].onchange();assert(!elements['motion-overlay'].pixelDrawn,'Highlights should turn off');elements['show-pixels'].checked=true;elements['show-pixels'].onchange();assert(elements['motion-overlay'].drawn,'Highlights should turn back on');
  assert(elements.review.open,'Review dialog should open');assert(elements['review-video'].src.endsWith('/preview'));
  assert(elements['review-original'].href.endsWith('/original'),'Original download belongs inside review');
+ assert(elements['review-substream-download'].href.endsWith('/video'));
+ assert(elements['review-substream-download'].download.endsWith('-substream.mp4'));
+ assert(!elements['review-substream-download'].classList.contains('hidden'));
+ vm.runInContext('updateReviewAvailability({...reviewEvent, substream_preview:false})',context);
+ assert(elements['review-substream-download'].classList.contains('hidden'));
+ assert(!elements['review-substream-download'].getAttribute('href'));
+ vm.runInContext('updateReviewAvailability(reviewEvent)',context);
  await elements['review-full-video'].onclick();
  assert.equal(elements['review-quality'].value,'full',elements['review-video-status'].textContent);
  assert(elements['review-video'].src.endsWith('/full-video'));

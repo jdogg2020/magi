@@ -185,3 +185,10 @@ Plane uses the existing `aircraft` label and Cloud / weather uses `weather`,
 so the label filter continues to find those categories. Ignore is the `ignore`
 label; it never trashes an event or changes reviewed status, protection, detector
 settings, or retention rules. Trashed events must be restored before labelling.
+
+## Video downloads (0.20.6)
+
+Event review offers **Download low quality** when the native camera substream
+recording is available, beside **Download original (high quality)**. The low-quality
+download copies the saved substream MP4 without re-encoding and includes camera
+and event IDs in its filename. It does not download the sampled detection replay.

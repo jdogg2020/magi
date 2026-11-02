@@ -102,21 +102,87 @@ sudo apt-get install python3-skyfield
 sudo systemctl restart magi.service
 ```
 
-Then enable satellite checks and choose a catalog. This prototype supports
-CelesTrak's **100 or so brightest** or **space stations** groups. These are
-explicitly partial catalogs, not every satellite or all Starlink spacecraft.
-Catalogs are downloaded only when checking an event, cached on the SSD for eight
-hours, and consumed as modern GP/OMM JSON (no five-digit TLE catalog limitation).
-Skyfield's SGP4 implementation predicts topocentric azimuth/elevation at each
-track time; built-in time tables avoid automatic ephemeris downloads. Elements
-more than three days from the observation time are skipped and coverage is marked
-partial. Old footage needs suitable historical orbital elements, which this
-prototype does not fetch automatically.
+Then enable satellite checks and choose a catalog. The **selected catalogs**
+set is Starlink, space stations, the brightest group, and OneWeb. The legacy
+**100 or so brightest** and **space stations only** choices remain. Coverage
+is only those selected catalogs, never all active satellites. Where available,
+operator-derived supplemental elements are also fetched (SpaceX-E for
+Starlink, OneWeb-E for OneWeb, ISS-E for the station) and merged by catalog
+ID; for each object the element nearest the observation time is used, not
+simply the newest, because supplemental fits run forward from their epoch
+and several epochs per object may be present. Catalogs are downloaded only
+when checking an event, cached on the SSD for eight hours, shared in memory
+across both cameras so a refresh downloads once, and consumed as modern
+GP/OMM JSON (no five-digit TLE catalog limitation). The catalog fetch has
+its own 16 MB cap and a 20,000-object cap; over either, the check is
+unavailable rather than silently truncated. Skyfield's SGP4 implementation
+predicts topocentric azimuth/elevation at each track time; built-in time
+tables avoid automatic ephemeris downloads. Elements more than three days
+from the observation time are skipped and coverage is marked partial. Old
+footage needs suitable historical orbital elements, which this
+implementation does not fetch automatically, so old events may stay
+uncheckable after the catalog has moved on.
 
-A geometric satellite match is still only **possible**: sunlight, earth shadow,
-brightness, extinction and actual visibility are not modeled. No planetary/Sun
-or Moon ephemeris is downloaded. Stars, planets, meteors, weather, insects and
-birds are not classified by this layer.
+### Sunlight and the likely tier
+
+A geometric match alone is only **possible**. A **likely** satellite needs
+more, all provisional until checked against known passes: a unique baseline
+candidate, at least five samples over at least two seconds with at least
+1° of displacement, mean error within half the configured tolerance and
+max error within the tolerance, direction agreement of at least 0.9,
+path and median segment speed ratios within 0.75–1.33, element age within
+two days, no unevaluated stale or failed objects for the track, a star-fit
+RMS of at most 1° when a star fit is present, and the satellite sunlit at
+every matched sample. Timing uncertainty (host receipt time is unverified)
+and manual-calibration quality have no numeric bound claimed; they are
+reported as unquantified and the stricter residuals leave margin for them.
+Element age is a cutoff only and is never converted into an angular bound.
+
+Sunlight uses Skyfield's `is_sunlit()` with the JPL DE421 ephemeris
+(about 17 MB, cached forever once downloaded). Install it once, outside
+event processing:
+
+```bash
+python3 scripts/fetch-ephemeris.py --directory <camera storage root>
+```
+
+Or set `ephemeris_path` in the identification config to a shared copy.
+If the ephemeris is missing, sunlight is explicitly unknown, geometric
+matches stay possible at most, and the review panel explains that the
+missing ephemeris is what prevents a likely result. No ephemeris is ever
+downloaded while an event is being processed. Sunlight makes optical
+visibility plausible; it does not establish brightness, extinction, or
+that the recorded object was that satellite. Stars, planets, meteors,
+weather, insects and birds are not classified by this layer.
+
+### Hide likely satellites
+
+The event list has a **Hide likely satellites** checkbox, off by default.
+It is view-only: it never marks events reviewed, replaces labels, changes
+protection, or deletes footage. An event is hidden only when its stored
+`satellite_filter` block says every qualifying track is likely and the
+analysis was complete. Qualifying tracks are the tracks that triggered or
+extended recording (`motion_tracks` in the event record); an unqualified
+fragment is logged and does not block hiding, but a qualifying track with
+too few usable samples does block it. If qualifying tracks are omitted
+over the 16-track limit, matching times out, or the station matcher is
+busy, the event stays visible. Ambiguous, possible, unavailable, and
+insufficient-evidence events stay visible. Legacy, missing, or
+incompatible reports also stay visible, because list filtering, counts,
+and Previous/Next navigation all read the stored block and never run
+matching during a request. Matching itself runs in the existing bounded
+background queue, one satellite match at a time across the station, with
+a per-event deadline; recording is never behind it.
+
+### Retention and the new satellite path
+
+The new satellite path never deletes footage, even when
+`retain_satellite_matches` is off, and even for new possible or ambiguous
+results. That protection is separated by report version: version-2 reports
+carrying a `satellite_filter` block are exempt from the satellite
+deletion mapping, while legacy reports without it keep the previous
+behavior and aircraft retention is unchanged. Do not migrate or
+reprocess legacy reports into the new path to change their retention.
 
 ## What a result means
 
@@ -133,6 +199,7 @@ positions or orbital elements. It does not invent a confidence percentage.
 | `reference_coverage_incomplete` | Missing, stale, sparse, rate-limited or unconfigured reference coverage. |
 | `no_match_in_checked_data` | The enabled adapters checked usable data and found no agreeing candidate in that limited scope. |
 | `possible_aircraft` / `possible_satellite` | At least one track has a plausible directional/time correlation. |
+| `likely_satellite` | Every qualifying track is a likely satellite match (see the likely tier above) and the analysis was complete. |
 | `ambiguous_possible_matches` | Candidate types conflict across the event; inspect individual tracks. |
 
 Per-track adapter statuses distinguish `not_configured`, `reference_unavailable`,

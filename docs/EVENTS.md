@@ -249,3 +249,27 @@ advancing. An unfinished neighbor lookup is shared, not duplicated. Periodic
 event-list refreshes pause while review is open and resume when it closes.
 Failed saves keep the current event and draft; navigation failures are reported
 separately after a successful save. Actual Pi latency still needs field validation.
+
+## Background category saves (0.20.13)
+
+Category buttons now queue the current labels, notes, reviewed flag and protection
+choice, then open the next known event without waiting for the write. If the
+neighbor lookup is unfinished, navigation still waits for that lookup. Manual
+Save review, protection, reviewed and trash actions retain confirmation behavior.
+
+A banner in review and the main dashboard shows pending saves. Writes run one
+at a time; repeat edits to the same event keep the latest draft and cannot send
+out-of-order writes. Returning to an event displays its local pending edits.
+Failed saves remain in this tab with the event identity, Review, Retry and an
+explicitly confirmed Discard option. A failure does not interrupt the event you
+are currently reviewing. Other queued events can still save. A timed-out request
+may have reached the server; retry sends the same desired fields.
+
+Up to 100 events can wait for saves. Bulk mutations and sign-out are disabled
+while changes remain pending; conflicting manual actions on a pending event are
+also disabled. The browser warns before reload/navigation/close while changes
+remain, including failures. Closing the review dialog is safe; the queue keeps
+running. The queue lives in this browser tab, not on disk: browser crashes or
+forcing the tab closed can lose unsaved changes. Wait for the banner to clear
+before leaving. A session expiry keeps failed changes available for retry after
+signing back in. No settings or original evidence are changed by this queue.

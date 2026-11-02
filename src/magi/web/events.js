@@ -4,13 +4,77 @@ const MagiEvents = (()=>{
   let rows=[], total=0, offset=0, loaded=false, loading=false, lastRefresh=0, requestVersion=0, mutating=false, currentFilters=null;
   let neighbors={previous:null,next:null}, navigationVersion=0, reviewBusy=false;
   let navigationTask=null, navigationKey=null, navigationFilter=-1, navigationReady=false;
+  const pendingSaves=new Map(), localReviews=new Map();
+  let draining=false, advancingKey=null;
+  function withLocalReview(row){
+    const patch=row && localReviews.get(eventKey(row));
+    return patch ? {...row,review:{...row.review,...patch}} : row;
+  }
+  function saveIndicators(){
+    const failed=[...pendingSaves.values()].filter(job=>job.state==='failed');
+    const count=pendingSaves.size-failed.length;
+    for(const id of ['background-saves','review-background-saves']){
+      const panel=el(id);panel.replaceChildren();panel.classList.toggle('hidden',!pendingSaves.size);
+      if(!pendingSaves.size)continue;
+      panel.append(node('p',`${count ? `Saving ${count} change${count===1?'':'s'}… ` : ''}${failed.length ? `${failed.length} save${failed.length===1?'':'s'} failed. Changes are still held in this tab.` : 'You can keep reviewing. Keep this tab open until saving finishes.'}`));
+      for(const job of failed){
+        const line=node('div');line.append(node('span',`${job.row.camera_name || job.row.camera_id} · ${job.row.id}: ${job.error} `));
+        line.append(button('Review',()=>{if(mayLeave())openReview(withLocalReview(job.row));}));
+        line.append(button('Retry',()=>{job.state='queued';saveIndicators();drainSaves();}));
+        line.append(button('Discard unsaved changes',()=>{
+          if(!confirm('Discard these unsaved review changes? The server may have received a timed-out request. Refresh to check its saved state.'))return;
+          pendingSaves.delete(eventKey(job.row));localReviews.delete(eventKey(job.row));saveIndicators();reviewControls();refresh(true);
+        }));panel.append(line);
+      }
+    }
+    el('logout').disabled=!!pendingSaves.size;
+    selection();
+  }
+  async function drainSaves(){
+    if(draining)return;draining=true;
+    try {
+      for(let job; (job=[...pendingSaves.values()].find(item=>item.state==='queued'));){
+        const key=eventKey(job.row), revision=job.revision, changes={...job.changes,labels:[...job.changes.labels]};
+        job.state='saving';saveIndicators();
+        try {
+          const result=await api('/api/station/events/update',{targets:[{id:job.row.id,camera_id:job.row.camera_id}],action:'update',changes});
+          if(result.failed?.length)throw new Error(result.failed[0].error);
+          if(!result.updated?.some(row=>eventKey(row)===key))throw new Error('Save was not confirmed.');
+          if(job.revision===revision)pendingSaves.delete(key);else job.state='queued';
+          lastRefresh=0;clipSignature='';
+        }catch(error){job.state='failed';job.error=error.message || 'Save failed. Sign in again if needed, then retry.';}
+        saveIndicators();reviewControls();
+      }
+    } finally {draining=false;}
+  }
+  async function queueReview(changes){
+    if(!reviewEvent || reviewBusy || mutating || advancingKey===eventKey(reviewEvent))return;
+    const event=withLocalReview(reviewEvent),key=eventKey(event);
+    if(!pendingSaves.has(key) && pendingSaves.size>=100){el('review-save-status').textContent='100 changes are waiting. Let saves finish or retry failures before continuing.';return;}
+    const existing=pendingSaves.get(key);
+    if(existing){existing.changes=changes;existing.revision++;if(existing.state==='failed')existing.state='queued';}
+    else pendingSaves.set(key,{row:event,changes,revision:1,state:'queued'});
+    localReviews.set(key,{...changes,labels:[...changes.labels]});
+    // Bound confirmed local overlays without evicting any unsaved work.
+    if(localReviews.size>1000)for(const old of localReviews.keys()){if(!pendingSaves.has(old)){localReviews.delete(old);break;}}
+    reviewEvent=withLocalReview(event);updateReview(reviewEvent,false);
+    lastRefresh=0;clipSignature='';advancingKey=key;saveIndicators();reviewControls();
+    drainSaves();
+    try {
+      const found=navigationKey===key && navigationFilter===requestVersion && navigationTask
+        ? (navigationReady || await navigationTask) : await loadNeighbors(event);
+      if(!reviewEvent || eventKey(reviewEvent)!==key)return;
+      if(found && neighbors.next)openReview(withLocalReview(neighbors.next));
+      else el('review-save-status').textContent=found?'Last matching event — changes are saving in the background.':'Changes queued. Navigation unavailable; use the list to continue.';
+    } finally {if(advancingKey===key)advancingKey=null;reviewControls();}
+  }
   const quickLabels=[['ignore','Ignore'],['aircraft','Plane'],['bird/insect','Bird / insect'],['lightning','Lightning'],['weather','Cloud / weather'],['meteor','Meteor'],['satellite','Satellite'],['unknown','Unknown']];
   const presets=['ignore','bird/insect','aircraft','satellite','meteor','bird','insect','drone','star or planet','weather','lightning','artifact','unknown','interesting'];
   const human=value=>(value || 'unknown').replaceAll('_',' ');
   const labels=value=>value.split(',').map(v=>v.trim()).filter(Boolean);
   function selection(){
     el('event-selection-count').textContent=`${selected.size} selected${selected.size ? ' (across pages)' : ''}`;
-    el('event-apply').disabled=el('event-export').disabled=!selected.size || mutating;
+    el('event-apply').disabled=el('event-export').disabled=!selected.size || mutating || !!pendingSaves.size;
     el('event-select-page').checked=rows.length>0 && rows.every(row=>selected.has(eventKey(row)));
     el('event-select-page').indeterminate=rows.some(row=>selected.has(eventKey(row))) && !el('event-select-page').checked;
   }
@@ -31,7 +95,8 @@ const MagiEvents = (()=>{
     const count=Object.entries(active).filter(([key,value])=>value!=null && value!=='' && value!==({camera_id:'all',reviewed:'all',protected:'all',reference:'all',state:'all',type:'all',trash:'active',sort:'newest'}[key])).length;
     el('event-filter-summary').textContent=count ? `Filters · ${count} active · ${active.sort==='oldest'?'Oldest first':'Newest first'}`:'Filters · All cameras · Newest first';
     const body=el('all-events');body.replaceChildren();
-    for(const row of rows){
+    for(const sourceRow of rows){
+      const row=withLocalReview(sourceRow);
       if(selected.has(eventKey(row)))selected.set(eventKey(row),row);
       const review=row.review || {}, tr=node('tr',null,'event-row');tr.dataset.eventId=row.id;tr.dataset.cameraId=row.camera_id;
       const choose=node('input');choose.type='checkbox';choose.checked=selected.has(eventKey(row));choose.setAttribute('aria-label',`Select event ${row.id}`);
@@ -66,15 +131,15 @@ const MagiEvents = (()=>{
     if(loading || !csrf || (!force && (el('review').open || (el('events').classList.contains('hidden') && el('overview').classList.contains('hidden')) || Date.now()-lastRefresh<8000)))return;
     loading=true;const version=requestVersion;
     try {if(!currentFilters)currentFilters=filters();const result=await api('/api/station/events/list',{...currentFilters,offset,limit:25});
-      if(version!==requestVersion)return;rows=result.events;total=result.total;offset=result.offset;
+      if(version!==requestVersion)return;rows=result.events.map(withLocalReview);total=result.total;offset=result.offset;
       if(offset>=total && offset>0){offset=Math.max(0,Math.floor(Math.max(0,total-1)/25)*25);lastRefresh=0;return;}
       setOptions(result.labels || []);if(reviewEvent){const updated=rows.find(row=>eventKey(row)===eventKey(reviewEvent));if(updated){const editing=dirty();reviewEvent=updated;updateReviewAvailability(updated);if(!editing)updateReview(updated,false);else reviewControls();}}loaded=true;lastRefresh=Date.now();render();if(result.message)el('event-page-status').textContent+=' · '+result.message;
     }catch(error){el('event-page-status').textContent=error.message;}finally{loading=false;if(version!==requestVersion)setTimeout(()=>refresh(true),0);}
   }
   async function mutate(targetRows,action,changes){
-    if(mutating)return;mutating=true;selection();el('event-action-status').textContent='Saving event changes…';
+    if(mutating || pendingSaves.size)return;mutating=true;selection();el('event-action-status').textContent='Saving event changes…';
     try {const result=await api('/api/station/events/update',{targets:targetRows.map(row=>({id:row.id,camera_id:row.camera_id || selectedCamera})),action,...(changes?{changes}:{})});
-      for(const target of result.updated)selected.delete(eventKey(target));
+      for(const target of result.updated){selected.delete(eventKey(target));if(action==='update' && localReviews.has(eventKey(target)))localReviews.set(eventKey(target),{...localReviews.get(eventKey(target)),...changes});}
       const failed=result.failed || [];el('event-action-status').textContent=`Updated ${result.updated.length} event${result.updated.length===1?'':'s'}.${action==='trash' && result.updated.length?' Restore them from the Trash folder if needed.':''}${failed.length?' '+failed.map(f=>`${f.id}: ${f.error}`).join(' '):''}`;
       lastRefresh=0;clipSignature='';await refresh(true);await windowRefresh();
     }catch(error){el('event-action-status').textContent=error.message;}finally{mutating=false;selection();}
@@ -88,9 +153,10 @@ const MagiEvents = (()=>{
     el('review-mark').textContent=review.reviewed?'Mark unreviewed (R)':'Mark reviewed (R)';
     el('review-keep').textContent=review.protected?'Remove protection':'Keep / protect';
     el('review-trash').textContent=review.trashed_at!=null?'Restore from trash':'Move to trash (Delete)';
-    for(const id of ['review-mark','review-keep','review-save'])el(id).disabled=busy || review.trashed_at!=null || !!review.annotation_error;
-    for(const [label] of quickLabels){const item=el('review-label-'+label.replace('/','-'));item.disabled=busy || review.trashed_at!=null || !!review.annotation_error;item.setAttribute('aria-pressed',String((review.labels || []).includes(label)));}
-    el('review-trash').disabled=busy || !!review.annotation_error || (review.trashed_at==null && !!review.protected);
+    const pendingCurrent=reviewEvent && pendingSaves.has(eventKey(reviewEvent));
+    for(const id of ['review-mark','review-keep','review-save'])el(id).disabled=busy || pendingCurrent || review.trashed_at!=null || !!review.annotation_error;
+    for(const [label] of quickLabels){const item=el('review-label-'+label.replace('/','-'));item.disabled=busy || advancingKey===eventKey(reviewEvent || {}) || (!pendingCurrent && pendingSaves.size>=100) || review.trashed_at!=null || !!review.annotation_error;item.setAttribute('aria-pressed',String((review.labels || []).includes(label)));}
+    el('review-trash').disabled=busy || pendingCurrent || !!review.annotation_error || (review.trashed_at==null && !!review.protected);
   }
   function loadNeighbors(event){
     const version=++navigationVersion, query={...(currentFilters || filters())}, filterVersion=requestVersion;
@@ -114,12 +180,12 @@ const MagiEvents = (()=>{
   function mayLeave(){return !reviewBusy && (!dirty() || confirm('Discard unsaved review changes?'));}
   function navigate(direction){const target=direction<0?neighbors.previous:neighbors.next;if(target && mayLeave())openReview(target);}
   function updateReview(row, reloadNeighbors=true){
-    if(!row)return;const review=row.review || {};el('review-labels').value=(review.labels || []).join(', ');el('review-notes').value=review.notes || '';el('review-reviewed').checked=!!review.reviewed;el('review-protected').checked=!!review.protected;
+    if(!row)return;row=withLocalReview(row);if(reviewEvent && eventKey(reviewEvent)===eventKey(row))reviewEvent=row;const review=row.review || {};el('review-labels').value=(review.labels || []).join(', ');el('review-notes').value=review.notes || '';el('review-reviewed').checked=!!review.reviewed;el('review-protected').checked=!!review.protected;
     el('review-save-status').textContent=review.trashed_at!=null?'In trash. Restore before editing. Trash may be removed by retention or storage pressure.':review.protected?'Protected from automatic removal and trash.':'';
     reviewControls();if(reloadNeighbors)loadNeighbors(row);
   }
-  async function saveReview(action='update',changes=draftChanges(),advance=false){
-    if(!reviewEvent || reviewBusy || mutating)return;
+  async function saveReview(action='update',changes=draftChanges()){
+    if(!reviewEvent || reviewBusy || mutating || pendingSaves.has(eventKey(reviewEvent)))return;
     const event=reviewEvent, key=eventKey(event);
     reviewBusy=true;reviewControls();el('review-save-status').textContent='Saving…';
     try {
@@ -128,31 +194,19 @@ const MagiEvents = (()=>{
       if(result.failed.length){el('review-save-status').textContent=result.failed[0].error;return;}
       event.review={...event.review,...(action==='update'?changes:{trashed_at:action==='trash'?Date.now()/1000:null})};
       reviewEvent=event;
+      if(action==='update' && localReviews.has(key))localReviews.set(key,{...localReviews.get(key),...changes});
       // Preserve unsaved labels/notes when using a quick action.
       if(action==='update' && changes.labels)el('review-labels').value=changes.labels.join(', ');
       if(action==='update' && 'reviewed' in changes)el('review-reviewed').checked=!!event.review.reviewed;
       if(action==='update' && 'protected' in changes)el('review-protected').checked=!!event.review.protected;
       el('review-save-status').textContent=action==='trash'?'Moved to trash. Use Restore from trash to undo; retention or storage pressure may remove trash.':action==='restore'?'Event restored.':'Review saved.';
       lastRefresh=0;clipSignature='';
-      // Only this anchor changed. Its saved neighbors still describe the next
-      // matching event, even if the save removes the anchor from the filters.
-      // Reuse completed or in-flight navigation instead of scanning again.
-      let found=false;
-      if(advance){
-        el('review-save-status').textContent='Review saved. Opening next event…';
-        found=navigationKey===key && navigationFilter===requestVersion && navigationTask
-          ? (navigationReady || await navigationTask) : await loadNeighbors(event);
-        if(!found && reviewEvent && eventKey(reviewEvent)===key)el('review-save-status').textContent='Review saved. Navigation unavailable; reopen the event or refresh the list to retry.';
-      }
-      if(advance && found && reviewEvent && eventKey(reviewEvent)===key){
-        if(neighbors.next)openReview(neighbors.next);
-        else el('review-save-status').textContent='Review saved. Last matching event — you’ve reached the end.';
-      }
       // Periodic refresh updates the list; reopening Events also refreshes it.
     }catch(error){if(reviewEvent && eventKey(reviewEvent)===key)el('review-save-status').textContent=error.message;}
     finally{reviewBusy=false;reviewControls();}
   }
   function init(){
+    if(typeof window!=='undefined')window.addEventListener('beforeunload',event=>{if(pendingSaves.size){event.preventDefault();event.returnValue='';}});
     mount('overview');
     setOptions([]);
     for(const [label,title] of quickLabels){
@@ -162,9 +216,9 @@ const MagiEvents = (()=>{
         const current=[...new Set(labels(el('review-labels').value).map(value=>value.toLowerCase()))];
         const next=current.includes(label)?current.filter(value=>value!==label):[...current,label];
         if(next.length>8){el('review-save-status').textContent='Up to eight labels per event. Remove a label before adding another.';return;}
-        return saveReview('update',{...draftChanges(),labels:next},true);
+        return queueReview({...draftChanges(),labels:next});
       };
-      item.title=`Add or remove ${title.toLowerCase()}; saves review and opens the next matching event`;
+      item.title=`Add or remove ${title.toLowerCase()}; saves in the background and opens the next matching event`;
     }
     el('event-filters').onsubmit=event=>{event.preventDefault();return applyFilters();};
     el('event-reset').onclick=()=>{for(const id of ['event-search','event-label-filter','event-start','event-end'])el(id).value='';for(const id of ['event-reviewed','event-protected','event-state','event-reference','event-type'])el(id).value='all';el('event-camera').value='all';el('event-folder').value='active';el('event-sort').value='newest';applyFilters();};
@@ -221,5 +275,5 @@ const MagiEvents = (()=>{
   }
 
   function reset(){navigationVersion++;navigationTask=null;navigationKey=null;navigationReady=false;neighbors={previous:null,next:null};selected.clear();rows=[];loaded=false;currentFilters=null;lastRefresh=0;requestVersion++;selection();}
-  return {init,mount,refresh,updateReview,reset,mayLeave,loaded:()=>loaded};
+  return {init,mount,refresh,updateReview,reset,mayLeave,withLocalReview,hasPending:()=>!!pendingSaves.size,loaded:()=>loaded};
 })();

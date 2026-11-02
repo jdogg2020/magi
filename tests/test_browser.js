@@ -147,7 +147,9 @@ const base = process.argv[2];
     assert(await page.locator('#show-tracker').isDisabled());
     await page.screenshot({path:'dist/browser/review-categories.png',fullPage:true});
     const next=rows[rows.findIndex(row=>row.id===event.id && row.camera===event.camera)+1];
-    let releaseArchive;
+    let releaseArchive,releaseSave;
+    const blockedSave=new Promise(resolve=>releaseSave=resolve);
+    await page.route('**/api/station/events/update',async route=>{await blockedSave;await route.continue();});
     const blockedArchive=new Promise(resolve=>releaseArchive=resolve);
     const holdArchive=async route=>{await blockedArchive;await route.continue();};
     if(next){
@@ -158,16 +160,20 @@ const base = process.argv[2];
       const started=Date.now();
       const saved=page.waitForResponse(response=>response.url().endsWith('/api/station/events/update') && response.request().method()==='POST');
       await page.locator('#review-label-lightning').click();
-      const saveResponse=await saved;assert(saveResponse.ok());await saveResponse.finished();
-      const savedAt=Date.now();
+
       if(next){
         await page.waitForFunction(next=>{const image=document.getElementById('review-still');return image.getAttribute('src')?.includes('/clips/'+next.id+'/') && image.getAttribute('src')?.includes('/api/cameras/'+next.camera+'/') && image.complete && image.naturalWidth>0;},next,{timeout:3000});
         assert(!await page.locator('#review-video').isVisible(),'Next image must display while archive lookups remain blocked');
-        console.log(`Category timing on synthetic station: save response ${savedAt-started} ms; next image visible ${Date.now()-savedAt} ms after save (archive lookups blocked).`);
+        assert(await page.locator('#review-background-saves').isVisible());
+        assert(await page.locator('#logout').isDisabled());
+        await page.screenshot({path:'dist/browser/background-review-saves.png',fullPage:true});
+        console.log(`Next image visible ${Date.now()-started} ms after category click with the save request and archive lookups blocked.`);
       }else await page.waitForFunction(()=>document.getElementById('review-save-status').textContent.includes('Last matching event'));
+      releaseSave();const saveResponse=await saved;assert(saveResponse.ok());await saveResponse.finished();
+      await page.waitForFunction(()=>!MagiEvents.hasPending());
     } finally {
-      releaseArchive();
-      if(next)await page.unrouteAll({behavior:'wait'});
+      releaseSave();releaseArchive();
+      await page.unrouteAll({behavior:'wait'});
     }
     await page.locator('#review-close').click();
     // Settings links select a camera, then Overview returns to all feeds.

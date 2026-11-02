@@ -219,7 +219,7 @@ $('opensky-credentials-file').onchange=async()=>{
   } catch(error) { $('opensky-import-status').textContent=error.name==='SyntaxError' ? 'This is not a valid JSON credential file.' : error.message; }
   finally {input.value='';}
 };
-$('logout').onclick = async () => { try { await api('/api/logout', {}); } finally { loggedOut(); } };
+$('logout').onclick = async () => { if(MagiEvents.hasPending())return; try { await api('/api/logout', {}); } finally { loggedOut(); } };
 function renderUpdate(status){
   updateInProgress=!!status.busy || ['checking','downloading','installing'].includes(status.state);
   $('update-current').textContent=status.current_version ? 'v'+status.current_version:'Unavailable';
@@ -305,7 +305,7 @@ function renderHealth(status) {
 function renderEvents(events) {
   if (reviewEvent && $('review').open) {
     const updated = events.find(event => eventKey(event) === eventKey(reviewEvent));
-    if (updated) { reviewEvent = updated; updateReviewAvailability(updated); if (reviewMode === 'image') showReviewImage(reviewImageKind); }
+    if (updated) { reviewEvent = MagiEvents.withLocalReview(updated); updateReviewAvailability(reviewEvent); if (reviewMode === 'image') showReviewImage(reviewImageKind); }
   }
   const signature = JSON.stringify(events); if (signature === clipSignature) return; clipSignature = signature;
   $('event-badge').textContent = events.length;
@@ -699,7 +699,7 @@ let reviewFrames = [], reviewMeta = null, reviewEvent = null;
 let reviewTracks=[], reviewColorTracks=[], reviewTimelineAttempted=false, trackBandSignature='';
 let reviewGeneration = 0, reviewMode = 'image', reviewImageKind = 'thumbnail';
 async function openReview(event, imageKind = 'thumbnail') {
-  const generation = ++reviewGeneration; reviewEvent = event; MagiEvents.updateReview(event); reviewFrames = []; reviewMeta = null; reviewTracks=[]; reviewColorTracks=[]; reviewTimelineAttempted=false;
+  const generation = ++reviewGeneration; event=MagiEvents.withLocalReview(event); reviewEvent = event; MagiEvents.updateReview(event); reviewFrames = []; reviewMeta = null; reviewTracks=[]; reviewColorTracks=[]; reviewTimelineAttempted=false;
   $('review-title').textContent = `${event.camera_name || 'Camera 1'} · ${new Date(event.trigger_utc).toLocaleString()}`;
   $('motion-info').textContent = event.motion ? 'Loading motion data…' : 'Motion data unavailable for this older event.';
   $('radio-report').classList.add('hidden'); $('radio-status').textContent='';

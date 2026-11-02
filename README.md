@@ -166,6 +166,22 @@ See [pixel review and identification setup](docs/IDENTIFICATION.md). Satellite
 checks can be installed with `sudo bash scripts/install.sh --lan --identification`.
 They are disabled until configured and never delete original recordings.
 
+## OpenSky Network attribution and data use
+
+Aircraft data: OpenSky Network ([opensky-network.org](https://opensky-network.org/)).
+
+Magi's OpenSky integration code is open source; OpenSky data is subject to
+OpenSky's own terms. Operators who enable this integration must use their own
+OpenSky account and comply with its applicable terms. Raw OpenSky data must not
+be redistributed; Magi's source-code license does not grant rights to that data.
+
+OpenSky data comes without warranty. [Coverage varies by region and altitude](https://opensky-network.org/about/network).
+A missing match does not mean that no aircraft was there. A **possible aircraft
+match** is an indication only, not a confirmed identification.
+
+Publications using OpenSky data should cite: Schäfer et al., “Bringing Up OpenSky:
+A Large-scale ADS-B Sensor Network for Research,” IPSN 2014.
+
 ## Dependencies and development
 
 Production installation uses OS-managed `python3`, `python3-numpy`, `python3-pil`

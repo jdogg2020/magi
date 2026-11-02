@@ -115,7 +115,14 @@ when checking an event, cached on the SSD for eight hours, shared in memory
 across both cameras so a refresh downloads once, and consumed as modern
 GP/OMM JSON (no five-digit TLE catalog limitation). The catalog fetch has
 its own 16 MB cap and a 20,000-object cap; over either, the check is
-unavailable rather than silently truncated. Skyfield's SGP4 implementation
+unavailable rather than silently truncated. A failed or stale source is
+recorded even when other sources supplied elements, and any such partial
+catalog makes the whole check incomplete: a likely result is downgraded
+to possible and the event stays visible, because a missing competing
+candidate could otherwise manufacture a false likely. The per-event
+deadline also bounds catalog fetching: a download that outruns it is
+abandoned, no further sources are requested, and the check reports
+unavailable rather than matching against a partial catalog. Skyfield's SGP4 implementation
 predicts topocentric azimuth/elevation at each track time; built-in time
 tables avoid automatic ephemeris downloads. Elements more than three days
 from the observation time are skipped and coverage is marked partial. Old
@@ -146,7 +153,10 @@ event processing:
 python3 scripts/fetch-ephemeris.py --directory <camera storage root>
 ```
 
-Or set `ephemeris_path` in the identification config to a shared copy.
+That installs `de421.bsp` in the camera storage folder, which is exactly
+the filename the matcher reads (shared constant `EPHEMERIS_FILENAME` in
+both the script and the matcher, covered by a test). Or set
+`ephemeris_path` in the identification config to a shared copy.
 If the ephemeris is missing, sunlight is explicitly unknown, geometric
 matches stay possible at most, and the review panel explains that the
 missing ephemeris is what prevents a likely result. No ephemeris is ever
@@ -162,17 +172,25 @@ It is view-only: it never marks events reviewed, replaces labels, changes
 protection, or deletes footage. An event is hidden only when its stored
 `satellite_filter` block says every qualifying track is likely and the
 analysis was complete. Qualifying tracks are the tracks that triggered or
-extended recording (`motion_tracks` in the event record); an unqualified
+extended recording, persisted in the event metadata as
+`qualifying_tracks` (the in-memory `motion_tracks` set alone is never
+written to disk, so it cannot be the record). An unqualified
 fragment is logged and does not block hiding, but a qualifying track with
-too few usable samples does block it. If qualifying tracks are omitted
-over the 16-track limit, matching times out, or the station matcher is
-busy, the event stays visible. Ambiguous, possible, unavailable, and
-insufficient-evidence events stay visible. Legacy, missing, or
-incompatible reports also stay visible, because list filtering, counts,
-and Previous/Next navigation all read the stored block and never run
-matching during a request. Matching itself runs in the existing bounded
-background queue, one satellite match at a time across the station, with
-a per-event deadline; recording is never behind it.
+too few usable samples, or with no usable samples at all in the record,
+does block it. If the record truncated track samples or qualifying
+tracks, or if a legacy record never stored qualification at all, the
+event stays visible because completeness is unknown. If qualifying tracks
+are omitted over the 16-track limit, matching times out, or the station
+matcher is busy, the event stays visible. Ambiguous, possible,
+unavailable, and insufficient-evidence events stay visible. Legacy,
+missing, or incompatible reports also stay visible, because list
+filtering, counts, and Previous/Next navigation all read the stored
+block and never run matching during a request. Matching itself runs in
+the existing bounded background queue, one satellite match at a time
+across the station, with a per-event deadline that also bounds catalog
+fetching; recording is never behind it. The prefilter cone is measured
+from the true frame edges (pixel centres are half a pixel inside the
+frame), so edge-of-frame passes are not rejected before matching.
 
 ### Retention and the new satellite path
 

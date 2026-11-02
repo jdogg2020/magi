@@ -252,6 +252,11 @@ class Recorder:
                           "id": event_id, "state": "collecting", "session_id": self.session,
                           "trigger_type": kind, "trigger_count": 1,
                           "trigger_utc": utc(time.time()), "trigger_unix": time.time(),
+                          # Persisted copy of the qualifying-track set (mirrors
+                          # the in-memory motion_tracks). The satellite matcher
+                          # must be able to tell a real recording's qualifying
+                          # tracks from a legacy record that never stored them.
+                          "qualifying_tracks": {},
                           "requested_pre_roll_seconds": self.cfg.pre,
                           "requested_post_roll_seconds": self.cfg.post,
                           "requested_end_unix": now + self.cfg.post + self.wall_offset,
@@ -266,6 +271,16 @@ class Recorder:
             event['start'] = min(event['start'], continuation['limit'])
             event['limit'] = event['start'] + self.cfg.max_event
             event['motion_tracks'] = dict(continuation.get('motion_tracks', {}))
+            # A split clip inherits the previous clip's qualification record,
+            # so tracks that qualified before the split still block hiding
+            # even when their samples live in the earlier clip's record.
+            inherited = continuation.get('meta', {}).get('qualifying_tracks')
+            if not isinstance(inherited, dict) or not inherited:
+                inherited = continuation.get('motion_tracks', {})
+            event['meta']['qualifying_tracks'] = dict(inherited) if isinstance(inherited, dict) else {}
+            for flag in ('qualifying_tracks_truncated', 'track_samples_truncated'):
+                if continuation.get('meta', {}).get(flag):
+                    event['meta'][flag] = True
             event['last_motion'] = continuation['last_motion']
             event['deadline'] = min(event['limit'], event['last_motion'] + self.cfg.post)
             event['meta']['continuation_of'] = continuation['meta']['id']
@@ -295,12 +310,25 @@ class Recorder:
                 followed[identity] = True
                 while len(followed) > 64:
                     del followed[next(iter(followed))]
+                # Persist the same set in the event metadata: _save writes
+                # only meta, so the in-memory set alone never reaches disk.
+                qualifying = event['meta'].setdefault('qualifying_tracks', {})
+                qualifying.pop(identity, None)
+                qualifying[identity] = True
+                while len(qualifying) > 64:
+                    del qualifying[next(iter(qualifying))]
+                    event['meta']['qualifying_tracks_truncated'] = True
                 # A fresh qualifying observation also counts at split boundaries.
                 if self.active is event:
                     self.extend_motion(time.monotonic())
             samples = event['meta'].setdefault('track_samples', [])
             if len(samples) < 1200:
                 samples.append({'host_utc': utc(track.get('sample_host_unix', time.time())), **track})
+            else:
+                # Samples beyond the cap are silently dropped by design for
+                # recording; the matcher must know the record is incomplete
+                # rather than treat the surviving samples as the whole track.
+                event['meta']['track_samples_truncated'] = True
             event['meta']['detection_settings'] = {**self.cfg.detection, 'width': track.get('width', self.cfg.detection.get('width')), 'height': track.get('height', self.cfg.detection.get('height')), 'fps': track.get('analysis_fps', self.cfg.detection.get('fps'))}
             if kind == 'motion' and event['meta']['trigger_type'] == 'manual':
                 event['meta']['trigger_type'] = 'manual_and_motion'

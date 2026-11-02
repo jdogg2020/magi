@@ -465,5 +465,288 @@ class RetentionAndListingTests(unittest.TestCase):
         self.assertNotIn(hidden_id, neighbours)
 
 
+class ReviewFixTests(unittest.TestCase):
+    """Regression tests for the five PR #47 review issues."""
+
+    def setUp(self):
+        _SHARED_CATALOGS.clear()
+        _CATALOG_BACKOFF.clear()
+
+    def tearDown(self):
+        _SHARED_CATALOGS.clear()
+        _CATALOG_BACKOFF.clear()
+
+    def settings(self):
+        return {**defaults(), 'enabled': True, 'calibrated': True, 'latitude': 40, 'longitude': -98,
+                'elevation_m': 0, 'azimuth_deg': 0, 'elevation_deg': 90,
+                'horizontal_fov_deg': 60, 'vertical_fov_deg': 40, 'tolerance_deg': .5,
+                'satellites': True, 'satellite_group': 'selected', 'satellite_supplemental': False,
+                'aircraft_local_file': False}
+
+    def sunlit(self, obj):
+        obj._illumination = lambda satellite, times, ephemeris: {
+            'status': 'sunlit', 'sunlit_fraction': 1.0, 'samples_sunlit': len(times),
+            'samples_total': len(times), 'note': 'Sunlit at every matched sample.'}
+
+    def iss_meta(self, identity='one', **extra):
+        base = SatelliteFilterTests('test_likely_track_is_hideable_and_named')
+        samples, lat, lon = base.iss_track(identity)
+        meta = {'id': 'fix-' + identity, 'track_samples': samples, **extra}
+        return meta, lat, lon
+
+    # Issue 1: qualification must be persisted, not in-memory only.
+    def test_recorder_persists_qualifying_tracks(self):
+        from types import SimpleNamespace
+        from magi.recorder import Recorder
+        with tempfile.TemporaryDirectory() as tmp:
+            rec = Recorder.__new__(Recorder)
+            rec.cfg = SimpleNamespace(root=Path(tmp) / 'root', pre=0, post=2, max_event=8, stall=5, segment=2,
+                                      detection={'width': 160, 'height': 90, 'fps': 8})
+            rec.source_name = 'source'
+            rec.meta_name = 'event.json'
+            rec.state = 'buffering'
+            rec.segments = [{'path': Path(tmp) / 'seg', 'start': 0, 'end': 1, 'media_start': 0, 'media_end': 1}]
+            rec.last_closed = time.monotonic()
+            rec.session = 'test'
+            rec.jobs = []
+            rec.active = None
+            rec.wall_offset = 0
+            event = {'dir': Path(tmp) / 'ev', 'meta': {'track_samples': [], 'trigger_type': 'motion'}, 'motion_tracks': {}}
+            event['dir'].mkdir()
+            rec._track(event, 'motion', {'track_id': 'target', 'width': 160, 'height': 90, 'analysis_fps': 8})
+            self.assertEqual(event['meta']['qualifying_tracks'], {'target': True})
+            rec._save(event)
+            saved = json.loads((event['dir'] / 'event.json').read_text())
+            self.assertEqual(saved['qualifying_tracks'], {'target': True})
+            # Split clips inherit the previous clip's qualification record.
+            with patch.object(Recorder, '_pin', lambda self, ev, seg: None):
+                previous = {'motion_tracks': {'target': True},
+                            'meta': {'id': 'prev', 'qualifying_tracks': {'target': True}, 'detection_types': ['motion']},
+                            'limit': time.monotonic() + 8, 'last_motion': time.monotonic()}
+                rec.trigger('motion', continuation=previous)
+            self.assertEqual(rec.active['meta']['qualifying_tracks'], {'target': True})
+            saved = json.loads((rec.active['dir'] / 'event.json').read_text())
+            self.assertEqual(saved['qualifying_tracks'], {'target': True})
+
+    def test_recorder_truncation_flags(self):
+        from types import SimpleNamespace
+        from magi.recorder import Recorder
+        rec = Recorder.__new__(Recorder)
+        rec.cfg = SimpleNamespace(detection={'width': 160, 'height': 90, 'fps': 8})
+        rec.active = None
+        event = {'meta': {'track_samples': [], 'trigger_type': 'motion'}, 'motion_tracks': {}}
+        for i in range(65):
+            rec._track(event, 'motion', {'track_id': f't{i}', 'width': 160, 'height': 90, 'analysis_fps': 8})
+        self.assertEqual(len(event['meta']['qualifying_tracks']), 64)
+        self.assertTrue(event['meta']['qualifying_tracks_truncated'])
+        event['meta']['track_samples'] = [{}] * 1200
+        rec._track(event, 'motion', {'track_id': 'late', 'width': 160, 'height': 90, 'analysis_fps': 8})
+        self.assertTrue(event['meta']['track_samples_truncated'])
+
+    def test_legacy_record_without_qualification_stays_visible(self):
+        meta, lat, lon = self.iss_meta()
+        s = self.settings()
+        s.update(latitude=lat, longitude=lon)
+        obj = matcher(s, [ISS])
+        self.sunlit(obj)
+        result = obj.classify(meta)
+        self.assertFalse(result['satellite_filter']['qualification_known'])
+        self.assertFalse(result['satellite_filter']['hideable'])
+        self.assertFalse(result['satellite_filter']['complete'])
+        self.assertIn('legacy', result['satellite_filter']['reason'])
+        self.assertNotEqual(result['status'], 'likely_satellite')
+
+    def test_qualifying_track_with_no_samples_blocks_hiding(self):
+        meta, lat, lon = self.iss_meta()
+        meta['qualifying_tracks'] = {'one': True, 'ghost': True}
+        s = self.settings()
+        s.update(latitude=lat, longitude=lon)
+        obj = matcher(s, [ISS])
+        self.sunlit(obj)
+        result = obj.classify(meta)
+        ghost = next(row for row in result['tracks'] if row['track_id'] == 'ghost')
+        self.assertTrue(ghost['qualifying'])
+        self.assertEqual(ghost['satellite']['tier'], 'insufficient')
+        self.assertIn('ghost', result['satellite_filter']['blocking_track_ids'])
+        self.assertFalse(result['satellite_filter']['hideable'])
+
+    def test_truncated_record_stays_visible(self):
+        meta, lat, lon = self.iss_meta()
+        meta['qualifying_tracks'] = {'one': True}
+        meta['track_samples_truncated'] = True
+        s = self.settings()
+        s.update(latitude=lat, longitude=lon)
+        obj = matcher(s, [ISS])
+        self.sunlit(obj)
+        result = obj.classify(meta)
+        self.assertFalse(result['satellite_filter']['complete'])
+        self.assertFalse(result['satellite_filter']['hideable'])
+        self.assertIn('truncated', result['satellite_filter']['reason'])
+
+    # Issue 2: partial or stale catalogs must never produce a hidden likely.
+    def _satellites_with_load(self, fetch, sunlit=True):
+        meta, lat, lon = self.iss_meta()
+        timed = [{**row, 'time': datetime.fromisoformat(row['host_utc']).timestamp()} for row in meta['track_samples']]
+        s = self.settings()
+        s.update(latitude=lat, longitude=lon)
+        obj = matcher(s)
+        obj.catalog = None
+        with tempfile.TemporaryDirectory() as tmp:
+            obj.cfg = config(Path(tmp))
+            if sunlit:
+                self.sunlit(obj)
+            with patch('magi.identification.fetch_catalog_json', side_effect=fetch):
+                return obj._satellites(timed, [ray_at(a) for a in (0, 1, 2, 3, 4, 5)])
+
+    def test_failed_starlink_download_downgrades_likely(self):
+        def fetch(url, deadline=None):
+            if 'starlink' in url:
+                raise OSError('offline')
+            return [{**ISS, 'NORAD_CAT_ID': 25544}]
+        result = self._satellites_with_load(fetch)
+        self.assertTrue(result['catalog_incomplete'])
+        self.assertTrue(any('starlink' in problem for problem in result['catalog']['problems']))
+        self.assertFalse(result['complete'])
+        self.assertNotEqual(result['tier'], 'likely')
+        self.assertIsNone(result['likely_candidate'])
+
+    def test_stale_catalog_downgrades_likely(self):
+        def fetch(url, deadline=None):
+            return [{**ISS, 'NORAD_CAT_ID': 25544}]
+        self._satellites_with_load(fetch)  # populate the shared cache
+        for key in list(_SHARED_CATALOGS):
+            _SHARED_CATALOGS[key] = (time.time() - 9 * 3600, _SHARED_CATALOGS[key][1])
+
+        def failing(url, deadline=None):
+            raise OSError('offline')
+        result = self._satellites_with_load(failing)
+        self.assertTrue(result['catalog']['stale_cache'])
+        self.assertTrue(result['catalog_incomplete'])
+        self.assertFalse(result['complete'])
+        self.assertNotEqual(result['tier'], 'likely')
+
+    # Issue 3: one ephemeris filename, installer to loader.
+    def test_ephemeris_filename_matches_installer(self):
+        import importlib.util
+        from magi.identification import EPHEMERIS_FILENAME
+        script = Path(__file__).resolve().parent.parent / 'scripts' / 'fetch-ephemeris.py'
+        spec = importlib.util.spec_from_file_location('fetch_ephemeris', str(script))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.EPHEMERIS_FILENAME, EPHEMERIS_FILENAME)
+        self.assertEqual(EPHEMERIS_FILENAME, 'de421.bsp')
+
+    def test_loader_reads_the_installed_filename(self):
+        import skyfield
+        kernel = Path(skyfield.__file__).parent / 'tests' / 'data' / 'de430-2015-03-02.bsp'
+        if not kernel.is_file():
+            self.skipTest('skyfield test kernel unavailable')
+        from magi.identification import EPHEMERIS_FILENAME
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp))
+            cfg.root.mkdir(parents=True, exist_ok=True)
+            obj = matcher(self.settings())
+            obj.cfg = cfg
+            # Only the old, wrong name present: sunlight must stay unknown.
+            (cfg.root / 'reference-de421.bsp').write_bytes(kernel.read_bytes())
+            ephemeris, reason = obj._ephemeris()
+            self.assertIsNone(ephemeris)
+            self.assertEqual(reason, 'de421_not_installed')
+            # The name the installer writes is the name the matcher reads.
+            (cfg.root / EPHEMERIS_FILENAME).write_bytes(kernel.read_bytes())
+            ephemeris, reason = obj._ephemeris()
+            self.assertIsNotNone(ephemeris)
+            self.assertIsNone(reason)
+
+    # Issue 4: prefilter cone from true frame edges, not pixel centres.
+    def test_prefilter_uses_true_corner_rays(self):
+        from magi.identification import angular, boresight_and_fov_radius, pixel_direction
+        s = self.settings()
+        centre, radius = boresight_and_fov_radius(s)
+        corner = pixel_direction({'x': -0.5, 'y': -0.5, 'width': 2, 'height': 2}, s)
+        self.assertAlmostEqual(angular(centre, corner), radius, places=9)
+        old_corner = pixel_direction({'x': 0, 'y': 0, 'width': 2, 'height': 2}, s)
+        old_radius = angular(centre, old_corner)
+        self.assertGreater(radius, old_radius + 10, 'true corners must widen the cone well beyond pixel centres')
+        # An object exactly at a true frame edge must survive the prefilter
+        # at the true cone, and would have been rejected at the old cone.
+        east, north, up = corner
+        alt = math.degrees(math.asin(up))
+        az = math.degrees(math.atan2(east, north)) % 360
+        self.assertTrue(prefilter_pass([alt], [az], centre, radius))
+        self.assertFalse(prefilter_pass([alt], [az], centre, old_radius))
+
+    # Issue 5: the event deadline bounds catalog fetching.
+    def test_fetch_deadline_already_expired(self):
+        from magi.identification import CatalogDeadlineExpired, fetch_catalog_json
+        with self.assertRaises(CatalogDeadlineExpired):
+            fetch_catalog_json('https://example.invalid/x.json', deadline=time.monotonic() - 1)
+
+    def test_slow_fetch_abandoned_at_deadline(self):
+        from magi.identification import CatalogDeadlineExpired, fetch_catalog_json
+        import magi.identification as ident
+        real = ident._fetch_catalog_json_sync
+
+        def slow(url):
+            time.sleep(0.5)
+            return real(url)
+        with patch.object(ident, '_fetch_catalog_json_sync', side_effect=slow):
+            started = time.monotonic()
+            with self.assertRaises(CatalogDeadlineExpired):
+                fetch_catalog_json('https://example.invalid/x.json', deadline=started + 0.05)
+            self.assertLess(time.monotonic() - started, 0.4)
+
+    def test_load_stops_requesting_sources_after_deadline(self):
+        from magi.identification import load_catalog_pool
+        calls = []
+
+        def slow(url, deadline=None):
+            calls.append(url)
+            time.sleep(0.3)
+            return [{**ISS, 'NORAD_CAT_ID': 25544}]
+        s = validate({**self.settings(), 'satellite_group': 'selected', 'satellite_supplemental': False})
+        with patch('magi.identification.fetch_catalog_json', side_effect=slow):
+            pool, info, error = load_catalog_pool(s, None, False, deadline=time.monotonic() + 0.05)
+        self.assertEqual(error, 'catalog_deadline_expired')
+        self.assertEqual(pool, [])
+        self.assertEqual(len(calls), 1, 'no further sources once the deadline expires')
+
+    def test_expired_deadline_requests_no_catalogs(self):
+        from magi.identification import load_catalog_pool
+        calls = []
+
+        def fetch(url, deadline=None):
+            calls.append(url)
+            return [{**ISS, 'NORAD_CAT_ID': 25544}]
+        s = validate({**self.settings(), 'satellite_group': 'selected', 'satellite_supplemental': False})
+        with patch('magi.identification.fetch_catalog_json', side_effect=fetch):
+            pool, info, error = load_catalog_pool(s, None, False, deadline=time.monotonic() - 1)
+        self.assertEqual(error, 'catalog_deadline_expired')
+        self.assertEqual(pool, [])
+        self.assertEqual(calls, [])
+
+    def test_satellites_with_expired_deadline_requests_nothing(self):
+        meta, lat, lon = self.iss_meta()
+        timed = [{**row, 'time': datetime.fromisoformat(row['host_utc']).timestamp()} for row in meta['track_samples']]
+        s = self.settings()
+        s.update(latitude=lat, longitude=lon)
+        obj = matcher(s)
+        obj.catalog = None
+        calls = []
+
+        def fetch(url, deadline=None):
+            calls.append(url)
+            return [{**ISS, 'NORAD_CAT_ID': 25544}]
+        with tempfile.TemporaryDirectory() as tmp:
+            obj.cfg = config(Path(tmp))
+            with patch('magi.identification.fetch_catalog_json', side_effect=fetch):
+                result = obj._satellites(timed, [ray_at(a) for a in (0, 1, 2, 3, 4, 5)],
+                                         deadline=time.monotonic() - 1)
+        self.assertTrue(result['timeout'])
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['reason'], 'catalog_deadline_expired')
+        self.assertEqual(calls, [])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -14,11 +14,16 @@ import argparse
 import sys
 from pathlib import Path
 
+# Must match magi.identification.EPHEMERIS_FILENAME: the matcher reads
+# this filename from the camera storage folder, so installing any other
+# name would leave sunlight checks unknown.
+EPHEMERIS_FILENAME = 'de421.bsp'
+
 
 def main():
     parser = argparse.ArgumentParser(description='Download de421.bsp for Magi sunlight checks.')
     parser.add_argument('--directory', required=True, help='Directory to store de421.bsp in')
-    parser.add_argument('--filename', default='de421.bsp')
+    parser.add_argument('--filename', default=EPHEMERIS_FILENAME)
     args = parser.parse_args()
     directory = Path(args.directory)
     if not directory.is_dir():

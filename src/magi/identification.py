@@ -37,6 +37,10 @@ SATELLITE_GROUPS = {'visual': ['visual'], 'stations': ['stations'],
 # from their epoch and may carry several epochs per object; per-track
 # selection below picks the epoch nearest the observation, not the newest.
 SUPPLEMENTAL_SOURCES = {'starlink': 'SpaceX-E', 'oneweb': 'OneWeb-E', 'stations': 'ISS-E'}
+# Default Sun-ephemeris filename, in the camera storage folder. This is
+# the filename scripts/fetch-ephemeris.py installs; the two must stay in
+# sync or sunlight checks silently stay unknown after installation.
+EPHEMERIS_FILENAME = 'de421.bsp'
 CATALOG_FETCH_MAX_BYTES = 16_000_000
 CATALOG_MAX_OBJECTS = 20000
 CATALOG_CACHE_SECONDS = 8 * 3600
@@ -205,7 +209,11 @@ def catalog_groups(settings):
     return list(SATELLITE_GROUPS.get(settings.get('satellite_group', 'visual'), ['visual']))
 
 
-def fetch_catalog_json(url):
+class CatalogDeadlineExpired(TimeoutError):
+    """The event's matching deadline expired during a catalog fetch."""
+
+
+def _fetch_catalog_json_sync(url):
     """Bounded catalog download. The 2 MB fetch_json cap cannot hold a
     Starlink-sized catalog, so catalogs use their own larger cap and are
     never read unbounded."""
@@ -224,6 +232,39 @@ def fetch_catalog_json(url):
     if not isinstance(data, list) or not data:
         raise ValueError('invalid satellite catalog')
     return data
+
+
+def fetch_catalog_json(url, deadline=None):
+    """Catalog download bounded by the event's deadline when one is given.
+
+    A socket timeout only bounds silence between reads, so a slowly
+    progressing download could otherwise run past the deadline while
+    holding the station-wide matcher slot. The download therefore runs
+    on a daemon thread joined against the remaining budget: on expiry
+    the fetch is abandoned (the thread dies with the process) and the
+    event reports unavailable instead of matching against a partial,
+    still-downloading catalog.
+    """
+    if deadline is None:
+        return _fetch_catalog_json_sync(url)
+    if time.monotonic() >= deadline:
+        raise CatalogDeadlineExpired('satellite catalog deadline expired')
+    result = {}
+
+    def run():
+        try:
+            result['data'] = _fetch_catalog_json_sync(url)
+        except BaseException as error:  # reported to the caller below
+            result['error'] = error
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(max(0, deadline - time.monotonic()))
+    if thread.is_alive():
+        raise CatalogDeadlineExpired('satellite catalog deadline expired')
+    if 'error' in result:
+        raise result['error']
+    return result['data']
 
 
 _CATALOG_LOCK = threading.RLock()
@@ -251,12 +292,17 @@ def _catalog_cache(cfg, key):
         return None
 
 
-def _load_one_catalog(cfg, key, url, save_ok):
+def _load_one_catalog(cfg, key, url, save_ok, deadline=None):
     """One group/source, shared in memory across cameras. Returns
     (elements, fetched_unix, stale, error). A failed refresh keeps the last
-    good copy and marks it stale; it never invents a catalog."""
+    good copy and marks it stale; it never invents a catalog. An expired
+    deadline is not a refresh failure: it returns no elements and a
+    'catalog_deadline_expired' error, and the caller must stop requesting
+    further sources instead of falling back to stale data."""
     now = time.time()
     with _CATALOG_LOCK:
+        if deadline is not None and time.monotonic() >= deadline:
+            return [], 0, False, 'catalog_deadline_expired'
         shared = _SHARED_CATALOGS.get(key)
         if shared and 0 <= now - shared[0] < CATALOG_CACHE_SECONDS:
             return shared[1], shared[0], False, None
@@ -272,7 +318,9 @@ def _load_one_catalog(cfg, key, url, save_ok):
             _SHARED_CATALOGS[key] = (cached['fetched_unix'], cached['elements'])
             return cached['elements'], cached['fetched_unix'], False, None
         try:
-            elements = fetch_catalog_json(url)
+            elements = fetch_catalog_json(url) if deadline is None else fetch_catalog_json(url, deadline=deadline)
+        except CatalogDeadlineExpired:
+            return [], 0, False, 'catalog_deadline_expired'
         except Exception:
             failures = _CATALOG_BACKOFF.get(key + ':failures', 0) + 1
             _CATALOG_BACKOFF[key + ':failures'] = failures
@@ -295,38 +343,55 @@ def _load_one_catalog(cfg, key, url, save_ok):
         return elements, now, False, None
 
 
-def load_catalog_pool(settings, cfg, save_ok):
+def load_catalog_pool(settings, cfg, save_ok, deadline=None):
     """All selected groups plus supplemental sources. Pool entries are
     (element_row, source) where source is 'gp', 'supgp' or 'provided'.
     Rows are deduplicated by (catalog id, epoch, source); distinct objects
-    over the cap make the whole load unavailable rather than truncated."""
+    over the cap make the whole load unavailable rather than truncated.
+
+    Every failed or stale source is recorded in info['problems'] /
+    info['stale_cache'] even when another source supplied elements: a
+    partial catalog must never look complete to the matcher, because a
+    missing competing candidate could turn a merely-possible match into
+    a false likely. An expired deadline stops the load immediately with
+    no pool at all, so no further sources are requested after the budget
+    is spent."""
     pool, fetched, problems, stale_any = [], {}, [], False
+
+    def load(key, url, label):
+        nonlocal stale_any
+        if deadline is not None and time.monotonic() >= deadline:
+            problems.append(label + ':catalog_deadline_expired')
+            return None, True
+        elements, when, stale, error = _load_one_catalog(cfg, key, url, save_ok, deadline=deadline)
+        if error == 'catalog_deadline_expired':
+            problems.append(label + ':catalog_deadline_expired')
+            return None, True
+        if error:
+            problems.append(label + ':' + error)
+        fetched[key] = when
+        if stale:
+            stale_any = True
+        for row in elements:
+            if isinstance(row, dict):
+                pool.append((row, 'gp' if key.startswith('gp-') else 'supgp'))
+        return elements, False
+
     for group in catalog_groups(settings):
-        elements, when, stale, error = _load_one_catalog(
-            cfg, 'gp-' + group, 'https://celestrak.org/NORAD/elements/gp.php?GROUP=' + group + '&FORMAT=json', save_ok)
-        if error and not elements:
-            problems.append(group + ':' + error)
-        else:
-            fetched['gp-' + group] = when
-            if stale:
-                stale_any = True
-            for row in elements:
-                if isinstance(row, dict):
-                    pool.append((row, 'gp'))
+        _, expired = load('gp-' + group,
+                          'https://celestrak.org/NORAD/elements/gp.php?GROUP=' + group + '&FORMAT=json', group)
+        if expired:
+            info = {'groups': catalog_groups(settings), 'fetched_unix': fetched,
+                    'object_count': 0, 'row_count': 0, 'stale_cache': stale_any, 'problems': problems}
+            return [], info, 'catalog_deadline_expired'
         if settings.get('satellite_supplemental') and group in SUPPLEMENTAL_SOURCES:
             source = SUPPLEMENTAL_SOURCES[group]
-            elements, when, stale, error = _load_one_catalog(
-                cfg, 'sup-' + source,
-                'https://celestrak.org/NORAD/elements/supplemental/sup-gp.php?SOURCE=' + source + '&FORMAT=json', save_ok)
-            if error and not elements:
-                problems.append(source + ':' + error)
-            else:
-                fetched['sup-' + source] = when
-                if stale:
-                    stale_any = True
-                for row in elements:
-                    if isinstance(row, dict):
-                        pool.append((row, 'supgp'))
+            _, expired = load('sup-' + source,
+                              'https://celestrak.org/NORAD/elements/supplemental/sup-gp.php?SOURCE=' + source + '&FORMAT=json', source)
+            if expired:
+                info = {'groups': catalog_groups(settings), 'fetched_unix': fetched,
+                        'object_count': 0, 'row_count': 0, 'stale_cache': stale_any, 'problems': problems}
+                return [], info, 'catalog_deadline_expired'
     seen, deduped = set(), []
     for row, source in pool:
         cat_id = row.get('NORAD_CAT_ID')
@@ -351,10 +416,17 @@ def load_catalog_pool(settings, cfg, save_ok):
 
 
 def boresight_and_fov_radius(s):
-    """Boresight ray and the largest corner angle for the pinhole model."""
+    """Boresight ray and the largest corner angle for the pinhole model.
+
+    pixel_direction maps a pixel index to that pixel's centre (it adds a
+    half-pixel offset), so the frame edges are at -0.5 and width - 0.5,
+    not at pixel indices 0 and width - 1. Using pixel centres as corners
+    shrinks the cone by half a pixel on every side and can reject a
+    genuine edge-of-frame pass before matching ever runs.
+    """
     centre = pixel_direction({'x': .5, 'y': .5, 'width': 2, 'height': 2}, s)
     radius = 0
-    for x, y in ((0, 0), (1, 0), (0, 1), (1, 1)):
+    for x, y in ((-0.5, -0.5), (1.5, -0.5), (-0.5, 1.5), (1.5, 1.5)):
         radius = max(radius, angular(centre, pixel_direction({'x': x, 'y': y, 'width': 2, 'height': 2}, s)))
     return centre, radius
 
@@ -438,10 +510,23 @@ def report_hideable(report):
 
 
 def qualifying_track_ids(meta, groups):
+    """Qualifying-track set plus whether the record actually knows it.
+
+    The recorder persists ``qualifying_tracks`` in the event metadata; an
+    in-memory ``motion_tracks`` dict (same content, never written to disk)
+    is accepted for live events and tests. A record with neither field is a
+    legacy record whose qualification is unknown: callers must not treat
+    its fallback (sampled tracks with three or more samples) as proof of
+    completeness, because a qualifying track with too few surviving samples
+    would look like an irrelevant fragment.
+    """
+    recorded = meta.get('qualifying_tracks')
+    if isinstance(recorded, dict):
+        return set(recorded.keys()), True
     motion = meta.get('motion_tracks')
     if isinstance(motion, dict):
-        return set(motion.keys())
-    return {key for key, value in groups.items() if len(value) >= 3}
+        return set(motion.keys()), True
+    return {key for key, value in groups.items() if len(value) >= 3}, False
 
 
 def score_track(samples, predicted, tolerance):
@@ -712,7 +797,10 @@ class Identifier:
         if configured_path:
             path = Path(configured_path)
         elif getattr(self, 'cfg', None) is not None:
-            path = self.cfg.root / 'reference-de421.bsp'
+            # One default filename, shared with scripts/fetch-ephemeris.py
+            # (EPHEMERIS_FILENAME there): the file the installer writes
+            # into the camera storage folder is the file the matcher reads.
+            path = self.cfg.root / EPHEMERIS_FILENAME
         if path is None or not path.is_file():
             return None, 'de421_not_installed'
         try:
@@ -780,10 +868,16 @@ class Identifier:
                     save_ok = self.cfg.root.is_dir() and self._volume_safe()
                 except Exception:
                     save_ok = False
-                pool, info, catalog_error = load_catalog_pool(self.settings, getattr(self, 'cfg', None), save_ok)
+                pool, info, catalog_error = load_catalog_pool(self.settings, getattr(self, 'cfg', None), save_ok,
+                                                              deadline=deadline)
             if catalog_error:
                 return {'status': 'reference_unavailable', 'source': 'celestrak', 'tier': 'unavailable',
-                        'reason': catalog_error, 'catalog': info, 'complete': False}
+                        'reason': catalog_error, 'catalog': info, 'complete': False,
+                        'timeout': catalog_error == 'catalog_deadline_expired'}
+            # A partial or stale catalog is incomplete evidence, not a
+            # clean bill of health: a failed Starlink download plus one
+            # matching ISS candidate must never become a hidden "likely".
+            catalog_incomplete = bool(info.get('problems')) or bool(info.get('stale_cache'))
             # Group rows by object; per object keep the element nearest the
             # observation midpoint, supplemental preferred on a tie. Newest
             # alone is not used: an old event needs its own epoch window.
@@ -882,16 +976,24 @@ class Identifier:
                         tier = 'possible'
                 else:
                     tier = 'ambiguous'
+            if catalog_incomplete and tier == 'likely':
+                # Downgrade, never hide, on incomplete reference data.
+                tier = 'possible'
+                likely_candidate = None
+                if candidates and isinstance(candidates[0].get('likely_assessment'), dict):
+                    candidates[0]['likely_assessment']['tier'] = 'possible'
+                    candidates[0]['likely_assessment']['reasons'] = (
+                        list(candidates[0]['likely_assessment'].get('reasons', [])) + ['catalog_incomplete'])
             status = {'likely': 'likely_match', 'possible': 'possible_match', 'ambiguous': 'ambiguous_match',
-                      'no_match': 'partial_reference_coverage' if stale or propagation_errors else 'no_match'}.get(tier, tier)
+                      'no_match': 'partial_reference_coverage' if stale or propagation_errors or catalog_incomplete else 'no_match'}.get(tier, tier)
             return {'status': status, 'source': 'celestrak', 'tier': tier,
                     'groups': info['groups'], 'catalog': info, 'candidates': candidates[:5],
-                    'likely_candidate': likely_candidate,
+                    'likely_candidate': likely_candidate, 'catalog_incomplete': catalog_incomplete,
                     'evaluated_objects_above_horizon': evaluated, 'stale_elements_skipped': stale,
                     'propagation_errors': propagation_errors,
                     'prefilter_checked_objects': prefilter_checked, 'prefilter_survivors': prefilter_survivors,
                     'illumination': illumination, 'ephemeris_reason': ephemeris_reason if not candidates else None,
-                    'timeout': timed_out, 'complete': not timed_out,
+                    'timeout': timed_out, 'complete': not timed_out and not catalog_incomplete,
                     'scope': 'selected catalogs only (Starlink, stations, brightest, OneWeb when selected); not all active satellites. Geometry plus sunlight does not establish brightness or identity.'}
         except Exception:
             return {'status': 'reference_unavailable', 'source': 'celestrak', 'tier': 'unavailable',
@@ -936,6 +1038,9 @@ class Identifier:
         result = {'schema_version': 2, 'event_id': meta['id'], 'checked_utc': datetime.now(timezone.utc).isoformat(),
                   'status': 'disabled', 'tracks': [], 'measurements': measure_tracks(meta),
                   'satellite_filter': {'version': 2, 'hideable': False, 'complete': False,
+                                       'qualification_known': False,
+                                       'track_samples_truncated': bool(meta.get('track_samples_truncated')),
+                                       'qualifying_tracks_truncated': bool(meta.get('qualifying_tracks_truncated')),
                                        'qualifying_track_count': 0, 'likely_track_ids': [],
                                        'blocking_track_ids': [], 'fragments': [], 'omitted_track_ids': [],
                                        'reason': 'not_checked'},
@@ -967,7 +1072,9 @@ class Identifier:
         result['geometry'] = {key: s[key] for key in ('latitude', 'longitude', 'elevation_m', 'azimuth_deg',
                               'elevation_deg', 'roll_deg', 'horizontal_fov_deg', 'vertical_fov_deg', 'tolerance_deg')}
         groups = group_tracks(meta)
-        qualifying = qualifying_track_ids(meta, groups)
+        qualifying, qualification_known = qualifying_track_ids(meta, groups)
+        samples_truncated = bool(meta.get('track_samples_truncated'))
+        qualifying_truncated = bool(meta.get('qualifying_tracks_truncated'))
         omitted = list(groups.keys())[16:]
         # Star-fit quality, when the event carries one, gates the likely
         # tier. Manual calibration has no quantified RMS; that is reported
@@ -1010,6 +1117,15 @@ class Identifier:
             plane = self._aircraft(samples, rays, evidence)
             satellite = self._satellites(samples, rays, deadline=deadline, star_rms_deg=star_rms)
             result['tracks'].append({'track_id': identity, 'qualifying': True, 'aircraft': plane, 'satellite': satellite})
+        # A qualifying track whose samples never reached this record (split
+        # clip, truncated sample list, or a record written before samples
+        # were attached) is not evidence of nothing: it blocks hiding as
+        # insufficient, the same as a qualifying track with few samples.
+        for identity in sorted(qualifying - set(groups.keys())):
+            result['tracks'].append({'track_id': identity, 'qualifying': True,
+                                     'aircraft': {'status': 'insufficient_track_data'},
+                                     'satellite': {'status': 'insufficient_track_data', 'tier': 'insufficient',
+                                                   'reason': 'qualifying track has no usable samples in this event record'}})
         result['satellite_filter']['omitted_track_ids'] = omitted
         result['satellite_filter']['omitted_track_count'] = len(omitted)
         evaluated = [row for row in result['tracks'] if row.get('qualifying')]
@@ -1020,16 +1136,26 @@ class Identifier:
         # qualifying tracks (over the 16-track cap, a timeout, or a busy
         # station matcher) also keeps the event visible.
         timed_out = any(row['satellite'].get('timeout') for row in evaluated)
-        incomplete = bool(omitted) or timed_out or any(row['satellite'].get('complete') is False for row in evaluated)
+        truncated = samples_truncated or qualifying_truncated
+        # Unknown qualification (legacy record) and any truncation of the
+        # record itself are completeness gaps: the surviving evidence
+        # cannot prove every qualifying track was likely a satellite.
+        incomplete = (not qualification_known or truncated or bool(omitted) or timed_out
+                      or any(row['satellite'].get('complete') is False for row in evaluated))
         aircraft_possible = any(row['aircraft'].get('status') == 'possible_match' for row in evaluated)
         result['satellite_filter'].update(
+            qualification_known=qualification_known,
             qualifying_track_count=len(evaluated), likely_track_ids=likely_ids, blocking_track_ids=blocking,
             complete=not incomplete,
             hideable=bool(evaluated) and not incomplete and not blocking and bool(likely_ids) and not aircraft_possible)
         if result['satellite_filter']['hideable']:
             result['satellite_filter']['reason'] = 'every qualifying track is a likely satellite match'
+        elif not qualification_known and (evaluated or groups):
+            result['satellite_filter']['reason'] = 'track qualification not recorded for this event (legacy); completeness unknown'
         elif not evaluated:
             result['satellite_filter']['reason'] = 'no qualifying tracks evaluated'
+        elif truncated:
+            result['satellite_filter']['reason'] = 'event record truncated track samples or qualifying tracks'
         elif omitted:
             result['satellite_filter']['reason'] = 'qualifying tracks omitted over the processing limit'
         elif timed_out:

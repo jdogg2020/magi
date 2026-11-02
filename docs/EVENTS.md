@@ -201,3 +201,31 @@ The overlay uses each camera's saved settings, never unsaved edits in Settings.
 Pixel boundaries follow the detector's pixel-center rule, so small unmasked edge
 gaps remain visible. The shading disappears when the camera image is unavailable.
 These are current zones, not the zones used by a historical event.
+
+## Track-aware recording extension (0.20.8)
+
+Only observations of tracks that qualified to start or join an event extend its
+post-roll. An unrelated cloud edge, tree patch or noise component no longer
+keeps an existing recording open merely by passing the pixel-size filter. A
+newly qualifying retained track can join the event. Existing tracks do not have
+to qualify repeatedly; the tracker bridges its configured short gaps and the
+normal post-roll keeps footage while waiting for observations to return. A lost
+identity must qualify again to join, so low-contrast targets still need field
+validation. Maximum-duration continuation carries the followed identities to the
+next clip, bounded to the most recent 64 qualified identities. Manual and
+lightning captures keep their post-roll unless a moving track qualifies.
+
+This changes recording extension, not detector thresholds or cloud classification.
+False-positive tracks that qualify can still start or extend events. Metadata
+records `motion_extension_policy: qualified_track_identity`. Live observations
+do not add per-frame disk writes or continuous aircraft-correlation samples.
+
+Validation used the uploaded 123-second substream with its original masks and
+threshold 18. A timestamp-preserving, cold-start offline recorder simulation reduced the
+union of retained windows from 98.444 to 56.828 seconds (one long clip became
+five shorter clips). A 3×3-pixel synthetic target crossing for 15 seconds was
+fully covered. This is evidence about these inputs, not general capture recall.
+The detector replay CLI also ran at normalized 640×360 / 10 fps for 120 seconds:
+unchanged baseline/candidate settings both emitted 45 detections and hit the
+64.5–65.3-second labeled target window. That CLI evaluates detections, not
+recording windows; normalized timing differs from native live analysis.

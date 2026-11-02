@@ -311,11 +311,11 @@ class Application:
                 self.substream.extra_protected = protected | set(self.recorder._protected())
                 frames = self.analysis.poll()
                 # Observe motion before recorder.tick can finish a due event.
-                # Objects have already passed ignore-zone, size and broad-change
-                # suppression, but need not qualify as another trigger.
+                # Follow previously qualified object identities, without requiring
+                # them to requalify. Unrelated background motion cannot extend.
                 if self.cfg.detection['enabled']:
                     for timestamp, _frame, objects, _events, _motion in frames:
-                        if objects and self.recorder.extend_motion(timestamp):
+                        if self.recorder.observe_motion(timestamp, objects):
                             if self.substream.active and self.substream.active['meta']['id'] == self.recorder.active['meta']['id']:
                                 self.substream.extend_motion(timestamp)
                 previous = self.recorder.active

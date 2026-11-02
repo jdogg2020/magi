@@ -1,4 +1,4 @@
-"""Active clips follow observed motion even without repeated trigger qualification."""
+"""Clips follow qualified tracks, not unrelated background components."""
 import json
 from pathlib import Path
 import tempfile
@@ -64,15 +64,15 @@ class MotionExtensionTests(unittest.TestCase):
         self.app.close()
         self.temp.cleanup()
 
-    def motion(self, delay=1, objects=True, enabled=True, stale=0):
+    def motion(self, delay=1, objects=True, enabled=True, stale=0, track_id="target", events=None):
         self.clock += delay
         self.app.cfg.detection['enabled'] = enabled
         self.app.analysis.poll.return_value = [(self.clock-stale, None,
-            [{'x': 20, 'y': 30, 'pixels': 2}] if objects else [], [], {})]
+            [{'x': 20, 'y': 30, 'pixels': 2, 'track_id':track_id}] if objects else [], events or [], {})]
         self.app.tick()
 
     def test_motion_without_new_triggers_extends_both_streams_then_stops(self):
-        identity = self.app.trigger('meteor_candidate')['event_id']
+        identity = self.app.trigger('meteor_candidate', {'track_id':'target'})['event_id']
         for _ in range(5):
             self.motion()
             for recorder in (self.app.recorder, self.app.substream):
@@ -87,6 +87,109 @@ class MotionExtensionTests(unittest.TestCase):
         self.assertEqual(self.app.event_count, 1)
         self.app.previews.finish.assert_called_once()
 
+    def test_unrelated_cloud_edges_do_not_reset_post_roll(self):
+        self.app.trigger('motion', {'track_id':'target'})
+        self.motion()
+        deadline = self.app.recorder.active['deadline']
+        self.motion(track_id='cloud-edge')
+        self.assertEqual(self.app.recorder.active['deadline'], deadline)
+        self.motion(track_id='another-cloud-edge')
+        self.assertIsNone(self.app.recorder.active)
+        self.assertIsNone(self.app.substream.active)
+
+    def test_brief_gap_keeps_target_without_a_new_trigger(self):
+        self.app.trigger('motion', {'track_id':'target'})
+        self.motion(delay=.2)
+        self.motion(delay=.2, objects=False)
+        self.motion(delay=.2)
+        self.assertEqual(self.app.recorder.active['deadline'], self.clock+2)
+        self.assertEqual(self.app.recorder.active['meta']['trigger_count'], 1)
+
+    def test_new_track_must_qualify_before_it_can_extend(self):
+        self.app.trigger('motion', {'track_id':'target'})
+        self.motion(delay=.5, track_id='new-target')
+        self.assertNotEqual(self.app.recorder.active['deadline'], self.clock+2)
+        self.motion(delay=.5, track_id='new-target', events=[{'track_id':'new-target'}])
+        self.motion(track_id='new-target')
+        self.assertEqual(self.app.recorder.active['deadline'], self.clock+2)
+        self.assertEqual(self.app.recorder.active['meta']['trigger_count'], 2)
+
+    def test_manual_and_lightning_do_not_follow_arbitrary_motion(self):
+        for kind in ('manual', 'lightning_candidate'):
+            with self.subTest(kind=kind):
+                self.app.trigger(kind, {'track_id':'target'} if kind!='manual' else None)
+                self.motion()
+                self.motion()
+                self.assertIsNone(self.app.recorder.active)
+                self.app.recorder.jobs.clear();self.app.substream.jobs.clear()
+
+    def test_continuation_copies_followed_tracks_and_rejects_background(self):
+        self.app.trigger('motion', {'track_id':'target'})
+        previous = self.app.recorder.active
+        for _ in range(8):
+            self.motion()
+        following = self.app.recorder.active
+        self.assertEqual(following['motion_tracks'], {'target':True})
+        self.assertIsNot(following['motion_tracks'], previous['motion_tracks'])
+        deadline = following['deadline']
+        self.motion(track_id='cloud')
+        self.assertEqual(following['deadline'], deadline)
+        self.motion(track_id='cloud')
+        self.assertIsNone(self.app.recorder.active)
+
+    def test_qualifying_observation_counts_as_motion_at_split(self):
+        self.app.trigger('motion', {'track_id':'target'})
+        for _ in range(7):
+            self.motion(track_id='background', events=[{'track_id':'target'}])
+        self.motion(track_id='background')
+        self.assertIsNotNone(self.app.recorder.active)
+        self.assertIn('continuation_of', self.app.recorder.active['meta'])
+
+    def test_excluded_detection_type_does_not_join_active_event(self):
+        self.app.trigger('motion', {'track_id':'target'})
+        self.app.cfg.detection['retain_types'] = ['motion']
+        self.motion(events=[{'track_id':'excluded', 'detection_type':'meteor_candidate'}])
+        self.assertNotIn('excluded', self.app.recorder.active['motion_tracks'])
+        deadline = self.app.recorder.active['deadline']
+        self.motion(track_id='excluded')
+        self.assertEqual(self.app.recorder.active['deadline'], deadline)
+
+    def test_real_tracker_keeps_passage_and_ignores_distant_flicker(self):
+        import numpy as np
+        from magi.detection import Tracker
+        tracker = Tracker(self.app.cfg.detection)
+        baseline = self.clock
+        started = False
+        for index in range(50):
+            self.clock = baseline + index*.125
+            frame = np.zeros((90,160), dtype=np.uint8)
+            # One moving object, then only stationary distant background flicker.
+            if index < 28:
+                frame[30:33,20+index*2:23+index*2] = 200
+            if index % 2:
+                frame[70:72,130:132] = 100
+            objects, events = tracker.update(frame, self.clock)
+            # Seed from actual qualification; thereafter require observation alone.
+            triggers = events if not started else []
+            self.app.analysis.poll.return_value = [(self.clock, None, objects, triggers, {})]
+            self.app.tick()
+            if self.app.recorder.active:
+                started = True
+            if started and index < 28:
+                self.assertIsNotNone(self.app.recorder.active, 'Target passage must stay open')
+        self.assertTrue(started)
+        self.assertIsNone(self.app.recorder.active, 'Distant flicker must not keep recording')
+        self.assertIsNone(self.app.substream.active)
+
+    def test_followed_identities_are_bounded(self):
+        self.app.trigger('motion', {'track_id':'target'})
+        event = self.app.recorder.active
+        for i in range(80):
+            self.app.recorder._track(event, 'motion', {'track_id':f'track-{i}'})
+        self.assertEqual(len(event['motion_tracks']), 64)
+        self.assertNotIn('track-0', event['motion_tracks'])
+        self.assertIn('track-79', event['motion_tracks'])
+
     def test_motion_alone_never_starts_an_event(self):
         self.motion()
         self.assertIsNone(self.app.recorder.active)
@@ -96,7 +199,7 @@ class MotionExtensionTests(unittest.TestCase):
         for kwargs in ({'objects': False}, {'enabled': False}, {'stale': 10}):
             with self.subTest(kwargs=kwargs):
                 self.app.cfg.detection['enabled'] = True
-                self.app.trigger('manual')
+                self.app.trigger('motion', {'track_id':'target'})
                 end = self.app.recorder.active['deadline']
                 self.motion(**kwargs)
                 self.assertEqual(self.app.recorder.active['deadline'], end)
@@ -105,7 +208,7 @@ class MotionExtensionTests(unittest.TestCase):
                 self.app.recorder.jobs.clear();self.app.substream.jobs.clear()
 
     def test_limit_creates_linked_continuation_with_no_boundary_gap(self):
-        first = self.app.trigger('motion')['event_id']
+        first = self.app.trigger('motion', {'track_id':'target'})['event_id']
         previous = self.app.recorder.active
         boundary = previous['limit']
         for _ in range(8):
@@ -134,9 +237,9 @@ class MotionExtensionTests(unittest.TestCase):
         self.assertIsNone(self.app.motion_continuation)
 
     def test_extension_is_in_memory_not_a_write_for_each_frame(self):
-        self.app.trigger('motion')
+        self.app.trigger('motion', {'track_id':'target'})
         with patch.object(self.app.recorder, '_save') as save:
             for _ in range(10):
                 self.clock += .05
-                self.assertTrue(self.app.recorder.extend_motion(self.clock))
+                self.assertTrue(self.app.recorder.observe_motion(self.clock, [{'track_id':'target'}]))
             save.assert_not_called()

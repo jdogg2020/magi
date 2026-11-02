@@ -191,8 +191,24 @@ class Recorder:
                         "host_end_unix": segment["end"] + self.wall_offset})
         self._save(event)
 
+    def observe_motion(self, timestamp, objects):
+        """Extend only for identities that qualified to start/join this event.
+
+        Tracker retains identities through short detection gaps; post-roll keeps
+        the recording open while waiting. Unrelated, unqualified components must
+        not keep an event alive. A new identity must qualify before joining.
+        """
+        event = self.active
+        if not event:
+            return False
+        followed = event.get('motion_tracks', {})
+        if not any(isinstance(obj.get('track_id'), str) and obj['track_id'] in followed
+                   for obj in objects):
+            return False
+        return self.extend_motion(timestamp)
+
     def extend_motion(self, timestamp):
-        """Keep an existing event open for fresh, unsuppressed motion samples.
+        """Apply an already-associated fresh motion sample to the deadline.
 
         This is not a new trigger. Segment pinning persists the in-memory
         deadline, avoiding a metadata write for every analyzed frame.
@@ -230,7 +246,9 @@ class Recorder:
         (directory / self.source_name).mkdir(parents=True, mode=0o700)
         event = {"dir": directory, "start": now - self.cfg.pre,
                  "deadline": now + self.cfg.post, "limit": now - self.cfg.pre + self.cfg.max_event,
+                 "motion_tracks": {},
                  "meta": {"schema_version": 1, "software_version": __version__,
+                          "motion_extension_policy": "qualified_track_identity",
                           "id": event_id, "state": "collecting", "session_id": self.session,
                           "trigger_type": kind, "trigger_count": 1,
                           "trigger_utc": utc(time.time()), "trigger_unix": time.time(),
@@ -247,6 +265,7 @@ class Recorder:
             # Include the split boundary even with zero configured pre-roll.
             event['start'] = min(event['start'], continuation['limit'])
             event['limit'] = event['start'] + self.cfg.max_event
+            event['motion_tracks'] = dict(continuation.get('motion_tracks', {}))
             event['last_motion'] = continuation['last_motion']
             event['deadline'] = min(event['limit'], event['last_motion'] + self.cfg.post)
             event['meta']['continuation_of'] = continuation['meta']['id']
@@ -268,6 +287,17 @@ class Recorder:
         if kind not in types:
             types.append(kind)
         if track:
+            identity = track.get('track_id')
+            if kind in ('motion', 'meteor_candidate') and isinstance(identity, str) and identity:
+                followed = event.setdefault('motion_tracks', {})
+                # Bound memory through arbitrarily long chains of split clips.
+                followed.pop(identity, None)
+                followed[identity] = True
+                while len(followed) > 64:
+                    del followed[next(iter(followed))]
+                # A fresh qualifying observation also counts at split boundaries.
+                if self.active is event:
+                    self.extend_motion(time.monotonic())
             samples = event['meta'].setdefault('track_samples', [])
             if len(samples) < 1200:
                 samples.append({'host_utc': utc(track.get('sample_host_unix', time.time())), **track})

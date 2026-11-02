@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 from magi.config import Config
-from magi.media import Media, clip_time, crop_box, candidates
+from magi.media import Media, clip_time, crop_box, candidates, annotate_thumbnail
 from magi.storage import Volume
 
 
@@ -38,7 +38,7 @@ class MediaTests(unittest.TestCase):
             self.assertLess(right-x,3840)
         self.assertEqual(crop_box((160,90),[.5,.5,.01,.01]),(0,0,160,90))
 
-    def test_original_produces_native_color_crop_without_video_transcoding(self):
+    def test_original_produces_full_frame_annotated_thumbnail_without_video_transcoding(self):
         with tempfile.TemporaryDirectory() as folder:
             base=Path(folder);root=base/'recordings'
             cfg=Config.from_dict({'camera':{},'storage':{'mount':str(base),'directory':str(root),
@@ -67,7 +67,9 @@ class MediaTests(unittest.TestCase):
                 with Image.open(directory/'best-frame.jpg') as full:
                     self.assertEqual(full.size,(3840,2160))
                 with Image.open(directory/'thumbnail.jpg') as thumbnail:
-                    self.assertLess(thumbnail.width,3840)
+                    self.assertEqual(thumbnail.size,(3840,2160))
+                    self.assertTrue(status['thumbnail']['overlay_baked'])
+                    self.assertEqual(status['thumbnail']['crop'],[0,0,3840,2160])
                     pixel=np.asarray(thumbnail)[thumbnail.height//2,thumbnail.width//2]
                     self.assertGreater(int(pixel[0]),int(pixel[1])+100)
                 self.assertEqual(hashlib.sha256(original.read_bytes()).hexdigest(),before)
@@ -86,6 +88,32 @@ class MediaTests(unittest.TestCase):
                 self.assertEqual(json.loads((directory/'media.json').read_text()),status,'Full video must not overwrite thumbnail metadata')
                 self.assertGreater(media.budget(meta),(directory/'best-frame.jpg').stat().st_size)
             finally:media.close()
+
+    def test_persistent_small_track_beats_one_large_flash_and_path_keeps_identity(self):
+        meta={'segments':[{'media_start':0,'media_end':4,'host_start_unix':100,'host_end_unix':104}], 'track_samples':[]}
+        for i in range(4):
+            meta['track_samples'].append({'sample_host_unix':100+i,'track_id':'small','x':20+i*10,'y':30,'width':100,'height':100,'box':[18+i*10,28,22+i*10,32],'pixels':2})
+        meta['track_samples'].append({'sample_host_unix':101.5,'track_id':'cloud','x':80,'y':80,'width':100,'height':100,'box':[50,50,100,100],'pixels':2000})
+        chosen=candidates(meta,4)
+        self.assertEqual(len(chosen),4)
+        self.assertTrue(all(row['track_id']=='small' for row in chosen))
+        image=Image.new('RGB',(1000,1000),'black')
+        annotated,overlay=annotate_thumbnail(image,chosen[1],meta,4)
+        self.assertEqual(annotated.size,image.size)
+        self.assertEqual(image.getbbox(),None,'Original image stays untouched')
+        self.assertEqual(len(overlay['paths']),1)
+        self.assertEqual(len(overlay['paths'][0]),4)
+        self.assertTrue(all(y==.3 for x,y in overlay['paths'][0]))
+        self.assertIsNotNone(annotated.getbbox())
+        image.close();annotated.close()
+
+    def test_anonymous_samples_do_not_invent_a_track(self):
+        image=Image.new('RGB',(640,360),'black')
+        candidate={'target':[.5,.5,.1,.1],'box':[.45,.45,.55,.55],'track_id':None}
+        annotated,overlay=annotate_thumbnail(image,candidate,{},2)
+        self.assertEqual(overlay['paths'],[])
+        self.assertEqual(annotated.size,(640,360))
+        image.close();annotated.close()
 
     def test_converter_timeout_cleans_up_subprocess(self):
         with tempfile.TemporaryDirectory() as folder:

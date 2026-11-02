@@ -713,7 +713,7 @@ class Application:
             raise ReviewError('Event is unavailable or was removed by retention.')
         return directory
 
-    def event_page(self, value, *, window=None):
+    def event_page(self, value, *, window=None, anchor=None):
         f = event_filters(value)
         # Station aggregation requests a prefix in one scan, before global paging.
         if window is not None:
@@ -757,7 +757,18 @@ class Application:
             except (OSError, ValueError, TypeError, KeyError):
                 continue
         matched.sort(key=lambda item: item[:2], reverse=f['sort']=='newest')
-        for _, _, path, meta, review, reference in matched[f['offset']:f['offset']+f['limit']]:
+        selected = matched[f['offset']:f['offset']+f['limit']]
+        if anchor is not None:
+            previous, following = None, None
+            for item in matched:
+                key = (item[0], item[1], self.camera_id)
+                before = key < anchor if f['sort']=='oldest' else key > anchor
+                if before:
+                    previous = item
+                elif key != anchor and following is None:
+                    following = item
+            selected = [item for item in (previous, following) if item is not None]
+        for _, _, path, meta, review, reference in selected:
             try:
                 row = {k:meta.get(k) for k in ('id','camera_id','camera_name','state','trigger_type','detection_types','retention','trigger_unix','trigger_utc','estimated_duration_seconds','interruption')}
                 media_path = path.parent/'media.json'

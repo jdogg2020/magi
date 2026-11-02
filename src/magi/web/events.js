@@ -37,7 +37,13 @@ const MagiEvents = (()=>{
       choose.onchange=()=>{if(choose.checked){if(selected.size>=100){el('event-action-status').textContent='Select up to 100 events at a time.';choose.checked=false;return;}selected.set(eventKey(row),row);}else selected.delete(eventKey(row));selection();};
       const cell=node('td');cell.append(choose);tr.append(cell);
       const image=node('td');const view=button('',()=>openReview(row),'event-row-image');view.setAttribute('aria-label',`Review event ${row.id}`);
-      if(row.thumbnail){const img=node('img');img.src=eventPath(row,'thumbnail');img.alt=row.best_frame?'Selected full-resolution event crop':'Detection thumbnail';img.loading='lazy';view.append(img);}else view.textContent='Review';image.append(view);tr.append(image);
+      if(row.thumbnail){const img=node('img');img.src=eventPath(row,row.best_frame && !row.media_detail?.overlay_baked?'frame':'thumbnail');img.alt=row.best_frame?'Full-frame best image with estimated motion highlights':'Detection thumbnail';img.loading='lazy';view.append(img);
+        const detail=row.media_detail;
+        if(row.best_frame && !detail?.overlay_baked && detail?.target?.length===4 && detail.target.every(Number.isFinite)){
+          const [x,y,w,h]=detail.target, box=node('span',null,'event-still-box');
+          if(detail.native_width>0 && detail.native_height>0){view.style.aspectRatio=detail.native_width+'/'+detail.native_height;view.style.height='auto';img.style.height='auto';img.style.display='block';}
+          const bw=Math.max(.04,w),bh=Math.max(.04,h);box.style.left=(Math.max(0,x-bw/2)*100)+'%';box.style.top=(Math.max(0,y-bh/2)*100)+'%';box.style.width=(Math.min(bw,1-Math.max(0,x-bw/2))*100)+'%';box.style.height=(Math.min(bh,1-Math.max(0,y-bh/2))*100)+'%';view.append(box);
+        }}else view.textContent='Review';image.append(view);tr.append(image);
       tr.append(node('td',row.camera_name || row.camera_id || 'Camera 1'));
       const when=node('td');when.append(button(new Date(row.trigger_utc).toLocaleString(),()=>openReview(row),'event-time'),node('small',row.id));tr.append(when);
       tr.append(node('td',row.estimated_duration_seconds!=null ? `${Number(row.estimated_duration_seconds).toFixed(1)}s`:'—'));
@@ -61,7 +67,7 @@ const MagiEvents = (()=>{
     try {if(!currentFilters)currentFilters=filters();const result=await api('/api/station/events/list',{...currentFilters,offset,limit:25});
       if(version!==requestVersion)return;rows=result.events;total=result.total;offset=result.offset;
       if(offset>=total && offset>0){offset=Math.max(0,Math.floor(Math.max(0,total-1)/25)*25);lastRefresh=0;return;}
-      setOptions(result.labels || []);if(reviewEvent){const updated=rows.find(row=>eventKey(row)===eventKey(reviewEvent));if(updated){const editing=dirty();reviewEvent=updated;updateReviewAvailability(updated);if(!editing)updateReview(updated);else reviewControls();}}loaded=true;lastRefresh=Date.now();render();if(result.message)el('event-page-status').textContent+=' · '+result.message;
+      setOptions(result.labels || []);if(reviewEvent){const updated=rows.find(row=>eventKey(row)===eventKey(reviewEvent));if(updated){const editing=dirty();reviewEvent=updated;updateReviewAvailability(updated);if(!editing)updateReview(updated,false);else reviewControls();}}loaded=true;lastRefresh=Date.now();render();if(result.message)el('event-page-status').textContent+=' · '+result.message;
     }catch(error){el('event-page-status').textContent=error.message;}finally{loading=false;if(version!==requestVersion)setTimeout(()=>refresh(true),0);}
   }
   async function mutate(targetRows,action,changes){
@@ -85,30 +91,14 @@ const MagiEvents = (()=>{
     for(const [label] of quickLabels){const item=el('review-label-'+label.replace('/','-'));item.disabled=busy || review.trashed_at!=null || !!review.annotation_error;item.setAttribute('aria-pressed',String((review.labels || []).includes(label)));}
     el('review-trash').disabled=busy || !!review.annotation_error || (review.trashed_at==null && !!review.protected);
   }
-  function order(a,b){
-    for(const key of ['trigger_unix','id','camera_id']){
-      const av=a[key] ?? (key==='trigger_unix'?0:''), bv=b[key] ?? (key==='trigger_unix'?0:'');
-      if(av!==bv)return (av<bv?-1:1)*((currentFilters || filters()).sort==='oldest'?1:-1);
-    }
-    return 0;
-  }
   async function loadNeighbors(event){
     const version=++navigationVersion, query={...(currentFilters || filters())};
     neighbors={previous:null,next:null};reviewControls();
     try {
-      // Walk bounded pages, retaining only the adjacent records. Comparing the
-      // anchor also works after marking/trashing removes it from these filters.
-      let previous=null;
-      for(let start=0;;start+=100){
-        const page=await api('/api/station/events/list',{...query,offset:start,limit:100});
-        if(version!==navigationVersion || !reviewEvent || eventKey(event)!==eventKey(reviewEvent))return;
-        for(const row of page.events){
-          const comparison=order(row,event);
-          if(comparison<0)previous=row;
-          else if(comparison>0){neighbors={previous,next:row};reviewControls();return true;}
-        }
-        if(start+page.events.length>=page.total || !page.events.length){neighbors={previous,next:null};reviewControls();return true;}
-      }
+      const result=await api('/api/station/events/list',{...query,anchor:{id:event.id,camera_id:event.camera_id || selectedCamera,trigger_unix:event.trigger_unix || 0}});
+      if(version!==navigationVersion || !reviewEvent || eventKey(event)!==eventKey(reviewEvent))return;
+      if(result.unavailable_cameras?.length)throw new Error('Some camera archives are unavailable.');
+      neighbors={previous:result.previous,next:result.next};reviewControls();return true;
     }catch(error){if(version===navigationVersion)el('review-save-status').textContent='Navigation unavailable: '+error.message;}
   }
   function draftChanges(){return {labels:labels(el('review-labels').value),notes:el('review-notes').value,reviewed:el('review-reviewed').checked,protected:el('review-protected').checked};}
@@ -118,10 +108,10 @@ const MagiEvents = (()=>{
   }
   function mayLeave(){return !reviewBusy && (!dirty() || confirm('Discard unsaved review changes?'));}
   function navigate(direction){const target=direction<0?neighbors.previous:neighbors.next;if(target && mayLeave())openReview(target);}
-  function updateReview(row){
+  function updateReview(row, reloadNeighbors=true){
     if(!row)return;const review=row.review || {};el('review-labels').value=(review.labels || []).join(', ');el('review-notes').value=review.notes || '';el('review-reviewed').checked=!!review.reviewed;el('review-protected').checked=!!review.protected;
     el('review-save-status').textContent=review.trashed_at!=null?'In trash. Restore before editing. Trash may be removed by retention or storage pressure.':review.protected?'Protected from automatic removal and trash.':'';
-    reviewControls();loadNeighbors(row);
+    reviewControls();if(reloadNeighbors)loadNeighbors(row);
   }
   async function saveReview(action='update',changes=draftChanges(),advance=false){
     if(!reviewEvent || reviewBusy || mutating)return;
@@ -138,11 +128,15 @@ const MagiEvents = (()=>{
       if(action==='update' && 'reviewed' in changes)el('review-reviewed').checked=!!event.review.reviewed;
       if(action==='update' && 'protected' in changes)el('review-protected').checked=!!event.review.protected;
       el('review-save-status').textContent=action==='trash'?'Moved to trash. Use Restore from trash to undo; retention or storage pressure may remove trash.':action==='restore'?'Event restored.':'Review saved.';
-      const message=el('review-save-status').textContent;await loadNeighbors(event);lastRefresh=0;clipSignature='';await refresh(true);if(reviewEvent && eventKey(reviewEvent)===key)el('review-save-status').textContent=message;
-      if(advance && reviewEvent && eventKey(reviewEvent)===key && await loadNeighbors(event)){
+      lastRefresh=0;clipSignature='';
+      // Confirm the write, then find neighbors once with the current filters.
+      // List redraws are background work and must not delay the next image.
+      const found=await loadNeighbors(event);
+      if(advance && found && reviewEvent && eventKey(reviewEvent)===key){
         if(neighbors.next)openReview(neighbors.next);
         else el('review-save-status').textContent='Review saved. Last matching event — you’ve reached the end.';
       }
+      // Periodic refresh updates the list; reopening Events also refreshes it.
     }catch(error){if(reviewEvent && eventKey(reviewEvent)===key)el('review-save-status').textContent=error.message;}
     finally{reviewBusy=false;reviewControls();}
   }
@@ -210,6 +204,7 @@ const MagiEvents = (()=>{
         const video=el('review-video');if(reviewMode!=='video')el('review-play').onclick();else if(video.paused)video.play().catch(()=>{});else video.pause();
       }
     });
+    el('review').addEventListener('close',()=>{if(lastRefresh===0)refresh(true);});
     el('review').addEventListener('cancel',event=>{if(!mayLeave())event.preventDefault();});
   }
 

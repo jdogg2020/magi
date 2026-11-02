@@ -752,6 +752,7 @@ function paintTracks(context, tracks, seconds, width, height) {
 function paintStillTracks(context,canvas) {
   const d=reviewEvent?.media_detail;
   if(!reviewEvent?.best_frame || !d || !Array.isArray(d.target) || d.target.length!==4 || !d.target.every(Number.isFinite)) return false;
+  if(d.overlay_baked && reviewImageKind!=='frame')return true;
   const crop=reviewImageKind==='frame' ? [0,0,d.native_width,d.native_height] : d.crop;
   if(!Array.isArray(crop)||crop.length!==4||!crop.every(Number.isFinite)||!(d.native_width>0&&d.native_height>0)||crop[2]<=crop[0]||crop[3]<=crop[1]||crop[2]-crop[0]>7680||crop[3]-crop[1]>4320) return false;
   canvas.width=crop[2]-crop[0]; canvas.height=crop[3]-crop[1];
@@ -766,6 +767,8 @@ function paintStillTracks(context,canvas) {
       const [x,y]=project(track.points[track.points.length-1]);trackMarker(context,x,y,other ? '#7bcfff' : '#76e3a9',scale);
     });
     const [x,y]=project([0,d.target[0],d.target[1]]);trackMarker(context,x,y,'#ff6b65',scale);
+    const w=Math.max(d.target[2]*d.native_width,12*scale),h=Math.max(d.target[3]*d.native_height,12*scale);
+    context.strokeStyle='#ff6b65';context.lineWidth=2*scale;context.strokeRect(x-w/2-4*scale,y-h/2-4*scale,w+8*scale,h+8*scale);
   }
   return true;
 }
@@ -799,8 +802,8 @@ function drawMotion() {
   if(reviewMode==='image') {
     const available=paintStillTracks(context,canvas);
     canvas.classList.toggle('hidden',!available);
-    $('show-tracker').disabled=!available;
-    $('motion-info').textContent=available ? 'Estimated positions: red marks the selected image target; amber shows the recorded path; green marks its last detection. Crop and timing alignment are approximate.' : 'Selected event image · Play clip starts at the beginning. No selected-image track position is available.';
+    $('show-tracker').disabled=!available || (!!reviewEvent?.media_detail?.overlay_baked && reviewImageKind!=='frame');
+    $('motion-info').textContent=available ? 'Estimated motion: red marks the selected-frame target; amber shows the recorded path. Stream alignment and timing are approximate. Full frame opens the clean source image with switchable tracking.' : 'Selected event image · Play clip starts at the beginning. No selected-image track position is available.';
     return;
   }
   const analysis=$('review-quality').value==='analysis', tracks=currentTracks();
@@ -906,6 +909,7 @@ function updateReviewAvailability(event) {
 }
 function showReviewImage(kind = 'thumbnail') {
   if (!reviewEvent) return;
+  if(kind==='thumbnail' && reviewEvent.best_frame && !reviewEvent.media_detail?.overlay_baked)kind='frame';
   reviewMode = 'image'; reviewImageKind = kind;
   const video = $('review-video'); video.pause(); video.removeAttribute('src'); video.load();
   video.classList.add('hidden'); $('motion-overlay').classList.add('hidden');
@@ -914,7 +918,7 @@ function showReviewImage(kind = 'thumbnail') {
   if (available) {
     const src = eventPath(reviewEvent,`${kind === 'frame' ? 'frame' : 'thumbnail'}?selected=${reviewEvent.best_frame ? 1 : 0}`);
     if (still.getAttribute('src') !== src) still.src = src;
-    still.alt = kind === 'frame' ? 'Selected event frame at full camera resolution' : reviewEvent.best_frame ? 'Full-resolution object crop from the selected event frame' : 'Temporary detection image; full-resolution selection is pending';
+    still.alt = kind === 'frame' ? 'Selected event frame at full camera resolution' : reviewEvent.best_frame ? 'Full-frame camera image with estimated motion box and track' : 'Temporary detection image; full-resolution selection is pending';
   } else still.removeAttribute('src');
   $('review-image-status').classList.toggle('hidden', available);
   $('review-image-status').textContent = reviewEvent.state==='not_retained' ? 'No footage was retained for this event. You can still label and review its record.' : 'The selected image is not available yet. You can play the clip while it is prepared.';
@@ -1224,6 +1228,6 @@ async function openStarPicker(manual){
         $('star-picker-status').textContent='Showing up to 24 recent stills, suggested previews first. Thumbnail scores can miss faint stars or favor noise.';
       }catch(error){quality.textContent='Preview quality unavailable';}
     };
-    img.src=cameraPath('/api/clips/'+encodeURIComponent(row.id)+'/thumbnail');
+    img.src=cameraPath('/api/clips/'+encodeURIComponent(row.id)+(row.best_frame?'/frame':'/thumbnail'));
   }
 }

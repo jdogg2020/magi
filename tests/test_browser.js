@@ -106,6 +106,11 @@ const base = process.argv[2];
     const eventRow=page.locator(`#all-events tr[data-camera-id="${event.camera}"][data-event-id="${event.id}"]`);
     await eventRow.getByRole('button',{name:'Review',exact:true}).click();
     await page.locator('#review').waitFor();
+    for(const id of ['review-event-prev','review-event-next']){
+      assert.equal(await page.locator('#'+id).count(),1);
+      assert(await page.locator('#'+id).isVisible());
+      assert(await page.locator('#'+id).evaluate(button=>!!(button.compareDocumentPosition(document.getElementById('review-label-weather')) & Node.DOCUMENT_POSITION_FOLLOWING)),'Navigation must be above categories');
+    }
     const still=page.locator('#review-still');
     const src=await still.getAttribute('src');
     assert(src.includes(`/api/cameras/${event.camera}/clips/${event.id}/`));
@@ -171,6 +176,9 @@ const base = process.argv[2];
       }else await page.waitForFunction(()=>document.getElementById('review-save-status').textContent.includes('Last matching event'));
       releaseSave();const saveResponse=await saved;assert(saveResponse.ok());await saveResponse.finished();
       await page.waitForFunction(()=>!MagiEvents.hasPending());
+      releaseArchive();
+      const labelled=await page.evaluate(async event=>(await api('/api/station/events/list',{q:event.id,camera_id:event.camera})).events.find(row=>row.id===event.id),event);
+      assert(labelled.review.reviewed,'Category save must mark the event reviewed');
     } finally {
       releaseSave();releaseArchive();
       await page.unrouteAll({behavior:'wait'});
@@ -253,6 +261,38 @@ const base = process.argv[2];
     await archive.waitFor({state:'detached'});
     assert.equal(await page.locator(`#event-camera option[value="${removedId}"]`).count(),0);
     assert.equal(await archive.count(),0);
+    // Purge feedback must stay visible during a slow batch, and report a
+    // partial failure without claiming that all files were deleted.
+    let purgeScenario='progress',releasePurge;
+    const blockedPurge=new Promise(resolve=>releasePurge=resolve);
+    await page.route('**/api/station/storage/purge',async route=>{
+      const body=route.request().postDataJSON();let data;
+      if(body.action==='preview')data={token:'synthetic-preview',count:12,estimated_bytes:1024,retained:2,scope:'Synthetic cameras',mode:body.mode};
+      else if(body.step===0)data={step:1,done:false,deleted:10,failed:0,retained:2};
+      else {
+        if(purgeScenario==='progress')await blockedPurge;
+        if(purgeScenario==='failure'){await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'Synthetic interrupted batch'})});return;}
+        data={step:2,done:true,deleted:11,failed:1,retained:2};
+      }
+      await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(data)});
+    });
+    try {
+      page.once('dialog',dialog=>dialog.accept());await page.locator('#storage-purge-all').click();
+      await page.locator('#storage-purge-status').filter({hasText:'10 of 12 checked'}).waitFor();
+      assert(await page.locator('#storage-purge-all').isDisabled());
+      assert(await page.locator('#storage-empty-trash').isDisabled());
+      assert(await page.locator('#storage-purge-progress').isVisible());
+      assert(await page.locator('#storage-purge-feedback').evaluate(node=>{const b=node.getBoundingClientRect();return b.top>=0 && b.top<innerHeight;}),'Purge feedback must be brought into view');
+      await page.waitForFunction(()=>/[1-9]\d*s elapsed/.test(document.getElementById('storage-purge-status').textContent));
+      await page.screenshot({path:'dist/browser/storage-purge-progress.png',fullPage:true});
+      releasePurge();await page.locator('#storage-purge-status').filter({hasText:'Purge complete. 11 events deleted; 1 skipped or failed; 2 retained.'}).waitFor();
+      await page.waitForFunction(()=>!purgeBusy);
+      assert(!await page.locator('#storage-purge-all').isDisabled());
+      purgeScenario='failure';page.once('dialog',dialog=>dialog.accept());await page.locator('#storage-purge-all').click();
+      await page.locator('#storage-purge-status').filter({hasText:'Deletion stopped:'}).waitFor();
+      assert((await page.locator('#storage-purge-status').textContent()).includes('10 deletions confirmed'));
+      assert(!await page.locator('#storage-purge-all').isDisabled());
+    } finally {releasePurge();await page.unrouteAll({behavior:'wait'});}
     // Real canvas polygon editing and persistence through the settings API.
     await page.setViewportSize({width:1600,height:1100});
     await page.locator('#camera-links a').first().click();

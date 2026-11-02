@@ -47,10 +47,15 @@ const MagiEvents = (()=>{
       }
     } finally {draining=false;}
   }
+  function labelReview(changes,row){
+    const existing=new Set((row?.review?.labels || []).map(label=>label.trim().toLowerCase()));
+    return changes.labels?.some(label=>!existing.has(label.trim().toLowerCase())) ? {...changes,reviewed:true} : changes;
+  }
   async function queueReview(changes){
     if(!reviewEvent || reviewBusy || mutating || advancingKey===eventKey(reviewEvent))return;
     const event=withLocalReview(reviewEvent),key=eventKey(event);
     if(!pendingSaves.has(key) && pendingSaves.size>=100){el('review-save-status').textContent='100 changes are waiting. Let saves finish or retry failures before continuing.';return;}
+    changes=labelReview(changes,event);
     const existing=pendingSaves.get(key);
     if(existing){existing.changes=changes;existing.revision++;if(existing.state==='failed')existing.state='queued';}
     else pendingSaves.set(key,{row:event,changes,revision:1,state:'queued'});
@@ -139,7 +144,7 @@ const MagiEvents = (()=>{
   async function mutate(targetRows,action,changes){
     if(mutating || pendingSaves.size)return;mutating=true;selection();el('event-action-status').textContent='Saving event changes…';
     try {const result=await api('/api/station/events/update',{targets:targetRows.map(row=>({id:row.id,camera_id:row.camera_id || selectedCamera})),action,...(changes?{changes}:{})});
-      for(const target of result.updated){selected.delete(eventKey(target));if(action==='update' && localReviews.has(eventKey(target)))localReviews.set(eventKey(target),{...localReviews.get(eventKey(target)),...changes});}
+      for(const target of result.updated){selected.delete(eventKey(target));if(action==='update' && localReviews.has(eventKey(target)))localReviews.set(eventKey(target),{...localReviews.get(eventKey(target)),...labelReview(changes,withLocalReview(targetRows.find(row=>eventKey(row)===eventKey(target))))});}
       const failed=result.failed || [];el('event-action-status').textContent=`Updated ${result.updated.length} event${result.updated.length===1?'':'s'}.${action==='trash' && result.updated.length?' Restore them from the Trash folder if needed.':''}${failed.length?' '+failed.map(f=>`${f.id}: ${f.error}`).join(' '):''}`;
       lastRefresh=0;clipSignature='';await refresh(true);await windowRefresh();
     }catch(error){el('event-action-status').textContent=error.message;}finally{mutating=false;selection();}
@@ -187,6 +192,7 @@ const MagiEvents = (()=>{
   async function saveReview(action='update',changes=draftChanges()){
     if(!reviewEvent || reviewBusy || mutating || pendingSaves.has(eventKey(reviewEvent)))return;
     const event=reviewEvent, key=eventKey(event);
+    if(action==='update')changes=labelReview(changes,event);
     reviewBusy=true;reviewControls();el('review-save-status').textContent='Saving…';
     try {
       const result=await api('/api/station/events/update',{targets:[{id:event.id,camera_id:event.camera_id || selectedCamera}],action,...(action==='update'?{changes}:{})});

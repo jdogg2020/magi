@@ -32,6 +32,23 @@ class EventReviewTests(unittest.TestCase):
         if reference:atomic_json(directory/'identification.json',{'status':reference})
         return identity,directory
     def update(self,ids,**data):return self.app.manage_events({'ids':ids,**data})
+    def test_new_labels_mark_reviewed_but_removal_and_explicit_unreview_are_preserved(self):
+        first,directory=self.event(1);second,other=self.event(2)
+        self.update([first],changes={'labels':[' Weather '],'reviewed':False})
+        self.assertTrue(read(directory)['reviewed'])
+        self.update([first],changes={'reviewed':False})
+        self.update([first],changes={'labels':['WEATHER'],'notes':'same label'})
+        self.assertFalse(read(directory)['reviewed'],'Case-only changes do not add labels')
+        self.update([first,second],changes={'labels':['weather']})
+        self.assertFalse(read(directory)['reviewed'],'Bulk must evaluate additions per event')
+        self.assertTrue(read(other)['reviewed'])
+        self.update([second],changes={'labels':[]})
+        self.assertTrue(read(other)['reviewed'],'Removing a label does not unreview')
+        self.update([second],changes={'labels':[],'reviewed':False})
+        self.assertFalse(read(other)['reviewed'])
+        self.update([first],changes={'labels':['weather','bird'],'reviewed':False})
+        self.assertTrue(read(directory)['reviewed'])
+
     def test_labels_notes_persist_without_touching_evidence_and_filters_page(self):
         first,directory=self.event(1);second,_=self.event(2)
         original=(directory/'event.json').read_bytes();video=(directory/'clip.mkv').read_bytes()

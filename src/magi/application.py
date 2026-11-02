@@ -832,7 +832,10 @@ class Application:
                 else:
                     if review['trashed_at'] is not None:
                         raise ReviewError('Restore the event before editing its review.')
+                    added_labels=set(patch.get('labels',[]))-set(review['labels'])
                     review.update(patch)
+                    if added_labels:
+                        review['reviewed']=True
                 self.event_volume().check()
                 review.update(schema=1,updated_unix=time.time())
                 atomic_json(directory/'review.json',review)

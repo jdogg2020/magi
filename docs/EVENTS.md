@@ -140,7 +140,8 @@ associations are labelled separately and do not trigger footage discard. See
 
 ## Reviewing matching events
 
-Reviewed/unreviewed is independent of labels, automated categories, and protection.
+Adding a manual label marks the event reviewed. Automated categories and protection
+remain separate; you can explicitly mark an event unreviewed afterward.
 Choose Unreviewed in the Review filter together with camera, label or event-type
 filters, then apply. Opening an event does not mark it reviewed.
 
@@ -176,14 +177,16 @@ The review image has quick category buttons above it: **Ignore**, **Plane**,
 and **Unknown**. A selected category is highlighted with a check mark. Click
 a category to save the review and open the next event within the applied filters
 and sort order. This also saves any labels, notes and review/protection checkbox
-edits already made in the form. A failed save keeps the current event open. At
+edits already made in the form. Saves run in the background; failures remain in
+the pending-save banner for retry. At
 the last matching event, the review stays open and reports the end of the list.
 Multiple labels can coexist; clicking an already selected category removes it
-and advances. Reviewed/protected flags change only if you explicitly edited them.
+and advances. Adding a new label marks the event reviewed; protection changes
+only if you explicitly edit it.
 
 Plane uses the existing `aircraft` label and Cloud / weather uses `weather`,
 so the label filter continues to find those categories. Ignore is the `ignore`
-label; it never trashes an event or changes reviewed status, protection, detector
+label; adding it marks the event reviewed but never trashes it or changes protection, detector
 settings, or retention rules. Trashed events must be restored before labelling.
 
 ## Video downloads (0.20.6)
@@ -273,3 +276,16 @@ running. The queue lives in this browser tab, not on disk: browser crashes or
 forcing the tab closed can lose unsaved changes. Wait for the banner to clear
 before leaving. A session expiry keeps failed changes available for retry after
 signing back in. No settings or original evidence are changed by this queue.
+
+## Navigation and labelled reviews (0.20.14)
+
+**Previous** and **Next** are at the top of event review, beside the review actions
+and above the category buttons. They follow the active filters and sort order;
+viewing or skipping an event alone does not mark it reviewed.
+
+Adding any new label marks the event reviewed in the same save, including quick
+categories, typed labels and bulk label changes. Category buttons still save in
+the background and advance. Removing labels does not automatically unreview the
+event. You can explicitly mark an event unreviewed afterward without removing its
+labels. Case-only label changes do not count as adding a new label. Protection
+and trash remain separate actions.

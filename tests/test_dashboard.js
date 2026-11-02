@@ -46,7 +46,7 @@ async function fetchWithCookies(url, options={}) {
  const setCookie=response.headers.get('set-cookie');if(setCookie) cookie=setCookie.split(';')[0];
  return response;
 }
-const context={location:{href:base+'/?camera='+cameraId},document,fetch:fetchWithCookies,console,URL,JSON,Date,Math,Number,Error,encodeURIComponent,setInterval:()=>0,setTimeout,clearTimeout,AbortController,Promise,atob};
+const context={location:{href:base+'/?camera='+cameraId},document,fetch:fetchWithCookies,console,URL,JSON,Date,Math,Number,Error,encodeURIComponent,setInterval:()=>0,clearInterval:()=>{},setTimeout,clearTimeout,AbortController,Promise,atob};
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/tracks.js'),'utf8'),context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/events.js'),'utf8'),context);

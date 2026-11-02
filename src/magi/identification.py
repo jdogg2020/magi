@@ -213,14 +213,20 @@ class CatalogDeadlineExpired(TimeoutError):
     """The event's matching deadline expired during a catalog fetch."""
 
 
-def _fetch_catalog_json_sync(url):
+def _fetch_catalog_json_sync(url, cancelled=None):
     """Bounded catalog download. The 2 MB fetch_json cap cannot hold a
     Starlink-sized catalog, so catalogs use their own larger cap and are
-    never read unbounded."""
+    never read unbounded. `cancelled`, when given, is checked before the
+    request and after every chunk: a cancelled download raises instead
+    of running to completion, and the response is closed on the way out."""
+    if cancelled is not None and cancelled():
+        raise CatalogDeadlineExpired('satellite catalog deadline expired')
     request = urllib.request.Request(url, headers={'User-Agent': 'Magi/0.3 sky-observation prototype', 'Accept': 'application/json'})
     with urllib.request.urlopen(request, timeout=30) as response:
         chunks, total = [], 0
         while True:
+            if cancelled is not None and cancelled():
+                raise CatalogDeadlineExpired('satellite catalog deadline expired')
             chunk = response.read(65536)
             if not chunk:
                 break
@@ -234,37 +240,106 @@ def _fetch_catalog_json_sync(url):
     return data
 
 
-def fetch_catalog_json(url, deadline=None):
-    """Catalog download bounded by the event's deadline when one is given.
+class _DownloadJob:
+    """One catalog download for the shared download worker. The lock
+    makes `cancel` and `begin` atomic: a job the caller already timed
+    out on can never start afterwards, and a job that did start is
+    reported as started so its deadline failure can earn backoff."""
 
-    A socket timeout only bounds silence between reads, so a slowly
-    progressing download could otherwise run past the deadline while
-    holding the station-wide matcher slot. The download therefore runs
-    on a daemon thread joined against the remaining budget: on expiry
-    the fetch is abandoned (the thread dies with the process) and the
-    event reports unavailable instead of matching against a partial,
-    still-downloading catalog.
-    """
-    if deadline is None:
-        return _fetch_catalog_json_sync(url)
-    if time.monotonic() >= deadline:
-        raise CatalogDeadlineExpired('satellite catalog deadline expired')
-    result = {}
+    def __init__(self, url, deadline):
+        self.url = url
+        self.deadline = deadline
+        self.lock = threading.Lock()
+        self.started = False
+        self.cancelled = False
+        self.done = threading.Event()
+        self.data = None
+        self.error = None
 
-    def run():
+    def begin(self):
+        with self.lock:
+            if self.cancelled:
+                return False
+            self.started = True
+            return True
+
+    def cancel(self):
+        with self.lock:
+            self.cancelled = True
+            return self.started
+
+    def is_cancelled(self):
+        with self.lock:
+            return self.cancelled
+
+
+_DOWNLOAD_QUEUE = queue.Queue()
+_DOWNLOAD_WORKER_LOCK = threading.Lock()
+_DOWNLOAD_WORKER = None
+
+
+def _download_worker():
+    """The station's only catalog download thread. Downloads run one at
+    a time, in submission order, so expired downloads can never pile up
+    behind each other: at most one download is ever active, a job whose
+    caller timed out is discarded before it starts, and a started job
+    whose caller timed out is cancelled at the next chunk (a silent
+    server is still bounded by the 30-second socket timeout)."""
+    while True:
+        job = _DOWNLOAD_QUEUE.get()
         try:
-            result['data'] = _fetch_catalog_json_sync(url)
-        except BaseException as error:  # reported to the caller below
-            result['error'] = error
+            if not job.begin():
+                job.error = CatalogDeadlineExpired('satellite catalog deadline expired')
+                job.error.started = False
+            elif job.deadline is not None and time.monotonic() >= job.deadline:
+                job.error = CatalogDeadlineExpired('satellite catalog deadline expired')
+                job.error.started = True
+            else:
+                try:
+                    job.data = _fetch_catalog_json_sync(job.url, cancelled=job.is_cancelled)
+                except CatalogDeadlineExpired as error:
+                    error.started = True
+                    job.error = error
+                except BaseException as error:
+                    job.error = error
+            job.done.set()
+        finally:
+            _DOWNLOAD_QUEUE.task_done()
 
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
-    thread.join(max(0, deadline - time.monotonic()))
-    if thread.is_alive():
-        raise CatalogDeadlineExpired('satellite catalog deadline expired')
-    if 'error' in result:
-        raise result['error']
-    return result['data']
+
+def _ensure_download_worker():
+    global _DOWNLOAD_WORKER
+    with _DOWNLOAD_WORKER_LOCK:
+        if _DOWNLOAD_WORKER is None or not _DOWNLOAD_WORKER.is_alive():
+            _DOWNLOAD_WORKER = threading.Thread(target=_download_worker, daemon=True,
+                                                name='magi-catalog-download')
+            _DOWNLOAD_WORKER.start()
+
+
+def fetch_catalog_json(url, deadline=None):
+    """Catalog download through the shared worker, bounded by the event's
+    deadline when one is given. A socket timeout only bounds silence
+    between reads, so a slowly progressing download could otherwise run
+    past the deadline while holding the station-wide matcher slot. Here
+    the caller waits only until the deadline, then cancels: the worker
+    discards the job if it never started, or aborts it at the next chunk
+    if it did. No download is ever abandoned to keep running, and no
+    second download starts while one is active."""
+    if deadline is not None and time.monotonic() >= deadline:
+        error = CatalogDeadlineExpired('satellite catalog deadline expired')
+        error.started = False
+        raise error
+    _ensure_download_worker()
+    job = _DownloadJob(url, deadline)
+    _DOWNLOAD_QUEUE.put(job)
+    timeout = None if deadline is None else max(0, deadline - time.monotonic())
+    if not job.done.wait(timeout):
+        error = CatalogDeadlineExpired('satellite catalog deadline expired')
+        error.started = job.cancel()
+        raise error
+    if job.error is not None:
+        raise job.error
+    return job.data
 
 
 _CATALOG_LOCK = threading.RLock()
@@ -319,7 +394,18 @@ def _load_one_catalog(cfg, key, url, save_ok, deadline=None):
             return cached['elements'], cached['fetched_unix'], False, None
         try:
             elements = fetch_catalog_json(url) if deadline is None else fetch_catalog_json(url, deadline=deadline)
-        except CatalogDeadlineExpired:
+        except CatalogDeadlineExpired as error:
+            # A download that actually started and then expired earns
+            # backoff like any other failed refresh, so the next event
+            # does not immediately retry the same slow source. A job
+            # that never started (caller timed out while queued, or the
+            # deadline was already spent before this source) is not a
+            # failure of this source and earns no backoff. The pool
+            # still stops on expiry either way.
+            if getattr(error, 'started', False):
+                failures = _CATALOG_BACKOFF.get(key + ':failures', 0) + 1
+                _CATALOG_BACKOFF[key + ':failures'] = failures
+                _CATALOG_BACKOFF[key] = now + min(3600, 60 * (2 ** min(failures, 6)))
             return [], 0, False, 'catalog_deadline_expired'
         except Exception:
             failures = _CATALOG_BACKOFF.get(key + ':failures', 0) + 1

@@ -683,18 +683,22 @@ class ReviewFixTests(unittest.TestCase):
             fetch_catalog_json('https://example.invalid/x.json', deadline=time.monotonic() - 1)
 
     def test_slow_fetch_abandoned_at_deadline(self):
+        # Fully mocked: no real network helper is ever called here.
         from magi.identification import CatalogDeadlineExpired, fetch_catalog_json
         import magi.identification as ident
-        real = ident._fetch_catalog_json_sync
+        finished = threading.Event()
 
-        def slow(url):
+        def slow(url, cancelled=None):
             time.sleep(0.5)
-            return real(url)
+            finished.set()
+            return [{**ISS, 'NORAD_CAT_ID': 25544}]
         with patch.object(ident, '_fetch_catalog_json_sync', side_effect=slow):
             started = time.monotonic()
             with self.assertRaises(CatalogDeadlineExpired):
                 fetch_catalog_json('https://example.invalid/x.json', deadline=started + 0.05)
             self.assertLess(time.monotonic() - started, 0.4)
+            # Drain the worker so no download outlives this test.
+            self.assertTrue(finished.wait(2))
 
     def test_load_stops_requesting_sources_after_deadline(self):
         from magi.identification import load_catalog_pool
@@ -746,6 +750,116 @@ class ReviewFixTests(unittest.TestCase):
         self.assertFalse(result['complete'])
         self.assertEqual(result['reason'], 'catalog_deadline_expired')
         self.assertEqual(calls, [])
+
+
+class DownloadWorkerTests(unittest.TestCase):
+    """Repeated deadline timeouts must not accumulate downloads."""
+
+    def setUp(self):
+        _SHARED_CATALOGS.clear()
+        _CATALOG_BACKOFF.clear()
+
+    def tearDown(self):
+        _SHARED_CATALOGS.clear()
+        _CATALOG_BACKOFF.clear()
+
+    def test_repeated_timeouts_start_only_one_download(self):
+        from magi.identification import CatalogDeadlineExpired, fetch_catalog_json
+        import magi.identification as ident
+        state = {'active': 0, 'max_active': 0, 'calls': 0}
+        started = threading.Event()
+        release = threading.Event()
+        exited = threading.Event()
+
+        def blocking(url, cancelled=None):
+            state['calls'] += 1
+            state['active'] += 1
+            state['max_active'] = max(state['max_active'], state['active'])
+            started.set()
+            release.wait(5)
+            state['active'] -= 1
+            exited.set()
+            return [{**ISS, 'NORAD_CAT_ID': 25544}]
+
+        with patch.object(ident, '_fetch_catalog_json_sync', side_effect=blocking):
+            with self.assertRaises(CatalogDeadlineExpired):
+                fetch_catalog_json('https://example.invalid/a.json', deadline=time.monotonic() + 0.1)
+            self.assertTrue(started.wait(2), 'worker must have started the one download')
+            self.assertEqual(state['calls'], 1)
+            # Two more events time out while the first download is still
+            # active; neither may start a second download.
+            for _ in range(2):
+                with self.assertRaises(CatalogDeadlineExpired):
+                    fetch_catalog_json('https://example.invalid/b.json', deadline=time.monotonic() + 0.1)
+            self.assertEqual(state['calls'], 1)
+            self.assertEqual(state['max_active'], 1)
+            release.set()
+            self.assertTrue(exited.wait(2))
+            self.assertEqual(state['active'], 0)
+            # The worker is free again: the next download runs, still
+            # sequentially, never overlapping the first.
+            data = fetch_catalog_json('https://example.invalid/c.json', deadline=time.monotonic() + 5)
+            self.assertEqual(len(data), 1)
+            self.assertEqual(state['calls'], 2)
+            self.assertEqual(state['max_active'], 1)
+
+    def test_cancelled_trickle_download_aborts(self):
+        from magi.identification import CatalogDeadlineExpired, fetch_catalog_json
+        import magi.identification as ident
+        aborted = threading.Event()
+        iterations = []
+
+        def trickle(url, cancelled=None):
+            for _ in range(50):
+                if cancelled is not None and cancelled():
+                    aborted.set()
+                    raise CatalogDeadlineExpired('satellite catalog deadline expired')
+                iterations.append(1)
+                time.sleep(0.01)
+            return [{**ISS, 'NORAD_CAT_ID': 25544}]
+
+        with patch.object(ident, '_fetch_catalog_json_sync', side_effect=trickle):
+            with self.assertRaises(CatalogDeadlineExpired):
+                fetch_catalog_json('https://example.invalid/a.json', deadline=time.monotonic() + 0.05)
+            self.assertTrue(aborted.wait(2), 'cancelled download must stop, not run to completion')
+            self.assertLess(len(iterations), 50)
+            # Worker freed: a fresh download completes in full.
+            data = fetch_catalog_json('https://example.invalid/b.json', deadline=time.monotonic() + 5)
+            self.assertEqual(len(data), 1)
+
+    def test_started_deadline_failure_earns_backoff(self):
+        from magi.identification import _CATALOG_BACKOFF, _load_one_catalog, CatalogDeadlineExpired
+        error = CatalogDeadlineExpired('satellite catalog deadline expired')
+        error.started = True
+        with patch('magi.identification.fetch_catalog_json', side_effect=error):
+            elements, _, _, err = _load_one_catalog(None, 'gp-test', 'https://example.invalid/x.json',
+                                                    False, deadline=time.monotonic() + 60)
+        self.assertEqual(elements, [])
+        self.assertEqual(err, 'catalog_deadline_expired')
+        self.assertGreater(_CATALOG_BACKOFF.get('gp-test', 0), time.time())
+
+    def test_never_started_deadline_failure_earns_no_backoff(self):
+        from magi.identification import _CATALOG_BACKOFF, _load_one_catalog, CatalogDeadlineExpired
+        calls = []
+        error = CatalogDeadlineExpired('satellite catalog deadline expired')
+        error.started = False
+
+        def fetch(url, deadline=None):
+            calls.append(url)
+            raise error
+        with patch('magi.identification.fetch_catalog_json', side_effect=fetch):
+            elements, _, _, err = _load_one_catalog(None, 'gp-test', 'https://example.invalid/x.json',
+                                                    False, deadline=time.monotonic() + 60)
+            self.assertEqual(err, 'catalog_deadline_expired')
+            self.assertNotIn('gp-test', _CATALOG_BACKOFF)
+            # And a deadline already spent before the source is attempted
+            # is not a download failure either: nothing is fetched.
+            calls.clear()
+            elements, _, _, err = _load_one_catalog(None, 'gp-test', 'https://example.invalid/x.json',
+                                                    False, deadline=time.monotonic() - 1)
+            self.assertEqual(err, 'catalog_deadline_expired')
+            self.assertEqual(calls, [])
+            self.assertNotIn('gp-test', _CATALOG_BACKOFF)
 
 
 if __name__ == '__main__':

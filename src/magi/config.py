@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import quote
 from .identification import validate as validate_identification
 from .camera_info import api_settings
+from .masks import validate_zone
 
 
 def installation_storage_defaults(storage, *, fresh, strict, mounted, free_bytes):
@@ -137,18 +138,7 @@ class Config:
         zones = detection['ignore_zones']
         if not isinstance(zones, list) or len(zones) > 32:
             raise ValueError('at most 32 ignore zones are supported')
-        normalized = []
-        for zone in zones:
-            if not isinstance(zone, dict) or set(zone) != {'x', 'y', 'width', 'height'}:
-                raise ValueError('invalid ignore zone')
-            if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
-                   for v in zone.values()):
-                raise ValueError('invalid ignore zone coordinate')
-            x, y, width, height = (float(zone[k]) for k in ('x', 'y', 'width', 'height'))
-            if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > 1 or y + height > 1:
-                raise ValueError('ignore zone must fit within the image')
-            normalized.append({'x': x, 'y': y, 'width': width, 'height': height})
-        detection['ignore_zones'] = normalized
+        detection['ignore_zones'] = [validate_zone(zone) for zone in zones]
         web = {'host': '127.0.0.1', 'port': 8090, 'username': 'admin', 'password_hash': ''}
         web.update(data.get('web', {}))
         if web['host'] not in ('127.0.0.1', '0.0.0.0') or not 1 <= int(web['port']) <= 65535 or not isinstance(web['username'], str) or not web['username']:

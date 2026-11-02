@@ -19,7 +19,7 @@ class Element {
   removeAttribute(name) { delete this[name]; }
   showModal(){this.open=true;}
   close(){this.open=false;this.listeners.close?.();}
-  getContext(){return {clearRect:()=>{this.drawn=false;this.pixelDrawn=false;this.boxDrawn=false;},createImageData:(w,h)=>({data:new Uint8ClampedArray(w*h*4)}),putImageData:()=>{this.drawn=true;this.pixelDrawn=true;},strokeRect:()=>{this.boxDrawn=true;},fillRect(){},beginPath(){},moveTo(){},lineTo(){},stroke(){},setLineDash(){},fillText(){}};}
+  getContext(){return {clearRect:()=>{this.drawn=false;this.pixelDrawn=false;this.boxDrawn=false;},createImageData:(w,h)=>({data:new Uint8ClampedArray(w*h*4)}),putImageData:()=>{this.drawn=true;this.pixelDrawn=true;},strokeRect:()=>{this.boxDrawn=true;},fillRect(){},save(){},restore(){},closePath(){},fill(){},beginPath(){},moveTo(){},lineTo(){},stroke(){},setLineDash(){},fillText(){}};}
   getBoundingClientRect(){return {left:0,top:0,width:320,height:180};}
   setPointerCapture(){}
   play(){this.playCalls=(this.playCalls||0)+1;return Promise.resolve();}
@@ -361,6 +361,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(setupLink,'Setup message should link to Settings');
  setupLink.onclick({preventDefault(){}});assert(!elements.settings.classList.contains('hidden'));
  elements['zone-frame'].onload();
+ elements['zone-mode'].value='rectangle';
  const pointer=(x,y)=>({clientX:x,clientY:y,pointerId:1,button:0,preventDefault(){}});
  elements['zone-canvas'].onpointerdown(pointer(32,18));elements['zone-canvas'].onpointermove(pointer(160,90));elements['zone-canvas'].onpointerup(pointer(160,90));
  assert.equal(vm.runInContext('ignoreZones.length',context),1,'Drawing should add an ignore rectangle');
@@ -368,6 +369,24 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  elements['zone-list'].children[0].children[1].onclick();assert.equal(vm.runInContext('ignoreZones.length',context),0);
  elements['zone-x'].value='20';elements['zone-y'].value='30';elements['zone-width'].value='10';elements['zone-height'].value='20';elements['zone-add'].onclick();
  assert.equal(vm.runInContext('ignoreZones.length',context),1,'Keyboard coordinates should add a zone');
+ // Polygon drawing, snapping, corner/side dragging and cancellation.
+ elements['zone-clear'].onclick();elements['zone-mode'].value='polygon';elements['zone-feather'].value='2';
+ for(const [x,y] of [[2,2],[160,2],[160,90],[2,90]])elements['zone-canvas'].onpointerdown(pointer(x,y));
+ elements['zone-finish'].onclick();
+ assert.equal(vm.runInContext('ignoreZones[0].points[0][0]',context),0);
+ assert.equal(vm.runInContext('ignoreZones[0].feather',context),.02);
+ assert.equal(elements['zone-mode'].value,'edit');
+ elements['zone-canvas'].onpointerdown(pointer(160,90));elements['zone-canvas'].onpointermove(pointer(192,108));elements['zone-canvas'].onpointerup(pointer(192,108));
+ assert.equal(vm.runInContext('ignoreZones[0].points[2][0]',context),.6);
+ elements['zone-canvas'].onpointerdown(pointer(80,0));elements['zone-canvas'].onpointermove(pointer(80,18));elements['zone-canvas'].onpointerup(pointer(80,18));
+ assert.equal(vm.runInContext('ignoreZones[0].points[0][1]',context),.1);
+ assert.equal(vm.runInContext('ignoreZones[0].points[1][1]',context),.1);
+ const beforeCancel=vm.runInContext('JSON.stringify(ignoreZones)',context);
+ elements['zone-canvas'].onpointerdown(pointer(192,108));elements['zone-canvas'].onpointermove(pointer(200,110));elements['zone-canvas'].onpointercancel();
+ assert.equal(vm.runInContext('JSON.stringify(ignoreZones)',context),beforeCancel);
+ elements['zone-feather'].value='3';elements['zone-feather'].oninput();
+ assert.equal(vm.runInContext('ignoreZones[0].feather',context),.03);
+ assert(!vm.runInContext('validPolygon([[0,0],[1,1],[0,1],[1,0]])',context));
  let savedPayload;
  const originalFetch=context.fetch;
  context.fetch=async(url,options)=>{if(url.endsWith('/settings') && options?.method==='POST'){savedPayload=JSON.parse(options.body);return {ok:true,status:200,json:async()=>({ok:true})};}return originalFetch(url,options);};

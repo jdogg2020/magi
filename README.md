@@ -215,6 +215,7 @@ recovery. Updates are operator-controlled and preserve settings and footage.
 ## Feature parity target
 
 The active roadmap is [UAP-Finder feature parity](docs/UAP-FINDER-PARITY.md).
+For editable polygons and optional soft motion boundaries, see [Ignore zones](docs/IGNORE-ZONES.md).
 Version 0.5.0 adds visual ignore zones, including coordinate entry, without
 altering original footage. Capture and analysis parity precede the network/mobile
 features; continuous 24/7 operation remains the default.

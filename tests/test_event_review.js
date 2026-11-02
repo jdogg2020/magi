@@ -5,12 +5,12 @@ function el(id){if(!elements.has(id))elements.set(id,{value:'',checked:false,dis
 const records=Array.from({length:230},(_,i)=>({id:String(i).padStart(4,'0'),camera_id:'a',trigger_unix:i,review:{labels:[],notes:'',reviewed:false,protected:false,trashed_at:null}}));
 // Same timestamp/id on another camera must remain a distinct navigation target.
 records.push({...records[125],camera_id:'b',review:{...records[125].review}});
-let queries=[],updates=0,allowDiscard=false,failUpdate=false;
+let queries=[],updates=0,allowDiscard=false,failUpdate=false,saveGate=null,neighborGate=null,failNeighbors=false;
 const ctx={console,setTimeout,csrf:'token',selectedCamera:'a',clipSignature:'',reviewEvent:null,reviewMode:'image',confirm:()=>allowDiscard,
  document:{getElementById:el,createElement:()=>el('node-'+Math.random())},eventKey:r=>r.camera_id+':'+r.id,eventPath:()=>'',updateReviewAvailability(){},refreshDashboard:async()=>{},
  api:async(path,data)=>{
-  if(path.endsWith('/update')){updates++;if(failUpdate)return {updated:[],failed:[{error:'Test save rejected'}]};const row=records.find(r=>r.id===data.targets[0].id && r.camera_id===data.targets[0].camera_id);if(data.action==='update')Object.assign(row.review,data.changes);else row.review.trashed_at=data.action==='trash'?1:null;return {updated:data.targets,failed:[]};}
-  queries.push(data);let rows=records.filter(r=>(data.reviewed!=='no'||!r.review.reviewed)&&(data.camera_id==='all'||data.camera_id===r.camera_id)&&(data.trash==='all'||(data.trash==='trash')===(r.review.trashed_at!=null)));
+  if(path.endsWith('/update')){updates++;if(saveGate)await saveGate;if(failUpdate)return {updated:[],failed:[{error:'Test save rejected'}]};const row=records.find(r=>r.id===data.targets[0].id && r.camera_id===data.targets[0].camera_id);if(data.action==='update')Object.assign(row.review,data.changes);else row.review.trashed_at=data.action==='trash'?1:null;return {updated:data.targets,failed:[]};}
+  queries.push(data);if(data.anchor && neighborGate)await neighborGate;if(data.anchor && failNeighbors)return {previous:null,next:null,unavailable_cameras:['a']};let rows=records.filter(r=>(data.reviewed!=='no'||!r.review.reviewed)&&(data.camera_id==='all'||data.camera_id===r.camera_id)&&(data.trash==='all'||(data.trash==='trash')===(r.review.trashed_at!=null)));
   rows.sort((a,b)=>(a.trigger_unix-b.trigger_unix || a.id.localeCompare(b.id)||a.camera_id.localeCompare(b.camera_id))*(data.sort==='oldest'?1:-1));
   if(data.anchor){const a=data.anchor,compare=r=>(r.trigger_unix-a.trigger_unix || r.id.localeCompare(a.id)||r.camera_id.localeCompare(a.camera_id))*(data.sort==='oldest'?1:-1);return {previous:structuredClone(rows.filter(r=>compare(r)<0).at(-1)||null),next:structuredClone(rows.find(r=>compare(r)>0)||null),unavailable_cameras:[]};}
   return {events:structuredClone(rows.slice(data.offset,data.offset+data.limit)),total:rows.length,offset:data.offset,labels:[]};
@@ -45,7 +45,7 @@ const settle=async()=>{for(let i=0;i<20;i++)await new Promise(resolve=>setImmedi
  el('review-notes').value='Save this note';el('review-protected').checked=true;
  el('review-labels').value='Interesting';
  const queryStart=queries.length;await el('review-label-aircraft').onclick();await settle();
- assert.equal(queries.length-queryStart,2,'One neighbor lookup after save and one on opening next; no list refresh blocks advance');
+ assert.equal(queries.length-queryStart,1,'Only the next event starts a lookup; saving must reuse the known neighbors');
  assert.equal(ctx.reviewEvent.id,'0021','Category saves and advances in current order');
  assert.deepEqual(Array.from(records[20].review.labels),['interesting','aircraft']);
  assert.equal(records[20].review.notes,'Save this note');assert(records[20].review.protected);
@@ -62,5 +62,40 @@ const settle=async()=>{for(let i=0;i<20;i++)await new Promise(resolve=>setImmedi
  ctx.openReview({...records[20],review:{...records[20].review,annotation_error:true}});await settle();assert(el('review-label-ignore').disabled);
  ctx.openReview(records[0]);await settle();assert(el('review-event-prev').disabled);
  ctx.openReview(records[229]);await settle();assert(el('review-event-next').disabled);await el('review-label-weather').onclick();assert.equal(ctx.reviewEvent.id,'0229');assert(el('review-save-status').textContent.includes('Last matching event'));
+ // Every category follows the same fast path. Hold all future archive
+ // queries indefinitely: confirmed saves must still advance to known neighbors.
+ for(const label of ['ignore','aircraft','bird-insect','lightning','weather','meteor','satellite','unknown']){
+   ctx.openReview(records[150]);await settle();
+   let releaseSave,releaseNeighbors;
+   saveGate=new Promise(resolve=>releaseSave=resolve);
+   neighborGate=new Promise(resolve=>releaseNeighbors=resolve);
+   const start=queries.length;
+   const saving=el('review-label-'+label).onclick();await settle();
+   assert.equal(ctx.reviewEvent.id,'0150','Do not advance before save confirmation');
+   assert.equal(queries.length,start,'Saving does not start an archive scan');
+   releaseSave();await saving;await settle();saveGate=null;
+   assert.equal(ctx.reviewEvent.id,'0151','All categories advance despite the next lookup being blocked');
+   assert.equal(queries.length,start+1,'Only the newly opened event queries its neighbors');
+   assert.equal(queries.at(-1).anchor.id,'0151');
+   releaseNeighbors();neighborGate=null;await settle();
+ }
+ // Clicking before the initial lookup completes shares that request.
+ let releaseInitial;neighborGate=new Promise(resolve=>releaseInitial=resolve);
+ const start=queries.length;ctx.openReview(records[160]);await settle();
+ const earlySave=el('review-label-weather').onclick();await settle();
+ assert.equal(queries.length,start+1,'Early click must not duplicate an in-flight lookup');
+ assert.equal(ctx.reviewEvent.id,'0160');
+ neighborGate=null;releaseInitial();await earlySave;await settle();
+ assert.equal(ctx.reviewEvent.id,'0161');
+ // Unavailable navigation never pretends that a successfully saved label failed.
+ failNeighbors=true;ctx.openReview(records[170]);await settle();
+ await el('review-label-weather').onclick();assert.equal(ctx.reviewEvent.id,'0170');
+ assert(records[170].review.labels.includes('weather'));
+ assert(el('review-save-status').textContent.includes('Review saved. Navigation unavailable'));
+ failNeighbors=false;
+ const refreshStart=queries.length;await vm.runInContext('MagiEvents.refresh()',ctx);
+ assert.equal(queries.length,refreshStart,'Periodic list scans pause while reviewing');
+ el('review').open=false;el('review').close();await settle();
+ assert.equal(queries.length,refreshStart+1,'Closing review refreshes the list');
  console.log('Event review: page boundaries, camera identity, filtered anchors, protection, restore, drafts and keyboard passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

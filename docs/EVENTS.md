@@ -242,3 +242,10 @@ The active filters and order are preserved even when marking reviewed or moving
 to trash removes the current event from those filters. Failed saves stay on the
 current event; an unavailable camera archive reports a navigation error instead
 of claiming the end of the list. The list refreshes after closing review.
+
+In 0.20.12, category buttons reuse the neighbor lookup started when review opens.
+They wait for the save confirmation but do not start another archive scan before
+advancing. An unfinished neighbor lookup is shared, not duplicated. Periodic
+event-list refreshes pause while review is open and resume when it closes.
+Failed saves keep the current event and draft; navigation failures are reported
+separately after a successful save. Actual Pi latency still needs field validation.

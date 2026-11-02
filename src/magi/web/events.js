@@ -92,6 +92,39 @@ const MagiEvents = (()=>{
   }
   function node(tag,text,cls){const item=document.createElement(tag);if(text!=null)item.textContent=text;if(cls)item.className=cls;return item;}
   function button(text,action,cls='quiet'){const item=node('button',text,cls);item.type='button';item.onclick=action;return item;}
+  const downloadFiles=[
+    ['substream_preview','video','Small video (substream)','substream.mp4','review-substream-download'],
+    ['original','original','Full-quality video (original)','original.mkv','review-original'],
+    [null,'metadata','Event JSON','event.json','review-json-download'],
+    ['best_frame','frame','Best-frame image','best-frame.jpg','review-frame-download'],
+    ['thumbnail','thumbnail','Thumbnail','thumbnail.jpg','review-thumbnail-download']
+  ];
+  function downloadChoices(row){
+    return downloadFiles.filter(([available])=>!available || row[available]).map(([,kind,label,suffix,id])=>({
+      kind,label,id,href:eventPath(row,kind+'?download=1'),filename:`${row.camera_id || selectedCamera}-${row.id}-${suffix}`
+    }));
+  }
+  function downloadMenu(row){
+    const menu=node('details',null,'download-menu'),summary=node('summary','Download ▾','secondary');
+    const links=node('div',null,'download-options');menu.append(summary,links);
+    for(const choice of downloadChoices(row)){
+      const link=node('a',choice.label);link.href=choice.href;link.download=choice.filename;
+      link.onclick=()=>{menu.open=false;};links.append(link);
+    }
+    return menu;
+  }
+  function updateDownloads(row){
+    const menu=el('review-download-menu');
+    if(menu.dataset.eventKey!==eventKey(row))menu.open=false;
+    menu.dataset.eventKey=eventKey(row);
+    const choices=new Map(downloadChoices(row).map(choice=>[choice.id,choice]));
+    for(const [,,,,id] of downloadFiles){
+      const link=el(id),choice=choices.get(id);link.classList.toggle('hidden',!choice);
+      link.removeAttribute('href');link.removeAttribute('download');
+      if(choice){link.textContent=choice.label;link.href=choice.href;link.download=choice.filename;}
+      link.onclick=()=>{menu.open=false;};
+    }
+  }
   function mount(page){
     if(page==='overview' || page==='events')el(page==='overview'?'recent-events':'event-archive').append(el('event-browser'));
   }
@@ -122,7 +155,7 @@ const MagiEvents = (()=>{
       annotation.append(badges,node('small',`${review.reviewed?'✓ Reviewed':'Unreviewed'}${review.protected?' · Protected':''}${review.trashed_at!=null?' · In trash':''}${review.annotation_error?' · Review metadata needs repair':''}`));if(review.notes)annotation.append(node('small',review.notes.slice(0,100)));tr.append(annotation);
       tr.append(node('td',human(row.identification)));const recording=node('td',human(row.state));recording.append(node('small',(row.detection_types || [row.trigger_type]).map(human).join(', ')));if(row.retention?.reason)recording.append(node('small',human(row.retention.reason)));tr.append(recording);
       const actions=node('td',null,'event-row-actions');actions.append(button('Review',()=>openReview(row),'secondary'));
-      if(row.original){const a=node('a','Original ↓');a.href=eventPath(row,'original');actions.append(a);}
+      actions.append(downloadMenu(row));
       if(review.trashed_at!=null)actions.append(button('Restore',()=>mutate([row],'restore')));
       else {actions.append(button(review.protected?'Unprotect':'Protect',()=>mutate([row],'update',{protected:!review.protected})));const trash=button('Trash',()=>mutate([row],'trash'));trash.disabled=!!review.protected;actions.append(trash);}
       tr.append(actions);body.append(tr);
@@ -281,5 +314,5 @@ const MagiEvents = (()=>{
   }
 
   function reset(){navigationVersion++;navigationTask=null;navigationKey=null;navigationReady=false;neighbors={previous:null,next:null};selected.clear();rows=[];loaded=false;currentFilters=null;lastRefresh=0;requestVersion++;selection();}
-  return {init,mount,refresh,updateReview,reset,mayLeave,withLocalReview,hasPending:()=>!!pendingSaves.size,loaded:()=>loaded};
+  return {init,mount,refresh,updateReview,reset,mayLeave,withLocalReview,downloadChoices,updateDownloads,hasPending:()=>!!pendingSaves.size,loaded:()=>loaded};
 })();

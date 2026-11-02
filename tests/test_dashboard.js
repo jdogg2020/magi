@@ -1,5 +1,6 @@
 require('./test_mask_editor.js');
 require('./test_event_review.js');
+require('./test_downloads.js');
 require('./test_live_refresh.js');
 // Lightweight DOM harness for the actual dashboard JavaScript against a running
 // disposable synthetic service. This checks behavior, not browser rendering.
@@ -243,8 +244,8 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  assert(elements['track-bands'].children.length>0,'Timeline must show recorded detection intervals');
  assert(elements['motion-overlay'].drawn,'Changed pixel overlay should draw');elements['show-pixels'].checked=false;elements['show-pixels'].onchange();assert(!elements['motion-overlay'].pixelDrawn,'Highlights should turn off');elements['show-pixels'].checked=true;elements['show-pixels'].onchange();assert(elements['motion-overlay'].drawn,'Highlights should turn back on');
  assert(elements.review.open,'Review dialog should open');assert(elements['review-video'].src.endsWith('/preview'));
- assert(elements['review-original'].href.endsWith('/original'),'Original download belongs inside review');
- assert(elements['review-substream-download'].href.endsWith('/video'));
+ assert(elements['review-original'].href.endsWith('/original?download=1'),'Original download belongs inside review');
+ assert(elements['review-substream-download'].href.endsWith('/video?download=1'));
  assert(elements['review-substream-download'].download.endsWith('-substream.mp4'));
  assert(!elements['review-substream-download'].classList.contains('hidden'));
  vm.runInContext('updateReviewAvailability({...reviewEvent, substream_preview:false})',context);

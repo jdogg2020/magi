@@ -156,6 +156,11 @@ window is only a temporal hit, not proof it tracked the labeled object. Repeated
 trigger samples are not separate saved events. The input is capped at 120 seconds;
 the output must be a new file. No footage or annotation is overwritten.
 
+For comparing settings across many clips, with spatial annotations,
+per-group aggregates and a deterministic comparison report, use the
+benchmark built on this tool instead: see
+[detector benchmark](DETECTOR-BENCHMARK.md).
+
 Use clear positives, difficult faint/brief tracks and nuisance footage together.
 Saved event clips alone cannot establish missed-event rates: evaluating capture
 recall requires separately retained footage containing events the detector missed.

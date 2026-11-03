@@ -19,7 +19,8 @@ const MagiTracks = (() => {
       const t = segments ? clipSeconds(segments,row.host_unix) : row.video_seconds;
       if (!Number.isFinite(t) || t < 0 || row.suppressed) continue;
       for (const obj of (row.objects || []).slice(0,32)) {
-        const x=obj.x/meta.width, y=obj.y/meta.height;
+        // Map pixel centers, not their top-left edges, into the full frame.
+        const x=(obj.x+.5)/meta.width, y=(obj.y+.5)/meta.height;
         if (!obj.track_id || !Number.isFinite(x) || !Number.isFinite(y) || x<0 || x>1 || y<0 || y>1) continue;
         const list=groups.get(obj.track_id)||[];
         if (!list.length || t>list[list.length-1][0]) list.push([t,x,y]);

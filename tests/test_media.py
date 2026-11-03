@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 from magi.config import Config
-from magi.media import Media, clip_time, crop_box, candidates, annotate_thumbnail
+from magi.media import Media, clip_time, crop_box, candidates, annotate_thumbnail, track_rows
 from magi.storage import Volume
 
 
@@ -28,7 +28,25 @@ class MediaTests(unittest.TestCase):
                 'x':80,'y':45,'width':160,'height':90,'box':[75,40,85,50],'pixels':10}]}
         selected=candidates(meta,2)
         self.assertEqual(selected[0]['seconds'],1)
-        self.assertEqual(selected[0]['target'][:2],[.5,.5])
+        self.assertEqual(selected[0]['target'][:2],[80.5/160,45.5/90])
+
+    def test_pixel_centers_align_with_exclusive_boxes_at_frame_edges(self):
+        meta={'segments':[{'media_start':0,'media_end':2,'host_start_unix':100,'host_end_unix':102}],
+              'track_samples':[]}
+        for x,y in [(0,0),(159,89),(79.5,44.5)]:
+            meta['track_samples'].append({'sample_host_unix':101,'x':x,'y':y,
+                'width':160,'height':90,'box':[int(x),int(y),int(x)+1,int(y)+1]})
+        rows=track_rows(meta,2)
+        self.assertEqual(rows[0]['target'][:2],[.5/160,.5/90])
+        self.assertEqual(rows[1]['target'][:2],[159.5/160,89.5/90])
+        self.assertEqual(rows[2]['target'][:2],[.5,.5])
+        for row in rows[:2]:
+            x,y=row['target'][:2];left,top,right,bottom=row['box']
+            self.assertAlmostEqual(x,(left+right)/2)
+            self.assertAlmostEqual(y,(top+bottom)/2)
+        # A corner detection on a 160px stream belongs 12px into a 3840px frame.
+        self.assertEqual(rows[0]['target'][0]*3840,12)
+        self.assertEqual(rows[1]['box'][2:], [1,1])
 
     def test_native_crop_stays_inside_frame_without_upscaling(self):
         for point in ([0,0,.01,.01],[1,1,.01,.01],[.5,.5,.01,.01]):
@@ -103,7 +121,7 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(image.getbbox(),None,'Original image stays untouched')
         self.assertEqual(len(overlay['paths']),1)
         self.assertEqual(len(overlay['paths'][0]),4)
-        self.assertTrue(all(y==.3 for x,y in overlay['paths'][0]))
+        self.assertTrue(all(y==.305 for x,y in overlay['paths'][0]))
         self.assertIsNotNone(annotated.getbbox())
         image.close();annotated.close()
 

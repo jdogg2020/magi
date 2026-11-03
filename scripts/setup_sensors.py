@@ -89,12 +89,22 @@ def active(unit):
     return subprocess.run(['systemctl', 'is-active', '--quiet', unit]).returncode == 0
 
 
-def find_rtlsdr_serials(sysfs_root=Path('/sys/bus/usb/devices')):
+RTLSDR_VENDOR = '0bda'
+# RTL2832U-family product IDs: 2832 (generic RTL-SDR) and 2838 (Nooelec
+# NESDR SMArt and similar). Other Realtek products share the vendor ID
+# but are not receivers: Wi-Fi, Ethernet, card readers, hubs.
+RTLSDR_PRODUCTS = frozenset({'2832', '2838'})
+
+
+def find_rtlsdr_serials(sysfs_root=Path('/sys/bus/usb/devices'),
+                        products=RTLSDR_PRODUCTS):
     """Serial numbers of attached Realtek RTL-SDR receivers, from sysfs."""
     serials = []
     for device in Path(sysfs_root).glob('*'):
         try:
-            if (device/'idVendor').read_text().strip() != '0bda':
+            if (device/'idVendor').read_text().strip() != RTLSDR_VENDOR:
+                continue
+            if (device/'idProduct').read_text().strip() not in products:
                 continue
             serial = (device/'serial').read_text().strip()
         except OSError:
@@ -150,14 +160,22 @@ def probe_sim7600(port_path, query_fn=None, port_opener=None):
 
 def detect_sensors(sysfs_root=Path('/sys/bus/usb/devices'),
                    by_id_dir=Path('/dev/serial/by-id'),
-                   query_fn=None, port_opener=None, busy=None):
+                   query_fn=None, port_opener=None, busy=None,
+                   owned_ports=()):
     """Detect attached sensor hardware.
 
-    Returns {'adsb_serial': str|None, 'gnss_port': str|None}. Multiple
-    RTL-SDR receivers raise instead of guessing which one to bind.
+    Returns {'adsb_serial', 'gnss_port', 'gnss_status', 'gnss_unusable'}.
+    gnss_status is 'absent' (no SIMCom-named port), 'found', or 'unusable'
+    (ports were seen but every one was busy or failed its AT probe).
+    Multiple RTL-SDR receivers raise instead of guessing which one to bind.
+    Ports in owned_ports were verified by Magi on a previous provisioning
+    and are accepted without a fresh probe: our own collector may hold
+    one busy, and the provisioning branch stops that collector and
+    re-verifies the port before use anyway.
     """
     if busy is None:
         busy = port_busy
+    owned = {str(p) for p in owned_ports if p}
     serials = find_rtlsdr_serials(sysfs_root)
     if len(serials) > 1:
         raise RuntimeError(
@@ -165,14 +183,93 @@ def detect_sensors(sysfs_root=Path('/sys/bus/usb/devices'),
             'with --adsb-serial: ' + ', '.join(sorted(serials)))
     adsb_serial = serials[0] if serials else None
     gnss_port = None
+    unusable = []
     for candidate in sim7600_candidates(by_id_dir):
+        text = str(candidate)
+        if text in owned:
+            gnss_port = text
+            break
         if busy(candidate):
+            unusable.append(f'{text} (busy)')
             continue
         if probe_sim7600(candidate, query_fn=query_fn,
                          port_opener=port_opener):
-            gnss_port = str(candidate)
+            gnss_port = text
             break
-    return {'adsb_serial': adsb_serial, 'gnss_port': gnss_port}
+        unusable.append(f'{text} (probe failed)')
+    if gnss_port:
+        gnss_status = 'found'
+    elif unusable:
+        gnss_status = 'unusable'
+    else:
+        gnss_status = 'absent'
+    return {'adsb_serial': adsb_serial, 'gnss_port': gnss_port,
+            'gnss_status': gnss_status, 'gnss_unusable': unusable}
+
+
+def check_receiver_ownership(gnss_port, nmea_port, adsb_serial, active_fn=None):
+    """Competing-service guards, run against resolved hardware.
+
+    This must run after explicit-or-detected resolution: running it
+    earlier lets automatic setup configure a receiver another service
+    already owns, because detection has not filled in the serial yet.
+    """
+    if active_fn is None:
+        active_fn = active
+    if gnss_port or nmea_port:
+        for unit in ('ModemManager.service', 'gpsd.service', 'gpsd.socket'):
+            if active_fn(unit):
+                raise RuntimeError(f'{unit} already owns modem/GNSS management; integration required before setup.')
+    if adsb_serial:
+        for unit in ('dump1090-fa', 'dump1090-mutability', 'rtl_tcp', 'dump978-fa'):
+            if active_fn(unit):
+                raise RuntimeError(f'{unit} is active; resolve receiver ownership before setup.')
+
+
+def resolve_sensor_args(args, config, detect_fn=None, active_fn=None,
+                        candidates_fn=None):
+    """Resolve explicit-or-detected hardware and run ownership guards.
+
+    Returns True when provisioning should proceed, False when --detect
+    found no hardware at all. Raises on detected-but-unusable GNSS and
+    on competing-service ownership. Mutates args with detected values.
+    """
+    if detect_fn is None:
+        detect_fn = detect_sensors
+    if active_fn is None:
+        active_fn = active
+    if candidates_fn is None:
+        candidates_fn = sim7600_candidates
+    explicit = bool(args.gnss_port or args.nmea_port or args.adsb_serial or args.gnss_time)
+    if args.detect and not explicit:
+        # Do not probe a modem another manager owns; the post-resolution
+        # guard below still runs for whatever detection resolves.
+        candidates = candidates_fn()
+        if candidates:
+            for unit in ('ModemManager.service', 'gpsd.service', 'gpsd.socket'):
+                if active_fn(unit):
+                    raise RuntimeError(f'{unit} already owns modem/GNSS management; integration required before setup.')
+        owned = {config.get('at_port')} if config.get('at_port') else set()
+        found = detect_fn(owned_ports=owned)
+        if found['gnss_status'] == 'unusable':
+            raise RuntimeError(
+                'GNSS hardware detected but unusable: ' + '; '.join(found['gnss_unusable']) +
+                '. Stop the owning service or provision explicitly with --gnss-port.')
+        if not found['adsb_serial'] and not found['gnss_port']:
+            print('No sensor hardware detected; leaving sensor services unprovisioned.')
+            return False
+        if found['adsb_serial']:
+            if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', found['adsb_serial']):
+                raise RuntimeError('Detected receiver serial is not usable as an explicit serial.')
+            args.adsb_serial = found['adsb_serial']
+            print(f"Detected ADS-B receiver {found['adsb_serial']}")
+        if found['gnss_port']:
+            args.gnss_port = found['gnss_port']
+            args.gnss_time = True
+            print(f"Detected GNSS AT port {found['gnss_port']} (provisioning GNSS time)")
+    check_receiver_ownership(args.gnss_port, args.nmea_port, args.adsb_serial,
+                             active_fn=active_fn)
+    return True
 
 
 def main():
@@ -196,34 +293,9 @@ def main():
     config = json.loads(config_path.read_text()) if config_path.exists() else {}
     if args.gnss_time and not (args.gnss_port or config.get('at_port')):
         parser.error('GNSS time requires a verified AT port.')
-    if args.gnss_port or args.nmea_port:
-        for unit in ('ModemManager.service', 'gpsd.service', 'gpsd.socket'):
-            if active(unit):
-                raise RuntimeError(f'{unit} already owns modem/GNSS management; integration required before setup.')
-    if args.adsb_serial:
-        for unit in ('dump1090-fa', 'dump1090-mutability', 'rtl_tcp', 'dump978-fa'):
-            if active(unit):
-                raise RuntimeError(f'{unit} is active; resolve receiver ownership before setup.')
     apt('python3-serial')
-    if args.detect and not (args.gnss_port or args.nmea_port or args.adsb_serial or args.gnss_time):
-        candidates = sim7600_candidates()
-        if candidates:
-            for unit in ('ModemManager.service', 'gpsd.service', 'gpsd.socket'):
-                if active(unit):
-                    raise RuntimeError(f'{unit} already owns modem/GNSS management; integration required before setup.')
-        found = detect_sensors()
-        if not found['adsb_serial'] and not found['gnss_port']:
-            print('No sensor hardware detected; leaving sensor services unprovisioned.')
-            return
-        if found['adsb_serial']:
-            if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', found['adsb_serial']):
-                raise RuntimeError('Detected receiver serial is not usable as an explicit serial.')
-            args.adsb_serial = found['adsb_serial']
-            print(f"Detected ADS-B receiver {found['adsb_serial']}")
-        if found['gnss_port']:
-            args.gnss_port = found['gnss_port']
-            args.gnss_time = True
-            print(f"Detected GNSS AT port {found['gnss_port']} (provisioning GNSS time)")
+    if not resolve_sensor_args(args, config):
+        return
     if args.gnss_port:
         # Stop only our own collector before verifying the explicitly selected port.
         if active('magi-sensors.service'):

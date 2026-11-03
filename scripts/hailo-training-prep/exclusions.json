@@ -1,0 +1,105 @@
+{
+  "note": "No dataset files are in this repo. This manifest records what was excluded and why, so a rerun can be compared.",
+  "alignment_exclusions": [
+    {
+      "source": "drone",
+      "source_id": "V_AIRPLANE_002",
+      "reason": "alignment_mismatch",
+      "detail": "V_AIRPLANE_002: label count 300 does not align to 301 frames (expected equal, or +1 with a leading empty entry); clip excluded, not shifted"
+    },
+    {
+      "source": "drone",
+      "source_id": "V_BIRD_003",
+      "reason": "alignment_mismatch",
+      "detail": "V_BIRD_003: label count 283 does not align to 303 frames (expected equal, or +1 with a leading empty entry); clip excluded, not shifted"
+    },
+    {
+      "source": "drone",
+      "source_id": "V_BIRD_004",
+      "reason": "alignment_mismatch",
+      "detail": "V_BIRD_004: label count 312 does not align to 315 frames (expected equal, or +1 with a leading empty entry); clip excluded, not shifted"
+    },
+    {
+      "source": "drone",
+      "source_id": "V_BIRD_005",
+      "reason": "alignment_mismatch",
+      "detail": "V_BIRD_005: label count 1 does not align to 302 frames (expected equal, or +1 with a leading empty entry); clip excluded, not shifted"
+    },
+    {
+      "source": "drone",
+      "source_id": "V_BIRD_006",
+      "reason": "alignment_mismatch",
+      "detail": "V_BIRD_006: label count 257 does not align to 312 frames (expected equal, or +1 with a leading empty entry); clip excluded, not shifted"
+    },
+    {
+      "source": "drone",
+      "source_id": "V_BIRD_009",
+      "reason": "alignment_mismatch",
+      "detail": "V_BIRD_009: label count 37 does not align to 325 frames (expected equal, or +1 with a leading empty entry); clip excluded, not shifted"
+    },
+    {
+      "source": "drone",
+      "source_id": "V_BIRD_015",
+      "reason": "alignment_mismatch",
+      "detail": "V_BIRD_015: label count 307 does not align to 329 frames (expected equal, or +1 with a leading empty entry); clip excluded, not shifted"
+    },
+    {
+      "source": "drone",
+      "source_id": "V_BIRD_017",
+      "reason": "alignment_mismatch",
+      "detail": "V_BIRD_017: label count 173 does not align to 306 frames (expected equal, or +1 with a leading empty entry); clip excluded, not shifted"
+    },
+    {
+      "source": "drone",
+      "source_id": "V_BIRD_020",
+      "reason": "alignment_mismatch",
+      "detail": "V_BIRD_020: label count 233 does not align to 327 frames (expected equal, or +1 with a leading empty entry); clip excluded, not shifted"
+    },
+    {
+      "source": "drone",
+      "source_id": "V_BIRD_021",
+      "reason": "alignment_mismatch",
+      "detail": "V_BIRD_021: label count 312 does not align to 323 frames (expected equal, or +1 with a leading empty entry); clip excluded, not shifted"
+    },
+    {
+      "source": "drone",
+      "source_id": "V_BIRD_022",
+      "reason": "alignment_mismatch",
+      "detail": "V_BIRD_022: label count 289 does not align to 323 frames (expected equal, or +1 with a leading empty entry); clip excluded, not shifted"
+    },
+    {
+      "source": "drone",
+      "source_id": "V_BIRD_023",
+      "reason": "alignment_mismatch",
+      "detail": "V_BIRD_023: label count 196 does not align to 327 frames (expected equal, or +1 with a leading empty entry); clip excluded, not shifted"
+    },
+    {
+      "source": "drone",
+      "source_id": "V_HELICOPTER_058",
+      "reason": "alignment_mismatch",
+      "detail": "V_HELICOPTER_058: label count 311 does not align to 312 frames (expected equal, or +1 with a leading empty entry); clip excluded, not shifted"
+    }
+  ],
+  "counts": {
+    "drone_visible_downloaded": 122,
+    "drone_visible_passing_alignment": 109,
+    "drone_visible_alignment_excluded": 13,
+    "drone_visible_frames_passing": 34218,
+    "drone_visible_crops": 523,
+    "youtube_excluded": 49,
+    "drone_class_excluded_v1": 114,
+    "ir_excluded": 365,
+    "audio_excluded": 90,
+    "nightskyucp_videos": 20000,
+    "nightskyucp_subclass_rows": 116,
+    "nightskyucp_csv_test_rows": 573,
+    "nightskyucp_unused": [
+      "sequence_stacks.pkl (3.46 GB, untrusted pickle, not loaded)",
+      "2 raw .rar archives"
+    ]
+  },
+  "youtube_excluded_detail": "49 visible clips are YouTube-sourced (SK678387): 11 airplane (numbers 38-48) and 38 helicopter (numbers 19-56); bird and drone visible have 0 YouTube. Clip IDs are in download_drone_visible.py's exclusion output when run with the description sheet.",
+  "bird_alignment_note": "11 bird clips were excluded for alignment: their .mat files have different depth-5 cell sizes that mcos-decoder cannot decode reliably (e.g. V_BIRD_005 decodes to 1 label, 0 present, vs 302 frames). They were excluded, not approximated.",
+  "nightskyucp_license_note": "Figshare page/API says CC BY 4.0, but cr_dataset/license.txt inside the zip is CC BY-NC-SA 4.0. Conservative treatment: noncommercial only, ShareAlike for adapted material. Do NOT ship a model trained on NightSkyUCP in a public/commercial Magi model without author clarification. NightSkyUCP is therefore excluded from the planned distributed-model training pipeline until terms are clarified.",
+  "magi_note": "Magi benchmark annotations are NOT in this PR. Real Magi footage and event exports stay out of the public repository. The Magi test split is reserved empty and is never filled with external data."
+}

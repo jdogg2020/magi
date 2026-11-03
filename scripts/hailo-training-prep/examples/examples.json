@@ -1,0 +1,191 @@
+[
+  {
+    "class": "AIRPLANE",
+    "distance_bin": "CLOSE",
+    "clip": "V_AIRPLANE_003",
+    "frame": 163,
+    "fps": 30.0,
+    "bbox_px": [
+      211.0,
+      249.5,
+      74.5,
+      37.5
+    ],
+    "crop_pixel_size": 447,
+    "overlay": "V_AIRPLANE_003_CLOSE_overlay.png",
+    "crop": "V_AIRPLANE_003_CLOSE_crop.png",
+    "frame_size_px": [
+      640,
+      512
+    ],
+    "alignment": "labels_aligned_1_to_1"
+  },
+  {
+    "class": "AIRPLANE",
+    "distance_bin": "DISTANT",
+    "clip": "V_AIRPLANE_005",
+    "frame": 164,
+    "fps": 30.0,
+    "bbox_px": [
+      226.6,
+      343.7,
+      39.7,
+      35.1
+    ],
+    "crop_pixel_size": 238,
+    "overlay": "V_AIRPLANE_005_DISTANT_overlay.png",
+    "crop": "V_AIRPLANE_005_DISTANT_crop.png",
+    "frame_size_px": [
+      640,
+      512
+    ],
+    "alignment": "labels_aligned_1_to_1"
+  },
+  {
+    "class": "AIRPLANE",
+    "distance_bin": "MEDIUM",
+    "clip": "V_AIRPLANE_001",
+    "frame": 163,
+    "fps": 30.0,
+    "bbox_px": [
+      310.7,
+      194.2,
+      36.0,
+      24.2
+    ],
+    "crop_pixel_size": 216,
+    "overlay": "V_AIRPLANE_001_MEDIUM_overlay.png",
+    "crop": "V_AIRPLANE_001_MEDIUM_crop.png",
+    "frame_size_px": [
+      640,
+      512
+    ],
+    "alignment": "labels_aligned_1_to_1"
+  },
+  {
+    "class": "BIRD",
+    "distance_bin": "CLOSE",
+    "clip": "V_BIRD_011",
+    "frame": 317,
+    "fps": 30.0,
+    "bbox_px": [
+      44.0,
+      148.0,
+      41.0,
+      43.0
+    ],
+    "crop_pixel_size": 258,
+    "overlay": "V_BIRD_011_CLOSE_overlay.png",
+    "crop": "V_BIRD_011_CLOSE_crop.png",
+    "frame_size_px": [
+      640,
+      512
+    ],
+    "alignment": "labels_aligned_1_to_1_after_leading_empty_drop"
+  },
+  {
+    "class": "BIRD",
+    "distance_bin": "DISTANT",
+    "clip": "V_BIRD_001",
+    "frame": 152,
+    "fps": 30.0,
+    "bbox_px": [
+      350.2,
+      311.4,
+      29.1,
+      25.8
+    ],
+    "crop_pixel_size": 175,
+    "overlay": "V_BIRD_001_DISTANT_overlay.png",
+    "crop": "V_BIRD_001_DISTANT_crop.png",
+    "frame_size_px": [
+      640,
+      512
+    ],
+    "alignment": "labels_aligned_1_to_1_after_leading_empty_drop"
+  },
+  {
+    "class": "BIRD",
+    "distance_bin": "MEDIUM",
+    "clip": "V_BIRD_002",
+    "frame": 154,
+    "fps": 30.0,
+    "bbox_px": [
+      449.0,
+      322.0,
+      33.0,
+      35.0
+    ],
+    "crop_pixel_size": 210,
+    "overlay": "V_BIRD_002_MEDIUM_overlay.png",
+    "crop": "V_BIRD_002_MEDIUM_crop.png",
+    "frame_size_px": [
+      640,
+      512
+    ],
+    "alignment": "labels_aligned_1_to_1_after_leading_empty_drop"
+  },
+  {
+    "class": "HELICOPTER",
+    "distance_bin": "CLOSE",
+    "clip": "V_HELICOPTER_001",
+    "frame": 150,
+    "fps": 30.0,
+    "bbox_px": [
+      263.0,
+      106.2,
+      169.5,
+      132.4
+    ],
+    "crop_pixel_size": 512,
+    "overlay": "V_HELICOPTER_001_CLOSE_overlay.png",
+    "crop": "V_HELICOPTER_001_CLOSE_crop.png",
+    "frame_size_px": [
+      640,
+      512
+    ],
+    "alignment": "labels_aligned_1_to_1"
+  },
+  {
+    "class": "HELICOPTER",
+    "distance_bin": "DISTANT",
+    "clip": "V_HELICOPTER_009",
+    "frame": 150,
+    "fps": 30.0,
+    "bbox_px": [
+      272.6,
+      232.5,
+      20.6,
+      24.8
+    ],
+    "crop_pixel_size": 149,
+    "overlay": "V_HELICOPTER_009_DISTANT_overlay.png",
+    "crop": "V_HELICOPTER_009_DISTANT_crop.png",
+    "frame_size_px": [
+      640,
+      512
+    ],
+    "alignment": "labels_aligned_1_to_1"
+  },
+  {
+    "class": "HELICOPTER",
+    "distance_bin": "MEDIUM",
+    "clip": "V_HELICOPTER_003",
+    "frame": 150,
+    "fps": 30.0,
+    "bbox_px": [
+      354.4,
+      205.8,
+      40.7,
+      33.3
+    ],
+    "crop_pixel_size": 244,
+    "overlay": "V_HELICOPTER_003_MEDIUM_overlay.png",
+    "crop": "V_HELICOPTER_003_MEDIUM_crop.png",
+    "frame_size_px": [
+      640,
+      512
+    ],
+    "alignment": "labels_aligned_1_to_1"
+  }
+]

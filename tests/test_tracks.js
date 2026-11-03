@@ -29,3 +29,15 @@ const corners=tracks.collect([
  {video_seconds:.25,objects:[obj(639,359)]}],meta)[0].points;
 assert.deepEqual(corners,[[0,.5/640,.5/360],[.25,639.5/640,359.5/360]]);
 assert.equal(corners[0][1]*3840,3,'4K overlay must land at the scaled pixel center');
+
+// Main-stream detections retain replay tracking but cannot use substream timing.
+const fs=require('fs'), vm=require('vm');
+const appSource=fs.readFileSync(require('path').join(__dirname,'../src/magi/web/app.js'),'utf8');
+const context={quality:'substream',reviewMeta:{stream:'mainstream'},reviewTracks:[{id:'analysis'}],reviewColorTracks:[{id:'color'}]};
+context.$=()=>({value:context.quality});
+vm.createContext(context);
+vm.runInContext(appSource.slice(appSource.indexOf('function currentTracks()'),appSource.indexOf('function pathStroke(')),context);
+assert.equal(context.currentTracks().length,0);
+context.quality='analysis';assert.equal(context.currentTracks()[0].id,'analysis');
+context.quality='full';assert.equal(context.currentTracks().length,0);
+context.quality='substream';context.reviewMeta={};assert.equal(context.currentTracks()[0].id,'color','Legacy substream events retain tracking');

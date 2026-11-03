@@ -56,6 +56,83 @@ class StreamDiagnosticsTests(unittest.TestCase):
         self.assertNotIn('-r', args)
         self.assertIn(self.cfg.analysis_source, args)
 
+    def test_mainstream_uses_native_4k_fractional_fps_and_keeps_companion_source(self):
+        cfg = replace(self.cfg, source='rtsp://main', analysis_source='rtsp://sub',
+                      detection={**self.cfg.detection, 'stream': 'mainstream'})
+        analysis = Analysis(cfg)
+        result = SimpleNamespace(stdout=json.dumps({'streams': [
+            {'width': 3840, 'height': 2160, 'r_frame_rate': '30000/1001'}]}).encode())
+        with patch('magi.detection.subprocess.run', return_value=result) as probe, \
+             patch('magi.detection.subprocess.Popen', return_value=Mock()) as decoder, \
+             patch.object(analysis, '_read_frames'):
+            analysis.start()
+        self.assertTrue(analysis.geometry_confirmed, analysis.probe_error)
+        self.assertEqual(probe.call_args.args[0][-1], cfg.source)
+        args = decoder.call_args.args[0]
+        self.assertEqual(args[args.index('-i') + 1], cfg.source)
+        self.assertNotIn('-vf', args)
+        self.assertNotIn('-r', args)
+        self.assertEqual(analysis.settings['width'], 3840)
+        self.assertEqual(analysis.settings['height'], 2160)
+        self.assertAlmostEqual(analysis.settings['fps'], 30000/1001)
+        from magi.recorder import Recorder
+        with tempfile.TemporaryDirectory() as directory:
+            companion = Recorder(replace(cfg, root=Path(directory)), companion_volume=Mock())
+            self.assertEqual(companion.cfg.source, 'rtsp://sub')
+
+    def test_mainstream_motion_header_records_source(self):
+        import gzip
+        import numpy as np
+        from magi.previews import Previews
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = replace(self.cfg, root=Path(directory),
+                          detection={**self.cfg.detection, 'stream': 'mainstream'})
+            (cfg.root / 'events' / 'sample').mkdir(parents=True)
+            previews = Previews(cfg)
+            previews.frame(10, np.zeros((2160, 3840), dtype=np.uint8), [])
+            previews.begin('sample', 10)
+            previews.finish()
+            with gzip.open(cfg.root / 'events/sample/motion.jsonl.gz', 'rt') as handle:
+                header = json.loads(handle.readline())
+            self.assertEqual(header['stream'], 'mainstream')
+            self.assertEqual((header['width'], header['height']), (3840, 2160))
+
+    def test_stream_selection_validation(self):
+        raw = {'camera': {}, 'storage': {'mount': '/tmp',
+            'directory': '/tmp/magi-test', 'require_mount': False},
+            'control_socket': '/tmp/magi-socket'}
+        self.assertEqual(Config.from_dict(raw).detection['stream'], 'substream')
+        for value in ('mainstream', 'substream'):
+            self.assertEqual(Config.from_dict({**raw, 'detection': {'stream': value}}).detection['stream'], value)
+        with self.assertRaises(ValueError):
+            Config.from_dict({**raw, 'detection': {'stream': 'invalid'}})
+
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg tools required')
+    def test_real_4k_mainstream_frames_reach_tracker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'native.mp4'
+            subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i',
+                            'color=black:size=3840x2160:rate=25', '-t', '0.2',
+                            '-c:v', 'libx264', '-threads', '1', '-preset', 'ultrafast',
+                            str(source)], check=True, capture_output=True, timeout=30)
+            cfg = replace(self.cfg, file_source=True, source=str(source),
+                          analysis_source='/not-the-selected-stream',
+                          detection={**self.cfg.detection, 'stream': 'mainstream'})
+            analysis = Analysis(cfg)
+            try:
+                analysis.start()
+                self.assertTrue(analysis.geometry_confirmed, analysis.probe_error)
+                deadline = time.monotonic() + 10
+                frames = []
+                while time.monotonic() < deadline and not frames:
+                    time.sleep(.05)
+                    frames = analysis.poll()
+                self.assertTrue(frames, 'No decoded main-stream frames')
+                self.assertEqual(frames[0][1].shape, (2160, 3840))
+                self.assertEqual(analysis.settings['fps'], 25)
+            finally:
+                analysis.close()
+
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg tools required')
     def test_real_paced_live_stream_finishes_probe_before_watchdog(self):
         # A live input has no EOF to shortcut FFprobe's default analysis window.

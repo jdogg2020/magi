@@ -1,4 +1,4 @@
-"""Browser review copies from already-decoded substream frames, never from 4K."""
+"""Sampled browser review copies from already-decoded detection frames."""
 from collections import deque
 import io
 import base64
@@ -78,6 +78,7 @@ class Previews:
         motion = gzip.open(directory / 'motion.jsonl.gz', 'wt', encoding='utf-8', compresslevel=3)
         motion.write(json.dumps({'kind': 'magi_motion_v1', 'width': self.size[0],
                                'height': self.size[1], 'fps': self.fps,
+                               'stream': self.cfg.detection.get('stream', 'substream'),
                                'encoding': 'base64_packbits_big_row_major',
                                'threshold': self.cfg.detection['threshold'],
                                'ignore_zones': self.cfg.detection.get('ignore_zones', []),

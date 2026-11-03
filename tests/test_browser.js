@@ -357,11 +357,13 @@ const base = process.argv[2];
     assert.equal(await page.evaluate(()=>polygonDraft.length),0);
     assert.equal(await page.evaluate(()=>ignoreZones[1].points.length),4);
     const expected=await page.evaluate(()=>JSON.stringify(ignoreZones));
+    await page.locator('#detection-stream').selectOption('mainstream');
     await page.locator('#host').fill('synthetic.invalid');
     // Synthetic station storage is below the production form's minimum size.
     await page.evaluate(()=>document.querySelector('#settings-form').onsubmit({preventDefault(){},submitter:document.querySelector('#settings-form button[type=submit]')}));
     await page.locator('#overview').waitFor({state:'visible'});
     const saved=await page.evaluate(()=>api('/api/settings'));
+    assert.equal(saved.detection.stream,'mainstream','Detection stream survives settings save');
     assert.equal(JSON.stringify(saved.detection.ignore_zones),expected,'Polygon and feather survive settings save');
     assert.deepEqual(errors,[]);
     console.log('Chromium passed: simultaneous images, station event list, explicit camera playback, settings links, manual save, mobile layout.');

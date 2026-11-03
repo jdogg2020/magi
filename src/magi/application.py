@@ -125,7 +125,7 @@ class Application:
             'camera': {'host', 'port', 'username', 'password', 'mainstream_path', 'substream_path', 'api_scheme', 'api_port'},
             'recording': {'pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds'},
             'storage': {'max_bytes', 'min_free_bytes', 'retention_days', 'cleanup_margin_bytes', 'trash_days'},
-            'detection': {'enabled', 'threshold', 'min_pixels', 'max_pixels', 'min_hits', 'min_seconds', 'min_travel', 'ignore_zones','lightning_enabled','meteor_enabled','retain_types','retain_aircraft_matches','retain_satellite_matches'},
+            'detection': {'stream', 'enabled', 'threshold', 'min_pixels', 'max_pixels', 'min_hits', 'min_seconds', 'min_travel', 'ignore_zones','lightning_enabled','meteor_enabled','retain_types','retain_aircraft_matches','retain_satellite_matches'},
             'identification': set(identification_defaults())
         }
         try:
@@ -907,7 +907,7 @@ class Application:
         status.update({'camera_setup': self.camera_setup.read(), 'camera_info': self.camera_info.read(), 'error': self.last_error, 'trigger_note': self.last_trigger_error,
                        'uptime_seconds': round(time.monotonic() - self.started, 1),
                        'health': self.health, 'star_calibration': self.calibration_report, 'event_count_since_start': self.event_count,
-                       'analysis': {'state': self.analysis.state if self.analysis else 'idle',
+                       'analysis': {'stream': self.cfg.detection.get('stream', 'substream'), 'state': self.analysis.state if self.analysis else 'idle',
                                     'frames': self.analysis.frames if self.analysis else 0,
                                     'dropped_frames': self.analysis.dropped if self.analysis else 0,
                                     'suppressed_frames': self.analysis.tracker.suppressed_frames if self.analysis else 0,

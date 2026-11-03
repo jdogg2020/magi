@@ -24,6 +24,7 @@ const settle=async()=>{for(let i=0;i<20;i++)await new Promise(resolve=>setImmedi
  vm.runInContext('MagiEvents.init()',ctx);
  el('event-reviewed').value='no';el('event-sort').value='oldest';el('event-folder').value='active';
  await el('event-filters').onsubmit({preventDefault(){}});
+ assert.equal(el('event-badge').textContent,231,'Badge counts the full matching archive, not the 200-item snapshot');
  ctx.openReview(records[125]);await settle();
  el('review-event-next').onclick();await settle();assert.equal(ctx.reviewEvent.camera_id,'b');
  el('review-event-next').onclick();await settle();assert.equal(ctx.reviewEvent.id,'0126');

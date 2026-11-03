@@ -308,7 +308,7 @@ function renderEvents(events) {
     if (updated) { reviewEvent = MagiEvents.withLocalReview(updated); updateReviewAvailability(reviewEvent); if (reviewMode === 'image') showReviewImage(reviewImageKind); }
   }
   const signature = JSON.stringify(events); if (signature === clipSignature) return; clipSignature = signature;
-  $('event-badge').textContent = events.length;
+  // The paginated archive query owns the count; this snapshot is capped at 200.
 
 }
 let setupSignature=null, setupToken=null, lastSetupState='', setupError='';

@@ -229,15 +229,20 @@ def check_receiver_ownership(gnss_port, nmea_port, adsb_serial, active_fn=None):
 
 def resolve_sensor_args(args, config, detect_fn=None, active_fn=None,
                         candidates_fn=None, sleep_fn=None,
+                        monotonic_fn=None,
                         gnss_wait_seconds=300, gnss_poll_seconds=15):
     """Resolve explicit-or-detected hardware and run ownership guards.
 
     Returns True when provisioning should proceed, False when --detect
-    found no hardware at all. Detected-but-unusable GNSS waits up to
-    gnss_wait_seconds for the modem to answer (a modem still coming up
-    after power-on answers its AT probe late, not never), then warns and
-    provisions whatever else was found instead of aborting the run.
-    Raises on competing-service ownership. Mutates args with detected values.
+    found no hardware at all. Detected-but-unusable GNSS waits until
+    recovery or a monotonic deadline gnss_wait_seconds after the wait
+    starts, so slow probes count against the budget instead of extending
+    it; retries continue even if the modem briefly disappears from USB,
+    and modem-manager ownership is rechecked before every retry probe.
+    If the deadline passes without recovery, setup warns about incomplete
+    GNSS provisioning and provisions whatever else was found instead of
+    aborting the run. Raises on competing-service ownership. Mutates args
+    with detected values.
     """
     if detect_fn is None:
         detect_fn = detect_sensors
@@ -256,21 +261,30 @@ def resolve_sensor_args(args, config, detect_fn=None, active_fn=None,
                     raise RuntimeError(f'{unit} already owns modem/GNSS management; integration required before setup.')
         owned = {config.get('at_port')} if config.get('at_port') else set()
         found = detect_fn(owned_ports=owned)
+        gnss_incomplete = False
         if found['gnss_status'] == 'unusable':
             if sleep_fn is None:
                 sleep_fn = time.sleep
+            if monotonic_fn is None:
+                monotonic_fn = time.monotonic
+            deadline = monotonic_fn() + gnss_wait_seconds
             print(f'GNSS hardware detected but not answering yet; waiting up to {gnss_wait_seconds}s for it to become ready...')
-            waited = 0
-            while found['gnss_status'] == 'unusable' and waited < gnss_wait_seconds:
-                sleep_fn(gnss_poll_seconds)
-                waited += gnss_poll_seconds
+            while found['gnss_status'] != 'found':
+                remaining = deadline - monotonic_fn()
+                if remaining <= 0:
+                    break
+                sleep_fn(min(gnss_poll_seconds, remaining))
+                for unit in ('ModemManager.service', 'gpsd.service', 'gpsd.socket'):
+                    if active_fn(unit):
+                        raise RuntimeError(f'{unit} already owns modem/GNSS management; integration required before setup.')
                 found = detect_fn(owned_ports=owned)
-        if found['gnss_status'] == 'unusable':
-            print('WARNING: GNSS hardware detected but still unusable: ' +
-                  '; '.join(found['gnss_unusable']) +
-                  '. Provisioning without GNSS time; rerun setup once the modem is ready.')
+            gnss_incomplete = found['gnss_status'] != 'found'
+        if gnss_incomplete:
+            reasons = '; '.join(found['gnss_unusable']) or 'modem no longer visible'
+            print('WARNING: GNSS provisioning incomplete: hardware was detected but could not be verified within ' +
+                  f'{gnss_wait_seconds}s ({reasons}). Provisioning without GNSS time; rerun setup once the modem is ready.')
         if not found['adsb_serial'] and not found['gnss_port']:
-            if found['gnss_status'] == 'unusable':
+            if gnss_incomplete:
                 print('No usable sensor hardware to provision; leaving sensor services unprovisioned.')
             else:
                 print('No sensor hardware detected; leaving sensor services unprovisioned.')

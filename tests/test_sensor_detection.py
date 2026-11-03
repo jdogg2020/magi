@@ -1,6 +1,8 @@
 """Sensor hardware detection and provisioning resolution, without hardware."""
 import argparse
+import contextlib
 import importlib.util
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -56,6 +58,21 @@ def sensor_args(**overrides):
     for key, value in overrides.items():
         setattr(args, key, value)
     return args
+
+
+class FakeClock:
+    """Monotonic clock advanced only by fake sleeps, for deadline tests."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
 
 
 class DetectionTests(unittest.TestCase):
@@ -211,15 +228,16 @@ class ResolveTests(unittest.TestCase):
 
     def test_unusable_gnss_waits_then_warns_and_provisions_rest(self):
         args = sensor_args(detect=True)
-        calls = []
+        clock = FakeClock()
         detect = lambda owned_ports=(): {'adsb_serial': 'NOOELEC1', 'gnss_port': None,
                                          'gnss_status': 'unusable',
                                          'gnss_unusable': ['portA (busy)']}
         self.assertTrue(SETUP.resolve_sensor_args(
             args, {}, detect_fn=detect, active_fn=lambda unit: False,
-            candidates_fn=lambda: ['portA'], sleep_fn=calls.append,
+            candidates_fn=lambda: ['portA'], sleep_fn=clock.sleep,
+            monotonic_fn=clock.monotonic,
             gnss_wait_seconds=30, gnss_poll_seconds=15))
-        self.assertEqual(calls, [15, 15])
+        self.assertEqual(clock.sleeps, [15, 15])
         self.assertEqual(args.adsb_serial, 'NOOELEC1')
         self.assertIsNone(args.gnss_port)
         self.assertFalse(args.gnss_time)
@@ -227,7 +245,7 @@ class ResolveTests(unittest.TestCase):
     def test_unusable_gnss_recovers_when_modem_answers(self):
         args = sensor_args(detect=True)
         owned_port = '/dev/serial/by-id/usb-SIMCOM_SIM7600G-H_OK-if02-port0'
-        calls = []
+        clock = FakeClock()
         seen = []
 
         def detect(owned_ports=()):
@@ -241,22 +259,134 @@ class ResolveTests(unittest.TestCase):
 
         self.assertTrue(SETUP.resolve_sensor_args(
             args, {}, detect_fn=detect, active_fn=lambda unit: False,
-            candidates_fn=lambda: ['portA'], sleep_fn=calls.append,
+            candidates_fn=lambda: ['portA'], sleep_fn=clock.sleep,
+            monotonic_fn=clock.monotonic,
             gnss_wait_seconds=30, gnss_poll_seconds=15))
-        self.assertEqual(calls, [15])
+        self.assertEqual(clock.sleeps, [15])
         self.assertEqual(args.gnss_port, owned_port)
         self.assertTrue(args.gnss_time)
 
     def test_unusable_gnss_alone_returns_false_without_raise(self):
         args = sensor_args(detect=True)
+        clock = FakeClock()
         detect = lambda owned_ports=(): {'adsb_serial': None, 'gnss_port': None,
                                          'gnss_status': 'unusable',
                                          'gnss_unusable': ['portA (busy)']}
         self.assertFalse(SETUP.resolve_sensor_args(
             args, {}, detect_fn=detect, active_fn=lambda unit: False,
-            candidates_fn=lambda: ['portA'], sleep_fn=lambda seconds: None,
+            candidates_fn=lambda: ['portA'], sleep_fn=clock.sleep,
+            monotonic_fn=clock.monotonic,
             gnss_wait_seconds=30, gnss_poll_seconds=15))
         self.assertIsNone(args.gnss_port)
+
+    def test_slow_probes_count_against_deadline(self):
+        args = sensor_args(detect=True)
+        clock = FakeClock()
+        probes = []
+
+        def detect(owned_ports=()):
+            clock.now += 40  # each probe pass takes 40s
+            probes.append(1)
+            return {'adsb_serial': 'NOOELEC1', 'gnss_port': None,
+                    'gnss_status': 'unusable', 'gnss_unusable': ['portA (busy)']}
+
+        self.assertTrue(SETUP.resolve_sensor_args(
+            args, {}, detect_fn=detect, active_fn=lambda unit: False,
+            candidates_fn=lambda: ['portA'], sleep_fn=clock.sleep,
+            monotonic_fn=clock.monotonic,
+            gnss_wait_seconds=60, gnss_poll_seconds=15))
+        # Deadline is 60s after the wait starts (t=40): sleep 15, probe,
+        # sleep truncated to 5, probe, then the deadline has passed.
+        self.assertEqual(clock.sleeps, [15, 5])
+        self.assertEqual(len(probes), 3)
+        self.assertEqual(args.adsb_serial, 'NOOELEC1')
+        self.assertIsNone(args.gnss_port)
+
+    def test_sleep_truncates_to_remaining_time(self):
+        args = sensor_args(detect=True)
+        clock = FakeClock()
+        detect = lambda owned_ports=(): {'adsb_serial': 'NOOELEC1', 'gnss_port': None,
+                                         'gnss_status': 'unusable',
+                                         'gnss_unusable': ['portA (busy)']}
+        self.assertTrue(SETUP.resolve_sensor_args(
+            args, {}, detect_fn=detect, active_fn=lambda unit: False,
+            candidates_fn=lambda: ['portA'], sleep_fn=clock.sleep,
+            monotonic_fn=clock.monotonic,
+            gnss_wait_seconds=20, gnss_poll_seconds=15))
+        self.assertEqual(clock.sleeps, [15, 5])
+
+    def test_temporary_disappearance_still_recovers(self):
+        args = sensor_args(detect=True)
+        owned_port = '/dev/serial/by-id/usb-SIMCOM_SIM7600G-H_OK-if02-port0'
+        clock = FakeClock()
+        results = [{'adsb_serial': None, 'gnss_port': None,
+                    'gnss_status': 'unusable', 'gnss_unusable': ['portA (probe failed)']},
+                   {'adsb_serial': None, 'gnss_port': None,
+                    'gnss_status': 'absent', 'gnss_unusable': []},
+                   {'adsb_serial': None, 'gnss_port': owned_port,
+                    'gnss_status': 'found', 'gnss_unusable': []}]
+
+        def detect(owned_ports=()):
+            return results.pop(0) if len(results) > 1 else results[-1]
+
+        self.assertTrue(SETUP.resolve_sensor_args(
+            args, {}, detect_fn=detect, active_fn=lambda unit: False,
+            candidates_fn=lambda: ['portA'], sleep_fn=clock.sleep,
+            monotonic_fn=clock.monotonic,
+            gnss_wait_seconds=30, gnss_poll_seconds=15))
+        self.assertEqual(args.gnss_port, owned_port)
+        self.assertTrue(args.gnss_time)
+
+    def test_disappearance_to_deadline_warns_about_incomplete_gnss(self):
+        args = sensor_args(detect=True)
+        clock = FakeClock()
+        seen = []
+
+        def detect(owned_ports=()):
+            seen.append(1)
+            if len(seen) == 1:
+                return {'adsb_serial': 'NOOELEC1', 'gnss_port': None,
+                        'gnss_status': 'unusable', 'gnss_unusable': ['portA (busy)']}
+            return {'adsb_serial': 'NOOELEC1', 'gnss_port': None,
+                    'gnss_status': 'absent', 'gnss_unusable': []}
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            result = SETUP.resolve_sensor_args(
+                args, {}, detect_fn=detect, active_fn=lambda unit: False,
+                candidates_fn=lambda: ['portA'], sleep_fn=clock.sleep,
+                monotonic_fn=clock.monotonic,
+                gnss_wait_seconds=30, gnss_poll_seconds=15)
+        self.assertTrue(result)
+        self.assertEqual(args.adsb_serial, 'NOOELEC1')
+        self.assertIsNone(args.gnss_port)
+        self.assertIn('GNSS provisioning incomplete', out.getvalue())
+        self.assertIn('no longer visible', out.getvalue())
+        self.assertEqual(len(seen), 3)  # retries continued past disappearance
+
+    def test_ownership_starting_during_wait_raises_before_retry_probe(self):
+        args = sensor_args(detect=True)
+        probes = []
+        guard_calls = []
+
+        def active(unit):
+            guard_calls.append(unit)
+            # Initial guard (3 units) passes; a manager starts during the wait.
+            return len(guard_calls) > 3
+
+        def detect(owned_ports=()):
+            probes.append(1)
+            return {'adsb_serial': 'NOOELEC1', 'gnss_port': None,
+                    'gnss_status': 'unusable', 'gnss_unusable': ['portA (busy)']}
+
+        with self.assertRaises(RuntimeError) as caught:
+            SETUP.resolve_sensor_args(
+                args, {}, detect_fn=detect, active_fn=active,
+                candidates_fn=lambda: ['portA'], sleep_fn=lambda seconds: None,
+                monotonic_fn=lambda: 0.0, gnss_wait_seconds=30,
+                gnss_poll_seconds=15)
+        self.assertIn('ModemManager', str(caught.exception))
+        self.assertEqual(len(probes), 1)
 
     def test_no_hardware_returns_false(self):
         args = sensor_args(detect=True)

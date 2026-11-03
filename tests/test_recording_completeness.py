@@ -127,10 +127,14 @@ class ApplicationContinuityTests(unittest.TestCase):
         # Five simultaneously qualifying identities, stable order (largest
         # first, as the tracker sorts objects by pixel count). The trigger
         # loop handles only the first four per poll frame.
-        self.app.trigger('motion', {'track_id': 'target'})
+        event_id = self.app.trigger('motion', {'track_id': 'target'})['event_id']
+        # Exercise repeated batches inside one clip. Ten 0.6-second steps
+        # landed on the six-second split boundary, with rounding deciding
+        # which tick opened a different event. Split coverage is separate.
+        step = 0.25
         big = ['big-1', 'big-2', 'big-3', 'big-4']
         for _ in range(10):
-            self.clock += 0.6
+            self.clock += step
             self.app.analysis.poll.return_value = [(self.clock, None,
                 [{'x': 20, 'y': 30, 'pixels': 2, 'track_id': 'target'}],
                 [{'track_id': tid} for tid in big] + [{'track_id': 'fifth'}], {})]
@@ -143,10 +147,12 @@ class ApplicationContinuityTests(unittest.TestCase):
         # The fifth identity's motion alone never extended the event: it is
         # not followed, so its observations cannot move the deadline.
         deadline = self.app.recorder.active['deadline']
-        self.clock += 0.6
+        self.clock += step
         self.app.analysis.poll.return_value = [(self.clock, None,
             [{'x': 20, 'y': 30, 'pixels': 2, 'track_id': 'fifth'}], [], {})]
         self.app.tick()
+        self.assertEqual(self.app.recorder.active['meta']['id'], event_id)
+        self.assertLess(self.clock, self.app.recorder.active['limit'])
         self.assertEqual(self.app.recorder.active['deadline'], deadline)
 
     def test_identity_change_under_four_larger_objects_ends_event_despite_motion(self):

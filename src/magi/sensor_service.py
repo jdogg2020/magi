@@ -117,19 +117,41 @@ class NmeaReader:
 
 
 def query(port, command, timeout=3):
+    deadline = time.monotonic() + timeout
     port.reset_input_buffer()
     port.write((command + '\r').encode('ascii'))
-    port.flush()
-    deadline = time.monotonic() + timeout
     result = []
+    line = bytearray()
+
+    def emit(raw):
+        text = raw.decode('ascii', errors='replace').strip()
+        if text:
+            result.append(text)
+        if text == 'OK':
+            return True
+        if text == 'ERROR' or text.startswith('+CME ERROR') or len(result) > 32:
+            raise ValueError('modem_command_failed')
+        return False
+
+    # Bounded chunk reads with a deadline recheck per chunk: a slowly
+    # arriving, unterminated response cannot keep a single read running
+    # past the budget, and no flush runs before (or outside) the deadline.
     while time.monotonic() < deadline:
-        line = port.readline(512).decode('ascii', errors='replace').strip()
-        if line:
-            result.append(line)
-        if line == 'OK':
-            return result
-        if line == 'ERROR' or line.startswith('+CME ERROR') or len(result) > 32:
-            break
+        chunk = port.read(64)
+        if not chunk:
+            continue
+        line += chunk
+        while True:
+            newline = line.find(b'\n')
+            if newline < 0:
+                break
+            raw, line = line[:newline], line[newline + 1:]
+            if emit(raw):
+                return result
+        if len(line) > 512:
+            raw, line = line[:512], line[512:]
+            if emit(raw):
+                return result
     raise ValueError('modem_command_failed')
 
 

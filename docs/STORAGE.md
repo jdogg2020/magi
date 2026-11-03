@@ -104,3 +104,18 @@ The final counts or interruption message remain visible after usage refreshes.
 Pending review saves must finish before purging. Keep the tab open until the purge
 finishes; it remains a browser-driven sequence of confirmed batches. A lost
 response can leave the final batch outcome uncertain, so refresh before retrying.
+
+## Capture housekeeping
+
+Main and preview recorders share a camera volume and coalesce periodic cleanup
+checks for one second after a successful pass. Mount identity and current disk
+free space are still checked; low free space, changed limits, explicit cleanup,
+and assembly reservation checks bypass this reuse. Failed cleanup checks are
+not cached. Usage scans deduplicate hardlinks and reject symlinks.
+
+Status can reuse a usage measurement for up to five seconds while reporting
+current free space. The overview's recent-event list refreshes every five
+seconds; explicit settings/review refreshes remain immediate. Detection counters
+and health retain their existing status cadence. These changes reduce archive
+scans in camera workers; real-Pi CPU and frame-drop rates must be measured after
+updating.

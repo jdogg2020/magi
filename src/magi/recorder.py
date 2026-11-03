@@ -453,7 +453,7 @@ class Recorder:
         if now >= self.next_storage_check:
             self.next_storage_check = now + 1
             self._trim_ring()
-            if not self.volume.prune(self._protected()):
+            if not self.volume.prune(self._protected(), maintenance=True):
                 if self.process:
                     self._disconnect("storage_limit")
                 # Closed ring entries can be discarded; event hardlinks remain.
@@ -477,7 +477,7 @@ class Recorder:
         self._assemble()
 
     def status(self):
-        used, free = self.volume.usage()
+        used, free = self.volume.status_usage()
         return {"version": __version__, "mode": "continuous_24_7", "state": self.state,
                 "uptime_seconds": round(time.monotonic() - self.started, 1),
                 "buffer_segments": len(self.segments),

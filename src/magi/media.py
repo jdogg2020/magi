@@ -16,7 +16,7 @@ from PIL import Image, ImageDraw
 from .recorder import stop_process
 from .storage import atomic_json
 
-PROFILE = 3
+PROFILE = 4
 VIDEO_PROFILE = 2
 
 
@@ -43,7 +43,8 @@ def track_rows(meta, duration):
             seconds = clip_time(meta, host)
             width, height = row['width'], row['height']
             box = [row['box'][i]/(width if i%2==0 else height) for i in range(4)]
-            point = [row['x']/width, row['y']/height, box[2]-box[0], box[3]-box[1]]
+            # Centroids are zero-based pixel indices; boxes use exclusive edges.
+            point = [(row['x']+.5)/width, (row['y']+.5)/height, box[2]-box[0], box[3]-box[1]]
             if (seconds is None or not 0 <= seconds < duration or
                     not all(math.isfinite(v) and 0 <= v <= 1 for v in [*point,*box]) or
                     box[2]<=box[0] or box[3]<=box[1]):

@@ -1,0 +1,62 @@
+{
+  "drone": {
+    "source": "DroneDetectionThesis/Drone-detection-dataset",
+    "license": "CC0-1.0 (repo LICENSE; paper text is CC BY, separate)",
+    "download": "https://github.com/DroneDetectionThesis/Drone-detection-dataset",
+    "visible_only": true,
+    "ir_excluded": true,
+    "audio_excluded": true,
+    "youtube_excluded": true
+  },
+  "nightskyucp": {
+    "source": "figshare DOI 10.6084/m9.figshare.16451625",
+    "license_page": "CC BY 4.0 (figshare page/API, 2022-07-29)",
+    "license_in_zip": "CC BY-NC-SA 4.0 (cr_dataset/license.txt, full text, inside zip)",
+    "license_conservative_use": "BY-NC-SA: noncommercial only, share-alike; do not ship in public/commercial Magi model without author clarification",
+    "download": "https://doi.org/10.6084/m9.figshare.16451625",
+    "zip_sha256": "d78f7907dcedd11a11f4d909bf86215ff3534ee3bc27d7051f06efc05b2ec8ef",
+    "zip_files": 40051,
+    "zip_uncompressed_bytes": 5968706622,
+    "videos": 20000,
+    "sum_images": 20001,
+    "csv_rows": 20000,
+    "status": "verified_from_zip"
+  },
+  "magi": {
+    "source": "magi-benchmark-annotation-v1 starter kit",
+    "note": "Audited 2026-11-03: v2 annotations (5 targets, 18 s scored background) are provisional, not accepted ground truth; they are NOT included in this PR. See issue #58."
+  },
+  "label_namespace": {
+    "nightskyucp:meteor": {
+      "magi_label": null,
+      "use": "binary_pretraining_only",
+      "note": "Not magi:meteor and not magi:flash."
+    },
+    "nightskyucp:non_meteor": {
+      "magi_label": null,
+      "use": "hard_negative_pretraining_only",
+      "note": "Single class; its 116 subclass samples are not Magi labels."
+    },
+    "drone:airplane": {
+      "magi_label": null,
+      "use": "auxiliary_shape_pretraining",
+      "note": "Daylight, tracked; Magi fine-tuning required before any Magi label."
+    },
+    "drone:bird": {
+      "magi_label": null,
+      "use": "auxiliary_shape_pretraining",
+      "note": "Daylight, tracked; Magi fine-tuning required before any Magi label."
+    },
+    "drone:helicopter": {
+      "magi_label": null,
+      "use": "auxiliary_shape_pretraining",
+      "note": "Daylight, tracked; Magi fine-tuning required before any Magi label."
+    },
+    "drone:drone": {
+      "magi_label": null,
+      "use": "excluded",
+      "note": "No drone output label in v1 without Magi night drone examples."
+    }
+  },
+  "pr_note": "This PR contains scripts, manifests, and CC0 drone example images only. No NightSkyUCP files, no drone video/.mat files, and no Magi footage or exports are included."
+}

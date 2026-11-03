@@ -29,6 +29,8 @@ def atomic_json(path: Path, value):
 class Volume:
     def __init__(self, cfg):
         self.cfg = cfg
+        self._last_usage = None
+        self._maintenance = None
         if not cfg.mount.is_dir() or (cfg.require_mount and not os.path.ismount(cfg.mount)):
             raise OSError("configured recording volume is not mounted")
         st = cfg.mount.stat()
@@ -54,28 +56,53 @@ class Volume:
     def usage(self):
         self.check()
         seen, total = set(), 0
-        def scan_error(error):
-            raise error
-        for directory, directories, files in os.walk(self.cfg.root, followlinks=False, onerror=scan_error):
-            base = Path(directory)
-            if base == self.cfg.root:
-                # Each camera accounts for its own subtree; do not walk peers.
-                directories[:] = [name for name in directories if name != 'cameras']
-            for name in directories + files:
-                path = base / name
-                if path.is_symlink():
-                    raise OSError("symlinks are not allowed in recording storage")
-                try:
-                    st = path.stat()
-                except FileNotFoundError:
-                    continue
-                if stat.S_ISREG(st.st_mode) and (st.st_dev, st.st_ino) not in seen:
-                    seen.add((st.st_dev, st.st_ino))
-                    total += st.st_size
-        return total, shutil.disk_usage(self.cfg.root).free
+        pending = [self.cfg.root]
+        while pending:
+            directory = pending.pop()
+            # scandir supplies type information without separate is_symlink,
+            # is_file and stat calls for every path in the archive.
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if directory == self.cfg.root and entry.name == 'cameras':
+                        continue
+                    if entry.is_symlink():
+                        raise OSError("symlinks are not allowed in recording storage")
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(Path(entry.path))
+                            continue
+                        st = entry.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    if stat.S_ISREG(st.st_mode) and (st.st_dev, st.st_ino) not in seen:
+                        seen.add((st.st_dev, st.st_ino))
+                        total += st.st_size
+        free = shutil.disk_usage(self.cfg.root).free
+        self._last_usage = (time.monotonic(), total)
+        return total, free
 
-    def prune(self, protected=(), reserve=0):
+    def status_usage(self):
+        """Reuse a recent scan for display only; never for allocation checks."""
+        self.check()
+        if self._last_usage is not None and time.monotonic() - self._last_usage[0] < 5:
+            return self._last_usage[1], shutil.disk_usage(self.cfg.root).free
+        return self.usage()
+
+    def prune(self, protected=(), reserve=0, *, maintenance=False):
         """Delete only owned, finished event directories, oldest first."""
+        # Main and companion share this Volume. Run their periodic archive
+        # cleanup once per second, not twice. Explicit pruning/allocation
+        # requests always scan afresh. Failed checks are never cached.
+        limits = (self.cfg.max_bytes, self.cfg.min_free, self.cfg.retention_days,
+                  self.cfg.trash_days, self.cfg.cleanup_margin)
+        if maintenance and not reserve and self._maintenance is not None:
+            completed, previous_limits = self._maintenance
+            self.check()
+            free = shutil.disk_usage(self.cfg.root).free
+            if (time.monotonic() - completed < 1 and limits == previous_limits
+                    and free >= self.cfg.min_free):
+                return True
+        self._maintenance = None
         used, free = self.usage()
         now = time.time()
         cutoff = now - self.cfg.retention_days * 86400
@@ -101,4 +128,7 @@ class Volume:
                 self.check()
                 shutil.rmtree(directory)
                 used, free = self.usage()
-        return used + reserve < self.cfg.max_bytes and free - reserve >= self.cfg.min_free
+        allowed = used + reserve < self.cfg.max_bytes and free - reserve >= self.cfg.min_free
+        if maintenance and not reserve and allowed:
+            self._maintenance = (time.monotonic(), limits)
+        return allowed

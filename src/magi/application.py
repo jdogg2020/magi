@@ -60,6 +60,8 @@ class Application:
         self.started = time.monotonic()
         self.review_since = time.time()
         self.next_status = self.next_start = 0
+        self.next_clip_refresh = 0
+        self.cached_clips = []
         self.health = metrics()
         self.cpu = cpu_counters()
         self.next_health = 0
@@ -371,7 +373,7 @@ class Application:
             self.apply_reference_retention()
         if now >= self.next_status:
             self.next_status = now + 1
-            self._snapshot()
+            self._snapshot(refresh_clips=False)
 
     def _abandon_continuation(self, reason):
         # A continuation that cannot happen must say so on the finished
@@ -895,15 +897,20 @@ class Application:
         self._snapshot()
         return {'updated':updated,'failed':failed}
 
-    def _snapshot(self):
+    def _snapshot(self, *, refresh_clips=True):
         status = {'version': __version__, 'camera_id': self.camera_id, 'camera_name': self.camera_name, 'mode': 'continuous_24_7', 'state': 'setup_required' if not self.cfg.source else 'waiting_for_storage',
                   'uptime_seconds': round(time.monotonic() - self.started, 1), 'automatic_detection': self.cfg.detection.get('enabled', False)}
         try:
             if self.recorder:
                 status.update(self.recorder.status())
                 status['automatic_detection'] = self.cfg.detection['enabled']
-            clips = self.list_clips()
+            if refresh_clips or time.monotonic() >= self.next_clip_refresh:
+                self.cached_clips = self.list_clips()
+                self.next_clip_refresh = time.monotonic() + 5
+            clips = self.cached_clips
         except OSError:
+            self.cached_clips = []
+            self.next_clip_refresh = 0
             clips = []
         if self.archive_only:
             status['state'] = 'archived'

@@ -38,6 +38,69 @@ class StorageManagementTests(unittest.TestCase):
                                             'protected': protected, 'trashed_at': time.time()-trash_age if trash_age else None})
         return path
 
+    def test_status_refresh_reuses_clips_but_explicit_refresh_is_immediate(self):
+        from magi.application import Application
+        config = self.root/'config.json'
+        atomic_json(config, self.raw)
+        app = Application(config)
+        try:
+            app.next_clip_refresh = 0
+            with patch.object(app, 'list_clips', return_value=[]) as listing:
+                app._snapshot(refresh_clips=False)
+                app._snapshot(refresh_clips=False)
+                self.assertEqual(listing.call_count, 1)
+                app._snapshot()
+                self.assertEqual(listing.call_count, 2)
+                app.next_clip_refresh = 0
+                app._snapshot(refresh_clips=False)
+                self.assertEqual(listing.call_count, 3)
+        finally:
+            app.close()
+
+    def test_periodic_recorders_and_status_share_one_scan(self):
+        self.event('event')
+        with patch('magi.storage.time.monotonic', return_value=10), \
+                patch.object(self.volume, 'usage', wraps=self.volume.usage) as scan:
+            self.assertTrue(self.volume.prune(maintenance=True))
+            self.assertTrue(self.volume.prune(maintenance=True))
+            self.volume.status_usage()
+            self.assertEqual(scan.call_count, 1)
+        with patch('magi.storage.time.monotonic', return_value=11.1), \
+                patch.object(self.volume, 'usage', wraps=self.volume.usage) as scan:
+            self.volume.prune(maintenance=True)
+            self.assertEqual(scan.call_count, 1)
+
+    def test_allocation_checks_bypass_periodic_cache(self):
+        self.volume.prune(maintenance=True)
+        with patch.object(self.volume, 'usage', wraps=self.volume.usage) as scan:
+            self.assertFalse(self.volume.prune(reserve=self.cfg.max_bytes))
+            self.assertEqual(scan.call_count, 1)
+
+    def test_cached_maintenance_checks_current_free_space(self):
+        from collections import namedtuple
+        disk = namedtuple('disk', 'total used free')
+        self.volume.cfg = dataclasses.replace(self.cfg, min_free=1)
+        self.volume.prune(maintenance=True)
+        with patch('magi.storage.shutil.disk_usage', return_value=disk(100, 100, 0)):
+            self.assertFalse(self.volume.prune(maintenance=True))
+
+    def test_cached_status_still_checks_volume_identity(self):
+        self.volume.usage()
+        self.volume.marker.unlink()
+        with self.assertRaises(OSError):
+            self.volume.status_usage()
+        with self.assertRaises(OSError):
+            self.volume.prune(maintenance=True)
+
+    def test_usage_deduplicates_hardlinks_and_rejects_symlinks(self):
+        path = self.event('event')
+        before = self.volume.usage()[0]
+        os.link(path/'clip.mkv', self.cfg.root/'buffer'/'linked.mkv')
+        self.assertEqual(self.volume.usage()[0], before)
+        (self.cfg.root/'buffer'/'outside').symlink_to(self.root)
+        with self.assertRaises(OSError):
+            self.volume.usage()
+
     def test_headroom_only_applies_when_threshold_crossed(self):
         first, second, third = [self.event(str(i), age=100-i) for i in range(3)]
         used, _ = self.volume.usage()

@@ -52,10 +52,12 @@ def read(directory):
 
 
 def filters(value):
-    if not isinstance(value, dict) or set(value)-{'q','label','reviewed','protected','state','reference','type','trash','start','end','sort','offset','limit'}:
+    if not isinstance(value, dict) or set(value)-{'q','label','reviewed','protected','state','reference','type','trash','start','end','sort','offset','limit','hide_likely_satellites'}:
         raise ReviewError('Invalid event filters.')
-    result = {'q':'','label':'','reviewed':'all','protected':'all','state':'all','reference':'all','type':'all','trash':'active','start':None,'end':None,'sort':'newest','offset':0,'limit':25, **value}
-    for key, allowed in [('reviewed',('all','yes','no')),('protected',('all','yes','no')),('trash',('active','trash','all')),('sort',('newest','oldest')),('type',('all','manual','motion','lightning_candidate','meteor_candidate')),('state',('all','collecting','assembling','complete','interrupted','failed','not_retained')),('reference',('all','possible_aircraft','possible_aircraft_bearing_only','possible_satellite','ambiguous_possible_matches','no_match_in_checked_data','reference_coverage_incomplete','calibration_required','insufficient_track_data','disabled','pending','not_checked','event_calibration_differs_from_current'))]:
+    result = {'q':'','label':'','reviewed':'all','protected':'all','state':'all','reference':'all','type':'all','trash':'active','start':None,'end':None,'sort':'newest','offset':0,'limit':25,'hide_likely_satellites':False, **value}
+    if not isinstance(result['hide_likely_satellites'], bool):
+        raise ReviewError('Hide likely satellites must be true or false.')
+    for key, allowed in [('reviewed',('all','yes','no')),('protected',('all','yes','no')),('trash',('active','trash','all')),('sort',('newest','oldest')),('type',('all','manual','motion','lightning_candidate','meteor_candidate')),('state',('all','collecting','assembling','complete','interrupted','failed','not_retained')),('reference',('all','possible_aircraft','possible_aircraft_bearing_only','possible_satellite','likely_satellite','ambiguous_possible_matches','no_match_in_checked_data','reference_coverage_incomplete','calibration_required','insufficient_track_data','disabled','pending','not_checked','event_calibration_differs_from_current'))]:
         if result[key] not in allowed:
             raise ReviewError('Invalid event filter choice.')
     for key in ('q','label'):
@@ -73,7 +75,13 @@ def filters(value):
     return result
 
 
-def matches(meta, review, reference, f):
+def matches(meta, review, reference, f, hideable=False):
+    """hideable comes only from the stored satellite_filter block in the
+    event's identification report; matching never runs during a list or
+    navigation request. Legacy, missing or incompatible reports are not
+    hideable, so they stay visible when the hide filter is on."""
+    if f.get('hide_likely_satellites') and hideable:
+        return False
     trash = review['trashed_at'] is not None
     if f['trash'] != 'all' and trash != (f['trash']=='trash'):
         return False

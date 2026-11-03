@@ -876,7 +876,11 @@ async function loadIdentification(id) {
     $('radio-report').classList.toggle('hidden',!radio);if(radio)$('radio-report').href=eventPath(reviewEvent,'radio');
     const measurements=report.measurements;
     const summary=(measurements?.tracks || []).map(t=>`Track ${t.track_id}: ${t.sampled_path_angle_deg.toFixed(2)}° sampled path over ${t.duration_seconds.toFixed(2)}s · ${t.mean_path_speed_deg_s == null ? 'speed unavailable' : t.mean_path_speed_deg_s.toFixed(2)+'°/s mean angular speed'}`).join('\n');
-    $('identification-detail').textContent = (summary ? summary+'\nHost timing and centroid uncertainty unverified; angles do not establish physical speed or distance.\n\n' : '')+JSON.stringify(report, null, 2);
+    const satLines=[];
+    for(const track of report.tracks || []){const sat=track.satellite || {};const likely=sat.likely_candidate;if(likely)satLines.push(`Likely satellite: ${likely.name} (catalog ${likely.id}) — mean error ${likely.mean_error_deg}°, max error ${likely.max_error_deg}°, direction ${likely.direction_cosine}, element ${likely.element_epoch} (${likely.element_source}), sunlit ${likely.illumination?.samples_sunlit ?? '?'}/${likely.illumination?.samples_total ?? '?'} samples.`);else if(sat.candidates?.length){const top=sat.candidates[0];satLines.push(`Satellite ${sat.tier || sat.status}: ${top.name} (catalog ${top.id}) — mean error ${top.mean_error_deg}°, illumination ${top.illumination?.status ?? 'unknown'}. Not a confirmed identity.`);}}
+    if(report.satellite_filter?.illumination_note)satLines.push(report.satellite_filter.illumination_note);
+    if(report.satellite_filter && !report.satellite_filter.hideable)satLines.push(`Hide likely satellites: no — ${report.satellite_filter.reason}`);
+    $('identification-detail').textContent = (summary ? summary+'\nHost timing and centroid uncertainty unverified; angles do not establish physical speed or distance.\n\n' : '')+(satLines.length ? satLines.join('\n')+'\n\n' : '')+JSON.stringify(report, null, 2);
   } catch { if(generation===reviewGeneration && reviewEvent && eventKey(reviewEvent)===key) $('identification-status').textContent = 'Not checked yet. Enable reference checks and configure camera geometry in Settings.'; }
 }
 $('identify-again').onclick = async () => {

@@ -25,7 +25,7 @@ from .detection import Analysis
 from .health import metrics, cpu_counters
 from .event_review import ReviewError, read as read_review, changes as review_changes, filters as event_filters, matches as event_matches, optional_json
 from .sensors import snapshot as sensor_snapshot, effective as sensor_effective, aircraft_status
-from .identification import Identifier, defaults as identification_defaults
+from .identification import Identifier, defaults as identification_defaults, report_hideable
 from .media import Media
 from .previews import Previews
 from .recorder import Recorder
@@ -622,6 +622,15 @@ class Application:
                     report = optional_json(report_path)
                     status = report.get('status')
                     key = {'possible_aircraft':'retain_aircraft_matches','possible_satellite':'retain_satellite_matches'}.get(status)
+                    # New satellite filtering never deletes footage, even
+                    # with retain_satellite_matches off, and even for
+                    # possible/ambiguous new outcomes. Separation is by
+                    # report: version-2 reports carry a satellite_filter
+                    # block; legacy reports without it keep the old path,
+                    # and aircraft retention is unchanged either way.
+                    if key == 'retain_satellite_matches' and isinstance(report.get('satellite_filter'), dict) and report['satellite_filter'].get('version') == 2:
+                        self.reference_retention_pending.discard(event_id)
+                        continue
                     # A flash/meteor capture is kept if any of its enabled event types deserves retention.
                     if not key or policy.get(key,True) or any(t in ('lightning_candidate','meteor_candidate','manual') for t in meta.get('detection_types',[])):
                         self.reference_retention_pending.discard(event_id)
@@ -756,7 +765,7 @@ class Application:
                 report_path = path.parent/'identification.json'
                 report = optional_json(report_path)
                 reference = report.get('status','not_checked' if meta.get('state')=='not_retained' else 'pending' if self.cfg.identification['enabled'] else 'disabled')
-                if not event_matches(meta,review,reference,f):
+                if not event_matches(meta,review,reference,f,hideable=report_hideable(report)):
                     continue
                 stamp = meta.get('trigger_unix', 0)
                 if isinstance(stamp, bool) or not isinstance(stamp, (int, float)) or not math.isfinite(stamp):
@@ -781,7 +790,7 @@ class Application:
                 row = {k:meta.get(k) for k in ('id','camera_id','camera_name','state','trigger_type','detection_types','retention','trigger_unix','trigger_utc','estimated_duration_seconds','interruption')}
                 media_path = path.parent/'media.json'
                 media = optional_json(media_path)
-                row.update(camera_id=meta.get('camera_id',self.camera_id),camera_name=meta.get('camera_name',self.camera_name),review=review,identification=reference,media_detail=media.get('thumbnail',{}),media_status=media.get('status','not_generated'),media_error=media.get('detail',''))
+                row.update(camera_id=meta.get('camera_id',self.camera_id),camera_name=meta.get('camera_name',self.camera_name),review=review,identification=reference,satellite_hideable=report_hideable(report),media_detail=media.get('thumbnail',{}),media_status=media.get('status','not_generated'),media_error=media.get('detail',''))
                 for key, name in [('full_video','full-video.mp4'),('thumbnail','thumbnail.jpg'),('best_frame','best-frame.jpg'),('original','clip.mkv'),('preview','preview.mp4'),('substream_preview','preview-substream.mp4'),('motion','motion.jsonl.gz')]:
                     row[key] = (path.parent/name).is_file()
                 rows.append(row)

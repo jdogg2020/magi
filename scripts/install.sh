@@ -74,7 +74,7 @@ run_step() {
   local limit="$1"; shift
   current_step="$1"; shift
   progress "$current_step"
-  /usr/bin/python3 "$source_dir/scripts/install_runner.py" --timeout "$limit" -- "$@" <&0 &
+  /usr/bin/python3 "$source_dir/scripts/install_runner.py" --timeout "$limit" -- "$@" </dev/null &
   active_runner=$!
   local result=0
   wait "$active_runner" || result=$?

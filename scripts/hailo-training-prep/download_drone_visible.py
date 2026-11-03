@@ -18,6 +18,9 @@ ap.add_argument("--out", default="drone-visible", help="Directory for downloaded
 ap.add_argument("--xlsx", default="Video_dataset_description.xlsx",
                 help="Description sheet from the dataset repo (Data/Video_dataset_description.xlsx)")
 ap.add_argument("--summary", default="drone-visible-summary.json")
+ap.add_argument("--eligibility", default="drone-eligibility.json",
+                help="Verified eligibility file for prepare_magi_training_data.py: "
+                     "only clips listed here as eligible may be prepared.")
 _args = ap.parse_args()
 OUT = Path(_args.out)
 OUT.mkdir(parents=True, exist_ok=True)
@@ -77,4 +80,17 @@ summary["counts"] = {"usable": len(summary["usable"]), "failed": len(summary["fa
                      "youtube_excluded": sum(1 for e in exclusions if e["reason"] == "youtube_sourced"),
                      "drone_excluded": sum(1 for e in exclusions if e["reason"] == "drone_class_excluded_v1")}
 Path(_args.summary).write_text(json.dumps(summary, indent=2))
+# Verified eligibility: the preparation script trusts ONLY this file.
+# Eligible = visible, non-YouTube, non-drone-class clips from the
+# description sheet. Everything else (YouTube, drone class, IR,
+# audio) is listed under "excluded" and must never be prepared,
+# even if its files later appear in the input directory.
+eligibility = {
+    "source": "DroneDetectionThesis/Drone-detection-dataset",
+    "license": "CC0-1.0 (repo LICENSE)",
+    "eligible": {clip: {"class": cls, "distance_bin": bin_} for clip, cls, bin_ in usable},
+    "excluded": exclusions,
+    "note": "Preparation enforces this file and excludes any clip not listed here.",
+}
+Path(_args.eligibility).write_text(json.dumps(eligibility, indent=2))
 print(json.dumps(summary["counts"], indent=2))

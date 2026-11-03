@@ -69,6 +69,124 @@ class AlignmentError(ValueError):
     pass
 
 
+class AnnotationError(ValueError):
+    pass
+
+
+# Magi annotation schema uses "kind", NOT "label". There is no
+# target["label"] in magi-benchmark-annotation-v1; reading it
+# silently produced magi_label: null for every valid target.
+# Unknown kinds are rejected, never mapped to null.
+MAGI_KIND_TO_LABEL = {
+    "user-labeled-aircraft": "aircraft",
+    "user-confirmed-bird": "bird",
+}
+
+
+def annotation_status(version):
+    """Classify an annotation version as provisional, accepted, or unknown.
+
+    Provisional: version starts with "draft-" (e.g. draft-v1-unconfirmed,
+    draft-v2-bird-identity-user-confirmed — identity may be confirmed
+    while coordinates remain draft).
+    Accepted: version contains "accepted" and does not start with "draft-".
+    Anything else is unknown and is rejected, not guessed.
+    """
+    if not isinstance(version, str) or not version:
+        return "unknown"
+    if version.startswith("draft-"):
+        return "provisional"
+    if "accepted" in version:
+        return "accepted"
+    return "unknown"
+
+
+def validate_annotation(data, filename):
+    """Validate a magi-benchmark-annotation-v1 file, or raise.
+
+    Structural validation only: schema, clip identity, version,
+    interval lists, unique IDs, target windows, path points
+    time-ordered, inside their windows, coordinates in [0, 1].
+    It does not judge whether a path is accurate — that is what
+    the provisional/accepted gate is for.
+    """
+    if not isinstance(data, dict):
+        raise AnnotationError(f"{filename}: annotation is not a JSON object")
+    if data.get("schema") != "magi-benchmark-annotation-v1":
+        raise AnnotationError(
+            f"{filename}: schema {data.get('schema')!r} is not magi-benchmark-annotation-v1")
+    clip = data.get("clip")
+    if not isinstance(clip, dict) or not clip.get("camera_id") or not clip.get("event_id"):
+        raise AnnotationError(f"{filename}: clip.camera_id/event_id missing")
+    status = annotation_status(data.get("version"))
+    if status == "unknown":
+        raise AnnotationError(
+            f"{filename}: version {data.get('version')!r} is neither provisional (draft-*) "
+            "nor accepted; refusing to guess its status")
+    for key in ("targets", "nuisance", "unknown"):
+        if not isinstance(data.get(key, []), list):
+            raise AnnotationError(f"{filename}: {key} is not a list")
+    seen = set()
+    for section in ("targets", "nuisance", "unknown"):
+        for entry in data.get(section, []):
+            eid = entry.get("id")
+            if not eid or eid in seen:
+                raise AnnotationError(f"{filename}: duplicate or missing interval id {eid!r}")
+            seen.add(eid)
+            start, end = entry.get("start"), entry.get("end")
+            if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or not start < end or start < 0:
+                raise AnnotationError(f"{filename}: interval {eid!r} has invalid start/end {start!r}/{end!r}")
+            if section == "targets":
+                if entry.get("kind") not in MAGI_KIND_TO_LABEL:
+                    raise AnnotationError(
+                        f"{filename}: target {eid!r} has unknown kind {entry.get('kind')!r}; "
+                        "add it to MAGI_KIND_TO_LABEL explicitly, never map it to null")
+                path = entry.get("path")
+                if not isinstance(path, list) or not path:
+                    raise AnnotationError(f"{filename}: target {eid!r} has no path points")
+                prev_t = None
+                for p in path:
+                    if not isinstance(p, dict) or "t" not in p or "x" not in p or "y" not in p:
+                        raise AnnotationError(f"{filename}: target {eid!r} has a malformed path point")
+                    if not (start <= p["t"] <= end):
+                        raise AnnotationError(f"{filename}: target {eid!r} path point outside its window")
+                    if prev_t is not None and p["t"] < prev_t:
+                        raise AnnotationError(f"{filename}: target {eid!r} path points are not time-ordered")
+                    if not (0 <= p["x"] <= 1 and 0 <= p["y"] <= 1):
+                        raise AnnotationError(f"{filename}: target {eid!r} path point outside [0, 1]")
+                    prev_t = p["t"]
+    return status
+
+
+def load_group_map(path):
+    """Load a session/passage grouping input.
+
+    Accepts either {"groups": {group_id: [clip, ...]}} or
+    {clip: group_id}. Returns {clip: group_id}. A group map is
+    how related recordings (same night/session/linked passage)
+    stay in one split; without one, group defaults to the clip
+    itself and the splits output records that limitation.
+    """
+    if not path:
+        return {}
+    raw = json.loads(Path(path).read_text())
+    mapping = {}
+    if isinstance(raw, dict) and isinstance(raw.get("groups"), dict):
+        for group_id, clips in raw["groups"].items():
+            for clip in clips:
+                if clip in mapping and mapping[clip] != group_id:
+                    raise ValueError(f"group map: clip {clip} assigned to two groups")
+                mapping[clip] = group_id
+        return mapping
+    if isinstance(raw, dict):
+        for clip, group_id in raw.items():
+            if clip in ("groups", "example_only", "note"):
+                continue
+            mapping[clip] = group_id
+        return mapping
+    raise ValueError("group map must be an object, optionally with a 'groups' key")
+
+
 def align_labels_to_frames(labels, frame_count, clip_id):
     """Return labels aligned 1:1 to video frames, or raise.
 
@@ -136,7 +254,24 @@ def main():
     ap.add_argument("--nightskyucp-dir", default=None)
     ap.add_argument("--out", required=True)
     ap.add_argument("--description-xlsx", default=None)
+    ap.add_argument("--drone-eligibility", default=None,
+                    help="eligibility.json written by download_drone_visible.py. "
+                         "REQUIRED when the drone directory is non-empty: only "
+                         "clips listed as eligible are prepared; any other "
+                         ".labels.json in the directory is excluded, never "
+                         "silently included.")
+    ap.add_argument("--group-map", default=None,
+                    help="JSON session/passage grouping input (see load_group_map). "
+                         "All clips in one group share one split.")
+    ap.add_argument("--allow-provisional", action="store_true",
+                    help="Also emit tracks from provisional (draft-*) Magi "
+                         "annotations, marked annotation_status=provisional. "
+                         "Without this flag, provisional annotations are "
+                         "skipped: they are not accepted ground truth.")
     args = ap.parse_args()
+    group_map = load_group_map(args.group_map)
+    def grouped(clip_id):
+        return group_map.get(clip_id, clip_id)
 
     out = Path(args.out)
     (out / "external").mkdir(parents=True, exist_ok=True)
@@ -151,35 +286,72 @@ def main():
                   "visible_only": True, "ir_excluded": True, "audio_excluded": True,
                   "youtube_excluded": True},
         "nightskyucp": {"source": "figshare DOI 10.6084/m9.figshare.16451625",
-                        "license": "CC BY 4.0 (figshare page + API; verify inside zip before shipping)",
+                        # LICENSE CONFLICT, preserved on every rerun:
+                        # the Figshare page/API say CC BY 4.0, but
+                        # cr_dataset/license.txt inside the zip is the
+                        # full CC BY-NC-SA 4.0 text. The conservative
+                        # treatment below is the finding; do not
+                        # regress it to the page-only statement.
+                        "license_page": "CC BY 4.0 (figshare page/API)",
+                        "license_in_zip": "CC BY-NC-SA 4.0 (cr_dataset/license.txt)",
+                        "license_conservative_use": "BY-NC-SA: noncommercial only, "
+                            "share-alike for adapted material; do not ship "
+                            "in a public/commercial Magi model without "
+                            "author clarification",
+                        "noncommercial_only": True,
+                        "distributed_pipeline_status": "excluded_pending_clarification",
                         "download": "https://doi.org/10.6084/m9.figshare.16451625",
                         "status": "pending_extraction" if not args.nightskyucp_dir else "extracted"},
-        "magi": {"source": "magi-benchmark-annotation-v1 starter kit",
+        "magi": {"source": "magi-benchmark-annotation-v1",
                  "note": "Empty lists are unscored, never ground truth. "
-                         "Clip-level README labels are not annotations."},
+                         "Clip-level README labels are not annotations. "
+                         "Annotations are schema-validated and gated: "
+                         "provisional (draft-*) annotations are skipped "
+                         "unless --allow-provisional is passed, and then "
+                         "they are marked provisional, not accepted."},
         "label_namespace": LABEL_NAMESPACE,
     }
 
-    # --- Magi benchmark annotations: read-only audit, never invented ---
+    # --- Magi benchmark annotations: validated, gated, never invented ---
+    # Schema validation is fail-closed: an invalid file aborts the
+    # run rather than producing tracks from bad annotations.
+    # The provisional/accepted gate is fail-closed too: provisional
+    # targets are skipped unless --allow-provisional is passed, and
+    # then they are marked provisional on every track.
     magi_dir = Path(args.magi_annotations)
     magi_tracks = []
     magi_audit = []
     for jf in sorted(magi_dir.glob("*.json")):
         data = json.loads(jf.read_text())
+        status = validate_annotation(data, jf.name)
         clip = data.get("clip", {})
+        event_id = clip.get("event_id")
+        targets = data.get("targets", [])
+        emitted = 0
+        if status == "accepted" or args.allow_provisional:
+            for t in targets:
+                magi_tracks.append({
+                    "source": "magi", "source_id": event_id,
+                    "group_id": grouped(event_id),
+                    "magi_label": MAGI_KIND_TO_LABEL[t["kind"]],
+                    "magi_kind": t["kind"],
+                    "annotation_status": status,
+                    "provisional": status == "provisional",
+                    "annotation": t})
+                emitted += 1
         magi_audit.append({
             "file": jf.name, "schema": data.get("schema"),
-            "camera_id": clip.get("camera_id"), "event_id": clip.get("event_id"),
-            "targets": len(data.get("targets", [])),
+            "version": data.get("version"), "annotation_status": status,
+            "camera_id": clip.get("camera_id"), "event_id": event_id,
+            "targets": len(targets),
             "nuisance": len(data.get("nuisance", [])),
             "unknown": len(data.get("unknown", [])),
-            "status": "unscored_empty" if not data.get("targets") and not data.get("nuisance") else "annotated",
+            "tracks_emitted": emitted,
+            "status": "unscored_empty" if not targets and not data.get("nuisance") else
+                      ("annotated_accepted" if status == "accepted" else
+                       "annotated_provisional_skipped" if emitted == 0 else
+                       "annotated_provisional_emitted"),
         })
-        # Only annotated targets become Magi tracks; empty stays empty.
-        for t in data.get("targets", []):
-            magi_tracks.append({"source": "magi", "source_id": clip.get("event_id"),
-                                "group_id": clip.get("event_id"),
-                                "magi_label": t.get("label"), "annotation": t})
     (out / "magi" / "audit.json").write_text(json.dumps(magi_audit, indent=2))
     (out / "magi" / "tracks.jsonl").write_text(
         "".join(json.dumps(t) + "\n" for t in magi_tracks))
@@ -190,9 +362,45 @@ def main():
     # "frame_count":, "labels": [[x,y,w,h]|null, ...]} so that a
     # misaligned .mat can never slip in unnoticed.
     drone_dir = Path(args.drone_dir)
-    for lf in sorted(drone_dir.glob("*.labels.json")):
+    sidecars = sorted(drone_dir.glob("*.labels.json"))
+    # Eligibility is fail-closed: the downloader's verified list is
+    # the only authority on which clips may be prepared. A reused
+    # directory containing previously excluded clips (YouTube,
+    # drone class, or otherwise) must not silently include them.
+    eligible = None
+    if sidecars:
+        if not args.drone_eligibility:
+            raise SystemExit(
+                "drone directory is non-empty but --drone-eligibility was not "
+                "given; refusing to prepare unverified clips. Run "
+                "download_drone_visible.py first and pass its eligibility.json.")
+        elig = json.loads(Path(args.drone_eligibility).read_text())
+        eligible = elig.get("eligible", {})
+        provenance["drone"]["eligibility_enforced"] = True
+        provenance["drone"]["eligibility_file"] = str(args.drone_eligibility)
+        provenance["drone"]["eligible_clips"] = len(eligible)
+        provenance["drone"]["excluded_clips"] = len(elig.get("excluded", []))
+    for lf in sidecars:
         info = json.loads(lf.read_text())
         clip_id = lf.name.replace(".labels.json", "")
+        if eligible is not None:
+            record = eligible.get(clip_id)
+            if record is None:
+                exclusions.append({"source": "drone", "source_id": clip_id,
+                                   "reason": "not_in_verified_eligibility",
+                                   "detail": "Clip is present in the input directory but not "
+                                             "in the downloader's verified eligible list; "
+                                             "excluded, never silently included."})
+                continue
+            if record.get("class") != info.get("external_label") or \
+               record.get("distance_bin") != info.get("distance_bin"):
+                exclusions.append({"source": "drone", "source_id": clip_id,
+                                   "reason": "eligibility_mismatch",
+                                   "detail": f"Sidecar class/bin "
+                                             f"{info.get('external_label')}/{info.get('distance_bin')} "
+                                             f"does not match eligibility record "
+                                             f"{record.get('class')}/{record.get('distance_bin')}"})
+                continue
         try:
             aligned = align_labels_to_frames(info["labels"], info["frame_count"], clip_id)
         except AlignmentError as exc:
@@ -220,7 +428,7 @@ def main():
                           "object_pixel_width": w, "object_pixel_height": h})
         tracks.append({
             "source": "drone", "source_id": clip_id,
-            "group_id": clip_id,  # one video = one group; never split a video
+            "group_id": grouped(clip_id),  # session/passage group, else the clip itself
             "external_label": info["external_label"],
             "external_namespace": f"drone:{info['external_label'].lower()}",
             "magi_label": None, "auxiliary_only": True,
@@ -237,9 +445,10 @@ def main():
         "".join(json.dumps(e) + "\n" for e in exclusions))
     (out / "provenance.json").write_text(json.dumps(provenance, indent=2))
 
-    # Grouped splits: by group_id only. Magi test is Magi-only and
-    # empty here because Magi annotations are empty; external data
-    # is never assigned to the Magi test split.
+    # Grouped splits: by group_id only, so every clip in a
+    # session/passage group lands in the same split. Magi test is
+    # Magi-only and empty here; external data is never assigned
+    # to the Magi test split.
     groups = sorted({t["group_id"] for t in tracks})
     splits = {"train": [], "validation": [], "external_holdout": []}
     for i, g in enumerate(groups):
@@ -248,6 +457,14 @@ def main():
     splits["magi_test_note"] = ("Reserved for Magi data only; empty until "
                                 "Magi annotations exist. External groups above "
                                 "are not Magi test data.")
+    if args.group_map:
+        splits["grouping"] = ("Session/passage groups from --group-map; "
+                              "all clips in a group share one split.")
+    else:
+        splits["grouping"] = ("No --group-map supplied: group defaults to "
+                              "one clip, so related clips across files may "
+                              "still split. Supply a session/passage group "
+                              "map to rule that out; do not invent groups.")
     (out / "splits.json").write_text(json.dumps(splits, indent=2))
     print(f"external tracks: {len(tracks)}")
     print(f"magi tracks: {len(magi_tracks)}")

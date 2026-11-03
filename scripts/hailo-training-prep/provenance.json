@@ -6,13 +6,17 @@
     "visible_only": true,
     "ir_excluded": true,
     "audio_excluded": true,
-    "youtube_excluded": true
+    "youtube_excluded": true,
+    "eligibility_enforced": true,
+    "eligibility_file": "drone-eligibility.json (written by download_drone_visible.py)"
   },
   "nightskyucp": {
     "source": "figshare DOI 10.6084/m9.figshare.16451625",
-    "license_page": "CC BY 4.0 (figshare page/API, 2022-07-29)",
-    "license_in_zip": "CC BY-NC-SA 4.0 (cr_dataset/license.txt, full text, inside zip)",
-    "license_conservative_use": "BY-NC-SA: noncommercial only, share-alike; do not ship in public/commercial Magi model without author clarification",
+    "license_page": "CC BY 4.0 (figshare page/API)",
+    "license_in_zip": "CC BY-NC-SA 4.0 (cr_dataset/license.txt)",
+    "license_conservative_use": "BY-NC-SA: noncommercial only, share-alike for adapted material; do not ship in a public/commercial Magi model without author clarification",
+    "noncommercial_only": true,
+    "distributed_pipeline_status": "excluded_pending_clarification",
     "download": "https://doi.org/10.6084/m9.figshare.16451625",
     "zip_sha256": "d78f7907dcedd11a11f4d909bf86215ff3534ee3bc27d7051f06efc05b2ec8ef",
     "zip_files": 40051,
@@ -23,8 +27,8 @@
     "status": "verified_from_zip"
   },
   "magi": {
-    "source": "magi-benchmark-annotation-v1 starter kit",
-    "note": "Audited 2026-11-03: v2 annotations (5 targets, 18 s scored background) are provisional, not accepted ground truth; they are NOT included in this PR. See issue #58."
+    "source": "magi-benchmark-annotation-v1",
+    "note": "Empty lists are unscored, never ground truth. Clip-level README labels are not annotations. Annotations are schema-validated and gated: provisional (draft-*) annotations are skipped unless --allow-provisional is passed, and then they are marked provisional, not accepted. Audited v2 (2026-11-03): 5 targets, 18 s scored background, provisional, not accepted ground truth; not included in this PR."
   },
   "label_namespace": {
     "nightskyucp:meteor": {

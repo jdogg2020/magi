@@ -27,6 +27,7 @@ from .event_review import ReviewError, read as read_review, changes as review_ch
 from .sensors import snapshot as sensor_snapshot, effective as sensor_effective, aircraft_status
 from .identification import Identifier, defaults as identification_defaults, report_hideable
 from .media import Media
+from .hailo import advisory_summary as hailo_advisory_summary
 from .previews import Previews
 from .recorder import Recorder
 from .storage import atomic_json, Volume
@@ -818,6 +819,11 @@ class Application:
                 media_path = path.parent/'media.json'
                 media = optional_json(media_path)
                 row.update(camera_id=meta.get('camera_id',self.camera_id),camera_name=meta.get('camera_name',self.camera_name),review=review,identification=reference,satellite_hideable=report_hideable(report),media_detail=media.get('thumbnail',{}),media_status=media.get('status','not_generated'),media_error=media.get('detail',''))
+                # Advisory-only Hailo label. A missing or damaged hailo.json
+                # leaves this field out; it never hides, reorders, filters,
+                # or otherwise changes the event list, and event_matches
+                # above runs before this field is read.
+                row['hailo_advisory'] = hailo_advisory_summary(optional_json(path.parent/'hailo.json'))
                 for key, name in [('full_video','full-video.mp4'),('thumbnail','thumbnail.jpg'),('best_frame','best-frame.jpg'),('original','clip.mkv'),('preview','preview.mp4'),('substream_preview','preview-substream.mp4'),('motion','motion.jsonl.gz')]:
                     row[key] = (path.parent/name).is_file()
                 rows.append(row)

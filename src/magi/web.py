@@ -131,11 +131,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/health':
             self.reply(200, {'ok': True, 'service': 'magi'})
             return
-        if path in ('/', '/app.js', '/tracks.js', '/events.js', '/style.css'):
+        if path in ('/', '/app.js', '/tracks.js', '/filter-select.js', '/events.js', '/style.css'):
             name, mime = {'/': ('index.html', 'text/html; charset=utf-8'),
                           '/app.js': ('app.js', 'text/javascript'),
                           '/tracks.js': ('tracks.js', 'text/javascript'),
                           '/events.js': ('events.js', 'text/javascript'),
+                          '/filter-select.js': ('filter-select.js', 'text/javascript'),
                           '/style.css': ('style.css', 'text/css')}[path]
             data = (STATIC / name).read_bytes()
             self.headers_out(200, mime, len(data))

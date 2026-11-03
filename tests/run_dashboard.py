@@ -61,6 +61,7 @@ def main():
                 for camera in ('primary','cam-123456789abc'):
                     subprocess.run(['node',str(Path(__file__).with_name('test_dashboard.js')),f'http://127.0.0.1:{server.server_port}',camera],check=True,timeout=120)
                 if os.environ.get('MAGI_BROWSER_TEST') == '1':
+                    subprocess.run(['node',str(Path(__file__).with_name('test_filter_select.js'))],check=True,timeout=60)
                     subprocess.run(['node',str(Path(__file__).with_name('test_browser.js')),f'http://127.0.0.1:{server.server_port}'],check=True,timeout=120)
                 if failures:raise RuntimeError('Synthetic station failed') from failures[0]
             finally:

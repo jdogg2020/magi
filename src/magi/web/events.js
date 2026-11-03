@@ -87,8 +87,14 @@ const MagiEvents = (()=>{
     return {camera_id:el('event-camera').value || 'all',q:el('event-search').value.trim(),label:el('event-label-filter').value.trim(),reviewed:el('event-reviewed').value || 'all',protected:el('event-protected').value || 'all',reference:el('event-reference').value || 'all',state:el('event-state').value || 'all',type:el('event-type').value || 'all',trash:el('event-folder').value || 'active',sort:el('event-sort').value || 'newest',hide_likely_satellites:!!el('event-hide-likely').checked,start:el('event-start').value ? new Date(el('event-start').value).getTime()/1000:null,end:el('event-end').value ? new Date(el('event-end').value).getTime()/1000:null};
   }
   function setOptions(values){
-    const list=el('event-label-options');list.replaceChildren();
-    for(const name of [...new Set([...presets,...values])].sort()){const option=document.createElement('option');option.value=name;list.append(option);}
+    const list=el('event-label-options'), filter=el('event-label-filter'), previous=filter.value;
+    list.replaceChildren();filter.replaceChildren();
+    const any=node('option','Any label');any.value='';filter.append(any);
+    for(const name of [...new Set([...presets,...values,...(previous?[previous]:[])])].sort()){
+      const option=node('option',name);option.value=name;list.append(option);
+      const choice=node('option',name);choice.value=name;filter.append(choice);
+    }
+    filter.value=previous;
   }
   function node(tag,text,cls){const item=document.createElement(tag);if(text!=null)item.textContent=text;if(cls)item.className=cls;return item;}
   function button(text,action,cls='quiet'){const item=node('button',text,cls);item.type='button';item.onclick=action;return item;}
@@ -171,7 +177,7 @@ const MagiEvents = (()=>{
     try {if(!currentFilters)currentFilters=filters();const result=await api('/api/station/events/list',{...currentFilters,offset,limit:25});
       if(version!==requestVersion)return;rows=result.events.map(withLocalReview);total=result.total;offset=result.offset;
       if(offset>=total && offset>0){offset=Math.max(0,Math.floor(Math.max(0,total-1)/25)*25);lastRefresh=0;return;}
-      setOptions(result.labels || []);if(reviewEvent){const updated=rows.find(row=>eventKey(row)===eventKey(reviewEvent));if(updated){const editing=dirty();reviewEvent=updated;updateReviewAvailability(updated);if(!editing)updateReview(updated,false);else reviewControls();}}loaded=true;lastRefresh=Date.now();render();if(result.message)el('event-page-status').textContent+=' · '+result.message;
+      setOptions(result.labels || []);if(reviewEvent){const updated=rows.find(row=>eventKey(row)===eventKey(reviewEvent));if(updated){const editing=dirty();reviewEvent=updated;updateReviewAvailability(updated);if(!editing)updateReview(updated,false);else reviewControls();}}loaded=true;lastRefresh=Date.now();render();el('event-badge').textContent=total;el('event-badge').title='Events matching current filters'+(result.unavailable_cameras?.length?' (some archives unavailable)':'');if(result.message)el('event-page-status').textContent+=' · '+result.message;
     }catch(error){el('event-page-status').textContent=error.message;}finally{loading=false;if(version!==requestVersion)setTimeout(()=>refresh(true),0);}
   }
   async function mutate(targetRows,action,changes){
@@ -183,7 +189,7 @@ const MagiEvents = (()=>{
     }catch(error){el('event-action-status').textContent=error.message;}finally{mutating=false;selection();}
   }
   async function windowRefresh(){await refreshDashboard();}
-  function applyFilters(){requestVersion++;offset=0;selected.clear();currentFilters=filters();lastRefresh=0;rows=[];total=0;render();el('event-page-status').textContent='Loading filtered events…';return refresh(true);}
+  function applyFilters(){if(typeof MagiFilterSelect!=='undefined')MagiFilterSelect.sync();requestVersion++;offset=0;selected.clear();currentFilters=filters();lastRefresh=0;rows=[];total=0;render();el('event-page-status').textContent='Loading filtered events…';return refresh(true);}
   function reviewControls(){
     const review=reviewEvent?.review || {}, busy=reviewBusy || mutating;
     el('review-event-prev').disabled=busy || !neighbors.previous;

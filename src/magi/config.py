@@ -106,7 +106,7 @@ class Config:
         socket = Path(data['control_socket'])
         if not socket.is_absolute():
             raise ValueError('absolute control socket path required')
-        detection = {'enabled': True, 'width': 320, 'height': 180, 'fps': 8,
+        detection = {'stream': 'substream', 'enabled': True, 'width': 320, 'height': 180, 'fps': 8,
                      'threshold': 18, 'min_pixels': 2, 'max_pixels': 500,
                      'min_hits': 4, 'min_seconds': 0.6, 'min_travel': 3,
                      'lightning_enabled': True, 'meteor_enabled': True,
@@ -114,6 +114,8 @@ class Config:
                      'retain_aircraft_matches': True, 'retain_satellite_matches': True,
                      'max_jump': 35, 'max_gap_seconds': 0.6, 'max_changed_fraction': 0.08, 'ignore_zones': []}
         detection.update(data.get('detection', {}))
+        if detection['stream'] not in ('substream', 'mainstream'):
+            raise ValueError('invalid detection stream')
         for key in ('lightning_enabled','meteor_enabled','retain_aircraft_matches','retain_satellite_matches'):
             if not isinstance(detection[key],bool):
                 raise ValueError('invalid event type switch')

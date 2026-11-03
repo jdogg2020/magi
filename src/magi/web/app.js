@@ -101,7 +101,7 @@ async function refreshCameras() {
       tile.title.textContent=camera.name;tile.img.alt=camera.name+' latest detection frame';
       tile.state.textContent=`Main: ${camera.state.replaceAll('_',' ')} · Substream: ${(camera.substream?.state || 'idle').replaceAll('_',' ')} · Detection: ${(camera.analysis?.state || 'idle').replaceAll('_',' ')}`;
       tile.count.textContent=`${camera.event_count_since_start || 0} events this session · ${bytes(camera.storage_used_bytes)} used`;
-      const a=camera.analysis || {};tile.analysis.textContent=`${a.width || '?'}×${a.height || '?'} @ ${a.fps || '?'} fps · ${a.frames || 0} detection frames · ${a.dropped_frames || 0} dropped`;
+      const a=camera.analysis || {};tile.analysis.textContent=`${a.stream === 'mainstream' ? 'Main stream' : 'Substream'} · ${a.width || '?'}×${a.height || '?'} @ ${a.fps || '?'} fps · ${a.frames || 0} detection frames · ${a.dropped_frames || 0} dropped`;
       tile.save.disabled=tile.saving || !!tile.pendingEvent || camera.state!=='buffering';
       if(tile.pendingEvent && !tile.saving){
         try {
@@ -273,7 +273,7 @@ function renderStatus(status) {
   renderCameraInfo(status);
   const buffering = status.state === 'buffering';
   const analysis = status.analysis || {}, probeFailed = analysis.state === 'substream_probe_failed';
-  const analysisNames = {starting:'Checking substream', connecting:'Connecting to substream', analyzing:'Detecting motion', reconnecting:'Reconnecting to substream', idle:'Detection idle'};
+  const analysisNames = {starting:'Checking detection stream', connecting:'Connecting to detection stream', analyzing:'Detecting motion', reconnecting:'Reconnecting to detection stream', idle:'Detection idle'};
   $('analysis-state').textContent = probeFailed ? 'Motion detection paused' : `${analysisNames[analysis.state] || (analysis.state || 'idle').replaceAll('_', ' ')}${analysis.width ? ` · ${analysis.width}×${analysis.height} / ${number(analysis.fps, ' fps')}` : ''}`;
   $('analysis-state').classList.toggle('warning', probeFailed);
   $('analysis-diagnostic').textContent = probeFailed ? `${analysis.probe_error || 'Could not read the camera substream. Check the camera connection and substream settings.'} Resolution unknown. Retrying automatically${analysis.retry_in_seconds != null ? ` in ${analysis.retry_in_seconds} seconds` : ''}. ${buffering ? 'Main stream recording continues.' : 'See camera recording status below.'}` : '';
@@ -378,6 +378,7 @@ async function fillSettings() {
   $('max_gb').value = s.storage.max_bytes / 1e9; $('free_gb').value = s.storage.min_free_bytes / 1e9; $('retention_days').value = s.storage.retention_days; $('cleanup_gb').value = (s.storage.cleanup_margin_bytes || 0) / 1e9; $('trash_days').value = s.storage.trash_days ?? 7;
   for (const key of ['threshold', 'min_pixels', 'min_seconds', 'min_travel']) $(key).value = s.detection[key];
   $('enabled').checked = s.detection.enabled;
+  $('detection-stream').value = s.detection.stream || 'substream';
   for(const key of ['lightning_enabled','meteor_enabled','retain_aircraft_matches','retain_satellite_matches']) $(key).checked=s.detection[key] ?? true;
   for(const kind of ['motion','lightning_candidate','meteor_candidate']) $('retain-'+kind).checked=(s.detection.retain_types || ['motion','lightning_candidate','meteor_candidate']).includes(kind);
   ignoreZones = JSON.parse(JSON.stringify(s.detection.ignore_zones || []));
@@ -441,7 +442,7 @@ async function refreshFrame() {
 }
 $('settings-form').onsubmit = async event => { event.preventDefault(); if(polygonDraft.length && !finishZone()){ $('settings-result').textContent=$('zone-status').textContent;return;} const submit = event.submitter; submit.disabled = true; $('settings-result').textContent = 'Saving…'; const camera = {}; for (const key of ['host', 'username', 'mainstream_path', 'substream_path']) camera[key] = $(key).value.trim(); camera.port = Number($('port').value); camera.api_scheme = $('api_scheme').value; camera.api_port = Number($('api_port').value); camera.password = $('camera-password').value;
   const recording = {}; for (const key of ['pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds']) recording[key] = Number($(key).value);
-  const detection = {enabled: $('enabled').checked, ignore_zones: ignoreZones.map(zone => ({...zone}))}; for (const key of ['threshold', 'min_pixels', 'min_seconds', 'min_travel']) detection[key] = Number($(key).value);
+  const detection = {stream: $('detection-stream').value, enabled: $('enabled').checked, ignore_zones: ignoreZones.map(zone => ({...zone}))}; for (const key of ['threshold', 'min_pixels', 'min_seconds', 'min_travel']) detection[key] = Number($(key).value);
   for(const key of ['lightning_enabled','meteor_enabled','retain_aircraft_matches','retain_satellite_matches']) detection[key]=$(key).checked;
   detection.retain_types=['motion','lightning_candidate','meteor_candidate'].filter(kind=>$('retain-'+kind).checked);
   const identification = {};
@@ -717,14 +718,14 @@ async function openReview(event, imageKind = 'thumbnail') {
       const records = (await response.text()).trim().split('\n').map(line=>JSON.parse(line));
       if(generation !== reviewGeneration || !reviewEvent || reviewEvent.id !== event.id) return;
       reviewMeta = records.shift();
-      if(reviewMeta.kind !== 'magi_motion_v1' || !Number.isInteger(reviewMeta.width) || !Number.isInteger(reviewMeta.height) || reviewMeta.width<=0 || reviewMeta.height<=0 || reviewMeta.width>1920 || reviewMeta.height>1080 || !Number.isFinite(reviewMeta.fps) || reviewMeta.fps<=0 || reviewMeta.fps>30) throw new Error('Unsupported motion data');
+      if(reviewMeta.kind !== 'magi_motion_v1' || !Number.isInteger(reviewMeta.width) || !Number.isInteger(reviewMeta.height) || reviewMeta.width<=0 || reviewMeta.height<=0 || reviewMeta.width>4096 || reviewMeta.height>2160 || !Number.isFinite(reviewMeta.fps) || reviewMeta.fps<=0 || reviewMeta.fps>30) throw new Error('Unsupported motion data');
       reviewFrames = records; reviewTracks=MagiTracks.collect(records,reviewMeta); if(reviewEvent.substream_preview) await loadReviewTimeline(event.id,generation); if(generation!==reviewGeneration||reviewEvent?.id!==event.id) return; $('motion-info').textContent = `${records.length} sampled motion frames`; drawMotion();
     } catch { if(generation===reviewGeneration) { reviewMeta=null;reviewFrames=[];reviewTracks=[];reviewColorTracks=[];$('motion-info').textContent = 'Motion data could not be loaded.'; } }
   }
 }
 function currentTracks() {
   if ($('review-quality').value === 'full') return []; // Substream timing cannot align main-stream video.
-  return $('review-quality').value === 'analysis' ? reviewTracks : reviewColorTracks;
+  return $('review-quality').value === 'analysis' ? reviewTracks : reviewMeta?.stream === 'mainstream' ? [] : reviewColorTracks;
 }
 function pathStroke(context, points, project, color, scale, dashed) {
   if(points.length<2) return;
@@ -832,7 +833,7 @@ function drawMotion() {
   $('motion-info').textContent=note+(tracks.length ? ' · candidates, not identifications' : ' · tracking unavailable; try Detection replay');
 }
 async function loadReviewTimeline(id,generation) {
-  if(reviewTimelineAttempted) return;
+  if(reviewTimelineAttempted || reviewMeta?.stream === 'mainstream') return; // Do not align main-stream detections with substream timing.
   reviewTimelineAttempted=true;
   try {
     const timeline=await api(eventPath(reviewEvent,'timeline'));

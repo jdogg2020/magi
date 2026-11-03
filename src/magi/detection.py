@@ -1,4 +1,4 @@
-"""Small-substream frame differences and bounded nearest-neighbor tracks."""
+"""Native-stream frame differences and bounded nearest-neighbor tracks."""
 from collections import deque
 import math
 import logging
@@ -185,6 +185,9 @@ class Analysis:
 
     def start(self):
         cfg = self.cfg
+        stream_name = cfg.detection.get('stream', 'substream')
+        source = cfg.source if stream_name == 'mainstream' else cfg.analysis_source
+        max_width, max_height = (4096, 2160) if stream_name == 'mainstream' else (1920, 1080)
         # Probe the actual camera feed; stored analysis dimensions are legacy hints.
         probe_args = [cfg.ffprobe, '-v', 'error']
         if not cfg.file_source:
@@ -196,14 +199,14 @@ class Analysis:
         # does not stop RTSP from opening audio/data tracks we do not need.
         probe_args += ['-analyzeduration', '1000000', '-probesize', '1000000',
                       '-select_streams', 'v:0', '-show_entries',
-                      'stream=width,height,r_frame_rate', '-of', 'json', cfg.analysis_source]
+                      'stream=width,height,r_frame_rate', '-of', 'json', source]
         try:
             result = subprocess.run(probe_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     timeout=5, check=True)
             stream = json.loads(result.stdout)['streams'][0]
             width, height = int(stream['width']), int(stream['height'])
             fps = float(Fraction(stream['r_frame_rate']))
-            if not (0 < width <= 1920 and 0 < height <= 1080 and 0 < fps <= 60):
+            if not (0 < width <= max_width and 0 < height <= max_height and 0 < fps <= 60):
                 raise ValueError('unsupported substream geometry')
         except (OSError, ValueError, KeyError, IndexError, ZeroDivisionError, subprocess.SubprocessError) as error:
             # Never publish raw FFmpeg output: it can contain camera credentials.
@@ -225,6 +228,8 @@ class Analysis:
                 reason = 'Substream format is unsupported. Use a stream up to 1920×1080 and 60 fps.'
             else:
                 reason = 'Could not read a valid substream video format. Check the substream path, camera RTSP settings and connection.'
+            if stream_name == 'mainstream':
+                reason = reason.replace('substream', 'mainstream').replace('Substream', 'Mainstream').replace('1920×1080', '4096×2160')
             self.probe_error = reason
             self.geometry_confirmed = False
             self.state = 'substream_probe_failed'
@@ -237,7 +242,7 @@ class Analysis:
         self.tracker = Tracker(self.settings)
         args = [cfg.ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '1']
         args += ['-re', '-stream_loop', '-1'] if cfg.file_source else ['-rtsp_transport', 'tcp', '-timeout', '5000000']
-        args += ['-i', cfg.analysis_source, '-an', '-map', '0:v:0', '-fps_mode', 'passthrough',
+        args += ['-i', source, '-an', '-map', '0:v:0', '-fps_mode', 'passthrough',
                  '-pix_fmt', 'gray', '-threads', '1', '-f', 'rawvideo', 'pipe:1']
         self.process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.reader_stop.clear()

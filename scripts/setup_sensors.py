@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -227,12 +228,16 @@ def check_receiver_ownership(gnss_port, nmea_port, adsb_serial, active_fn=None):
 
 
 def resolve_sensor_args(args, config, detect_fn=None, active_fn=None,
-                        candidates_fn=None):
+                        candidates_fn=None, sleep_fn=None,
+                        gnss_wait_seconds=300, gnss_poll_seconds=15):
     """Resolve explicit-or-detected hardware and run ownership guards.
 
     Returns True when provisioning should proceed, False when --detect
-    found no hardware at all. Raises on detected-but-unusable GNSS and
-    on competing-service ownership. Mutates args with detected values.
+    found no hardware at all. Detected-but-unusable GNSS waits up to
+    gnss_wait_seconds for the modem to answer (a modem still coming up
+    after power-on answers its AT probe late, not never), then warns and
+    provisions whatever else was found instead of aborting the run.
+    Raises on competing-service ownership. Mutates args with detected values.
     """
     if detect_fn is None:
         detect_fn = detect_sensors
@@ -252,11 +257,23 @@ def resolve_sensor_args(args, config, detect_fn=None, active_fn=None,
         owned = {config.get('at_port')} if config.get('at_port') else set()
         found = detect_fn(owned_ports=owned)
         if found['gnss_status'] == 'unusable':
-            raise RuntimeError(
-                'GNSS hardware detected but unusable: ' + '; '.join(found['gnss_unusable']) +
-                '. Stop the owning service or provision explicitly with --gnss-port.')
+            if sleep_fn is None:
+                sleep_fn = time.sleep
+            print(f'GNSS hardware detected but not answering yet; waiting up to {gnss_wait_seconds}s for it to become ready...')
+            waited = 0
+            while found['gnss_status'] == 'unusable' and waited < gnss_wait_seconds:
+                sleep_fn(gnss_poll_seconds)
+                waited += gnss_poll_seconds
+                found = detect_fn(owned_ports=owned)
+        if found['gnss_status'] == 'unusable':
+            print('WARNING: GNSS hardware detected but still unusable: ' +
+                  '; '.join(found['gnss_unusable']) +
+                  '. Provisioning without GNSS time; rerun setup once the modem is ready.')
         if not found['adsb_serial'] and not found['gnss_port']:
-            print('No sensor hardware detected; leaving sensor services unprovisioned.')
+            if found['gnss_status'] == 'unusable':
+                print('No usable sensor hardware to provision; leaving sensor services unprovisioned.')
+            else:
+                print('No sensor hardware detected; leaving sensor services unprovisioned.')
             return False
         if found['adsb_serial']:
             if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', found['adsb_serial']):

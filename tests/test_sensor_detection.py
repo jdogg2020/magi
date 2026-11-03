@@ -209,16 +209,53 @@ class ResolveTests(unittest.TestCase):
             SETUP.resolve_sensor_args(args, {}, detect_fn=detect, active_fn=active,
                                       candidates_fn=lambda: [])
 
-    def test_unusable_gnss_raises_instead_of_silent_success(self):
+    def test_unusable_gnss_waits_then_warns_and_provisions_rest(self):
+        args = sensor_args(detect=True)
+        calls = []
+        detect = lambda owned_ports=(): {'adsb_serial': 'NOOELEC1', 'gnss_port': None,
+                                         'gnss_status': 'unusable',
+                                         'gnss_unusable': ['portA (busy)']}
+        self.assertTrue(SETUP.resolve_sensor_args(
+            args, {}, detect_fn=detect, active_fn=lambda unit: False,
+            candidates_fn=lambda: ['portA'], sleep_fn=calls.append,
+            gnss_wait_seconds=30, gnss_poll_seconds=15))
+        self.assertEqual(calls, [15, 15])
+        self.assertEqual(args.adsb_serial, 'NOOELEC1')
+        self.assertIsNone(args.gnss_port)
+        self.assertFalse(args.gnss_time)
+
+    def test_unusable_gnss_recovers_when_modem_answers(self):
+        args = sensor_args(detect=True)
+        owned_port = '/dev/serial/by-id/usb-SIMCOM_SIM7600G-H_OK-if02-port0'
+        calls = []
+        seen = []
+
+        def detect(owned_ports=()):
+            seen.append(1)
+            if len(seen) == 1:
+                return {'adsb_serial': None, 'gnss_port': None,
+                        'gnss_status': 'unusable',
+                        'gnss_unusable': ['portA (probe failed)']}
+            return {'adsb_serial': None, 'gnss_port': owned_port,
+                    'gnss_status': 'found', 'gnss_unusable': []}
+
+        self.assertTrue(SETUP.resolve_sensor_args(
+            args, {}, detect_fn=detect, active_fn=lambda unit: False,
+            candidates_fn=lambda: ['portA'], sleep_fn=calls.append,
+            gnss_wait_seconds=30, gnss_poll_seconds=15))
+        self.assertEqual(calls, [15])
+        self.assertEqual(args.gnss_port, owned_port)
+        self.assertTrue(args.gnss_time)
+
+    def test_unusable_gnss_alone_returns_false_without_raise(self):
         args = sensor_args(detect=True)
         detect = lambda owned_ports=(): {'adsb_serial': None, 'gnss_port': None,
                                          'gnss_status': 'unusable',
                                          'gnss_unusable': ['portA (busy)']}
-        with self.assertRaises(RuntimeError) as caught:
-            SETUP.resolve_sensor_args(args, {}, detect_fn=detect,
-                                      active_fn=lambda unit: False,
-                                      candidates_fn=lambda: ['portA'])
-        self.assertIn('portA', str(caught.exception))
+        self.assertFalse(SETUP.resolve_sensor_args(
+            args, {}, detect_fn=detect, active_fn=lambda unit: False,
+            candidates_fn=lambda: ['portA'], sleep_fn=lambda seconds: None,
+            gnss_wait_seconds=30, gnss_poll_seconds=15))
         self.assertIsNone(args.gnss_port)
 
     def test_no_hardware_returns_false(self):

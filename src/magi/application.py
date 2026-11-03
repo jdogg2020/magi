@@ -376,12 +376,30 @@ class Application:
         previous = self.motion_continuation
         if not previous:
             return
-        if self.recorder.active or not self.cfg.detection['enabled']:
-            self.motion_continuation = None
-            return
-        # Do not bridge reconnects, storage failures, or an expired ring buffer.
-        if (self.recorder.state != 'buffering' or self.recorder.session != previous['meta']['session_id']
-                or not self.recorder.segments or self.recorder.segments[0]['start'] > previous['limit']):
+        # A continuation that cannot happen must say so on the finished
+        # event instead of ending the linked recording silently. The
+        # footage itself is preserved either way; only the linkage is lost.
+        # (A full assembly queue is not a failure here: the pending
+        # continuation is kept below and retried while the ring still
+        # reaches back to the limit.)
+        reason = None
+        if self.recorder.active:
+            reason = 'superseded_by_new_event'
+        elif not self.cfg.detection['enabled']:
+            reason = 'detection_disabled'
+        elif self.recorder.state != 'buffering':
+            reason = 'recorder_not_buffering'
+        elif self.recorder.session != previous['meta']['session_id']:
+            reason = 'session_changed'
+        elif not self.recorder.segments or self.recorder.segments[0]['start'] > previous['limit']:
+            reason = 'buffer_trimmed'
+        if reason:
+            previous['meta']['continuation_failed_reason'] = reason
+            try:
+                self.recorder._save(previous)
+            except (OSError, ValueError):
+                LOG.warning('could not record continuation failure for event %s',
+                            previous['meta']['id'])
             self.motion_continuation = None
             return
         try:

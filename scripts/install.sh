@@ -6,6 +6,7 @@ skip_dependencies=false
 lan=false
 identification=false
 require_mounted_ssd=false
+skip_sensors=false
 sensor_options=()
 for argument in "$@"; do
   case "$argument" in
@@ -18,7 +19,8 @@ for argument in "$@"; do
     --adsb-serial=*) sensor_options+=(--adsb-serial "${argument#*=}") ;;
     --gnss-time) sensor_options+=(--gnss-time) ;;
     --require-mounted-ssd) require_mounted_ssd=true ;;
-    *) echo "Usage: $0 [--dry-run] [--skip-dependencies] [--lan] [--identification] [--require-mounted-ssd] [--gnss-port=PATH] [--nmea-port=PATH] [--adsb-serial=SERIAL] [--gnss-time]" >&2; exit 2 ;;
+    --skip-sensors) skip_sensors=true ;;
+    *) echo "Usage: $0 [--dry-run] [--skip-dependencies] [--lan] [--identification] [--require-mounted-ssd] [--skip-sensors] [--gnss-port=PATH] [--nmea-port=PATH] [--adsb-serial=SERIAL] [--gnss-time]" >&2; exit 2 ;;
   esac
 done
 source_dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -31,7 +33,9 @@ if "$dry_run"; then
   if "$lan"; then echo "LAN dashboard explicitly enabled on port 8090."; else echo "Dashboard binds to localhost unless existing config says otherwise."; fi
   if "$identification"; then echo "Would also install OS-managed python3-skyfield for satellite propagation."; fi
   if "$require_mounted_ssd"; then echo "Mounted-SSD requirement explicitly enabled."; else echo "New directory installs use a storage cap up to 10 GB and reserve 2 GB free."; fi
-  if [[ ${#sensor_options[@]} -gt 0 ]]; then echo "Would provision explicitly selected GNSS/ADS-B sensors and optional chrony using setup_sensors.py."; fi
+  if "$skip_sensors"; then echo "Sensor provisioning explicitly skipped.";
+  elif [[ ${#sensor_options[@]} -gt 0 ]]; then echo "Would provision explicitly selected GNSS/ADS-B sensors and optional chrony using setup_sensors.py.";
+  else echo "Would auto-detect attached GNSS/ADS-B sensors and provision any found hardware using setup_sensors.py."; fi
   exit 0
 fi
 if [[ "$EUID" -ne 0 ]]; then echo "Run the reviewed installer with sudo." >&2; exit 1; fi
@@ -180,9 +184,11 @@ done
 if ! "$ready"; then
   echo "Service did not become healthy. Check: sudo journalctl -u magi.service -n 40" >&2; exit 1
 fi
-if [[ ${#sensor_options[@]} -gt 0 ]]; then
-  run_step 0 "Provision optional station sensors" /usr/bin/python3 /opt/magi/scripts/setup_sensors.py "${sensor_options[@]}"
-elif [[ -f /etc/systemd/system/magi-sensors.service ]]; then
+if ! "$skip_sensors"; then
+  if [[ ${#sensor_options[@]} -eq 0 ]]; then sensor_options+=(--detect); fi
+  run_step 0 "Provision station sensors" /usr/bin/python3 /opt/magi/scripts/setup_sensors.py "${sensor_options[@]}"
+fi
+if [[ -f /etc/systemd/system/magi-sensors.service ]]; then
   systemctl try-restart magi-sensors.service
 fi
 echo "Magi is running. Open http://PI-IP:8090 if LAN access is enabled."

@@ -89,6 +89,92 @@ def active(unit):
     return subprocess.run(['systemctl', 'is-active', '--quiet', unit]).returncode == 0
 
 
+def find_rtlsdr_serials(sysfs_root=Path('/sys/bus/usb/devices')):
+    """Serial numbers of attached Realtek RTL-SDR receivers, from sysfs."""
+    serials = []
+    for device in Path(sysfs_root).glob('*'):
+        try:
+            if (device/'idVendor').read_text().strip() != '0bda':
+                continue
+            serial = (device/'serial').read_text().strip()
+        except OSError:
+            continue
+        if serial:
+            serials.append(serial)
+    return serials
+
+
+def sim7600_candidates(by_id_dir=Path('/dev/serial/by-id')):
+    """Stable by-id serial ports whose name suggests a SIMCom modem.
+
+    A name is not evidence of function; every candidate still gets an AT
+    identity probe before it is used.
+    """
+    try:
+        entries = sorted(Path(by_id_dir).iterdir())
+    except OSError:
+        return []
+    return [p for p in entries
+            if 'sim7600' in p.name.lower() or 'simcom' in p.name.lower()]
+
+
+def port_busy(path):
+    if shutil.which('fuser') and subprocess.run(
+            ['fuser', str(path)], stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL).returncode == 0:
+        return True
+    return False
+
+
+def probe_sim7600(port_path, query_fn=None, port_opener=None):
+    """True when the port answers AT commands as a SIM7600 AT port.
+
+    Never raises: a probe failure means 'not the AT port', not an error.
+    """
+    if query_fn is None:
+        sys.path.insert(0, str(ROOT/'src'))
+        from magi.sensor_service import query as query_fn
+    if port_opener is None:
+        import serial
+
+        def port_opener(path):
+            return serial.Serial(path, 115200, timeout=.2, write_timeout=2,
+                                 exclusive=True)
+    try:
+        with port_opener(port_path) as port:
+            query_fn(port, 'AT')
+            return any('SIM7600' in line for line in query_fn(port, 'AT+CGMM'))
+    except Exception:
+        return False
+
+
+def detect_sensors(sysfs_root=Path('/sys/bus/usb/devices'),
+                   by_id_dir=Path('/dev/serial/by-id'),
+                   query_fn=None, port_opener=None, busy=None):
+    """Detect attached sensor hardware.
+
+    Returns {'adsb_serial': str|None, 'gnss_port': str|None}. Multiple
+    RTL-SDR receivers raise instead of guessing which one to bind.
+    """
+    if busy is None:
+        busy = port_busy
+    serials = find_rtlsdr_serials(sysfs_root)
+    if len(serials) > 1:
+        raise RuntimeError(
+            'Multiple RTL-SDR receivers detected; provision one explicitly '
+            'with --adsb-serial: ' + ', '.join(sorted(serials)))
+    adsb_serial = serials[0] if serials else None
+    gnss_port = None
+    for candidate in sim7600_candidates(by_id_dir):
+        if busy(candidate):
+            continue
+        if probe_sim7600(candidate, query_fn=query_fn,
+                         port_opener=port_opener):
+            gnss_port = str(candidate)
+            break
+    return {'adsb_serial': adsb_serial, 'gnss_port': gnss_port}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--gnss-port', help='Verified /dev/serial/by-id AT port (SIM7600 only)')
@@ -96,6 +182,7 @@ def main():
     parser.add_argument('--adsb-serial', help='RTL-SDR USB serial number to bind exclusively')
     parser.add_argument('--gnss-time', action='store_true', help='Replace systemd-timesyncd with chrony plus coarse GPS time and network fallback')
     parser.add_argument('--reset-location', action='store_true', help='Acquire a new fixed station position; recalibrate cameras after moving')
+    parser.add_argument('--detect', action='store_true', help='Detect attached GNSS/ADS-B hardware and provision it; explicit sensor flags take precedence')
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Run with sudo.')
@@ -118,6 +205,25 @@ def main():
             if active(unit):
                 raise RuntimeError(f'{unit} is active; resolve receiver ownership before setup.')
     apt('python3-serial')
+    if args.detect and not (args.gnss_port or args.nmea_port or args.adsb_serial or args.gnss_time):
+        candidates = sim7600_candidates()
+        if candidates:
+            for unit in ('ModemManager.service', 'gpsd.service', 'gpsd.socket'):
+                if active(unit):
+                    raise RuntimeError(f'{unit} already owns modem/GNSS management; integration required before setup.')
+        found = detect_sensors()
+        if not found['adsb_serial'] and not found['gnss_port']:
+            print('No sensor hardware detected; leaving sensor services unprovisioned.')
+            return
+        if found['adsb_serial']:
+            if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', found['adsb_serial']):
+                raise RuntimeError('Detected receiver serial is not usable as an explicit serial.')
+            args.adsb_serial = found['adsb_serial']
+            print(f"Detected ADS-B receiver {found['adsb_serial']}")
+        if found['gnss_port']:
+            args.gnss_port = found['gnss_port']
+            args.gnss_time = True
+            print(f"Detected GNSS AT port {found['gnss_port']} (provisioning GNSS time)")
     if args.gnss_port:
         # Stop only our own collector before verifying the explicitly selected port.
         if active('magi-sensors.service'):

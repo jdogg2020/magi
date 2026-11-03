@@ -372,13 +372,28 @@ class Application:
             self.next_status = now + 1
             self._snapshot()
 
+    def _abandon_continuation(self, reason):
+        # A continuation that cannot happen must say so on the finished
+        # event instead of ending the linked recording silently. The
+        # footage itself is preserved either way; only the linkage is lost.
+        previous = self.motion_continuation
+        self.motion_continuation = None
+        if not previous:
+            return
+        previous['meta']['continuation_failed_reason'] = reason
+        try:
+            if self.recorder is not None:
+                self.recorder._save(previous)
+            else:
+                atomic_json(previous['dir'] / 'event.json', previous['meta'])
+        except (OSError, ValueError):
+            LOG.warning('could not record continuation failure for event %s',
+                        previous['meta']['id'])
+
     def _continue_motion(self):
         previous = self.motion_continuation
         if not previous:
             return
-        # A continuation that cannot happen must say so on the finished
-        # event instead of ending the linked recording silently. The
-        # footage itself is preserved either way; only the linkage is lost.
         # (A full assembly queue is not a failure here: the pending
         # continuation is kept below and retried while the ring still
         # reaches back to the limit.)
@@ -394,13 +409,7 @@ class Application:
         elif not self.recorder.segments or self.recorder.segments[0]['start'] > previous['limit']:
             reason = 'buffer_trimmed'
         if reason:
-            previous['meta']['continuation_failed_reason'] = reason
-            try:
-                self.recorder._save(previous)
-            except (OSError, ValueError):
-                LOG.warning('could not record continuation failure for event %s',
-                            previous['meta']['id'])
-            self.motion_continuation = None
+            self._abandon_continuation(reason)
             return
         try:
             kind = previous['meta']['trigger_type']
@@ -931,7 +940,10 @@ class Application:
         return path
 
     def stop_capture(self):
-        self.motion_continuation = None
+        # Settings changes, shutdown, and capture errors all take this path;
+        # a pending continuation abandoned here gets the same recorded
+        # reason as one abandoned by _continue_motion's guards.
+        self._abandon_continuation('capture_stopped')
         if self.substream:
             self.substream.extra_protected = self.media.protected() | self.identifier.protected() | self.calibration_protected() | (set(self.recorder._protected()) if self.recorder else set()) | (self.previews.protected() if self.previews else set())
             try:

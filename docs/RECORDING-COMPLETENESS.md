@@ -47,15 +47,18 @@ past the limit, a superseding new event, detection disabled, or the recorder
 not buffering. The finished clip looked like an ordinary completed event,
 so a lost linkage was indistinguishable from a passage that simply ended.
 
-Fix (`application.py`, `_continue_motion`): the finished event's metadata
-now records `continuation_failed_reason` (`session_changed`,
-`buffer_trimmed`, `superseded_by_new_event`, `detection_disabled`,
-`recorder_not_buffering`) and saves it. A full assembly queue is not a
+Fix (`application.py`, `_continue_motion` and `stop_capture`, sharing one
+`_abandon_continuation` helper): the finished event's metadata now records
+`continuation_failed_reason` (`session_changed`, `buffer_trimmed`,
+`superseded_by_new_event`, `detection_disabled`, `recorder_not_buffering`,
+and `capture_stopped` for the `stop_capture` path, which covers settings
+changes, shutdown, and capture errors). A full assembly queue is not a
 failure: the pending continuation is kept and retried while the ring still
 reaches back to the limit, and only records `buffer_trimmed` if the ring
 moves past the limit during the retry. No unbounded queue or retry was
 added. Regression tests in `tests/test_recording_completeness.py` failed
-before the fix (reason absent) and pass after it.
+before the fix (reason absent) and pass after it, including a
+`stop_capture` test that reads the reason back from the saved `event.json`.
 
 ## Finding 2 (limit, documented, no change): four-track-per-poll trigger slice
 
@@ -121,31 +124,43 @@ failed/interrupted with original segments retained for operator recovery.
 ## Frame-level evidence
 
 Fixture: generated 160×90, 10 fps video with each frame a solid colour
-encoding its index, run through real segment assembly and decoded
-(frame cadence 10 fps; edge tolerance one segment + one frame, derived
-from segment-close/read delay and cadence; split overlap is reported
-across clips, duplicates are counted only within a clip). Fixture config:
-segment 0.5 s, pre-roll 1 s, post-roll 1 s, max event 6 s, stall 3 s.
+encoding its index, run through real segment assembly and decoded.
+Coverage is checked two independent ways: the clip must equal its pinned
+segments concatenated, *and* its first/last frames must fall within tight
+bounds of expected boundaries derived independently of pinning — from
+trigger times recorded by the test, the recorder's session time mapping
+(origin), and the known 10 fps source rate. Measured mapping error across
+runs was d_first ≤ 0 and d_last ≥ −1 frames, so the bounds are d_first ≤ 1
+(start) and d_last ≥ −2 (end); a missing edge segment (5 frames) fails
+either bound. Duplicates are checked on each clip's own frame list before
+any set conversion; split overlap is reported across clips, never counted
+as duplication. Absolute frame indices vary run to run with warm-up
+timing; the deltas and counts below are the stable evidence. Fixture
+config: segment 0.5 s, pre-roll 1 s, post-roll 1 s, max event 6 s, stall 3 s.
 
-- Single event, main: frames 5–29, 25 frames, missing [], duplicates [],
-  largest gap 0. Clip exactly equals its pinned segments concatenated.
-- Single event, substream: frames 5–29, 25 frames, missing [], duplicates [],
-  largest gap 0. Same assembly fidelity.
-- Split clips, main: union frames 10–89, 80 frames, missing [],
-  duplicates [], largest gap 0, intentional pre-roll overlap 10 frames
-  (1.0 s). Both clips individually equal their pinned segments.
-- Disconnect clip: frames 10–34, 25 frames, missing [], duplicates [],
+- Single event, main and substream: d_first 0, d_last +3, 25 frames each,
+  missing [], duplicates [], largest gap 0. Each clip exactly equals its
+  pinned segments concatenated.
+- Split clips, both streams: first clip d_first −4, d_last −1; second
+  clip d_first 0, d_last +3; union 80 frames per stream, missing [],
+  largest gap 0, intentional pre-roll overlap 10 frames (1.0 s).
+  Per-clip duplicates checked before set conversion: none. Both streams'
+  second clips carry `continuation_of`.
+- Disconnect clip: d_first −4 against its expected beginning; against
+  the disconnect moment, d_last +5 (the SIGTERM flush recovers the open
+  segment's buffered frames past the kill instant), within the tail bound
+  of one segment + 2 frames. 25 frames, missing [], duplicates [],
   largest gap 0, state `interrupted`, reason `camera_disconnected`,
-  requested-end shortfall −0.499 s (overshoot, see Finding 5).
+  requested-end shortfall 0.375 s (see Finding 5).
 
 Deterministic regression tests: `tests/test_recording_completeness.py`,
-18 tests (Application continuity, Recorder boundaries, real-tracker
+19 tests (Application continuity, Recorder boundaries, real-tracker
 ordering, frame assembly). Related suites run with no regressions:
 `test_recorder` (16), `test_motion_extension` + `test_event_review` +
 `test_motion_identification` + `test_satellite_review_filter` (88),
-JS event-review test. No astronomy suites were run. Synthetic footage
-proves behaviour under fixture assumptions only; real-camera validation
-remains separate (below).
+JS event-review test — 123 tests total. No astronomy suites were run.
+Synthetic footage proves behaviour under fixture assumptions only;
+real-camera validation remains separate (below).
 
 ## Hardware validation procedure (Pi, fresh events, no target identification)
 

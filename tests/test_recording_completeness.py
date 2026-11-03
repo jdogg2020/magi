@@ -11,6 +11,7 @@ monotonic clock, following tests/test_motion_extension.py.
 """
 import dataclasses
 import json
+import math
 import os
 import subprocess
 import time
@@ -264,6 +265,19 @@ class ApplicationContinuityTests(unittest.TestCase):
         self.assertIsNotNone(self.app.recorder.active)
         self.assertIsNone(self.app.substream.active)
 
+    def test_stop_capture_records_continuation_failure(self):
+        previous = self.finish_for_continuation()
+        event_id = previous['meta']['id']
+        # The mocked harness never spawned real sessions, so clear the
+        # session markers that close() would otherwise dereference.
+        self.app.recorder.session = None
+        self.app.substream.session = None
+        self.app.stop_capture()
+        self.assertIsNone(self.app.motion_continuation)
+        self.assertEqual(previous['meta'].get('continuation_failed_reason'), 'capture_stopped')
+        saved = json.loads((self.app.cfg.root / 'events' / event_id / 'event.json').read_text())
+        self.assertEqual(saved.get('continuation_failed_reason'), 'capture_stopped')
+
     def test_substream_absent_when_it_was_not_buffering_at_trigger(self):
         # A missing substream must never prevent saving the original; the
         # consequence is that no small video exists for this event at all.
@@ -431,6 +445,27 @@ def decode_indices(path, width=160, height=90):
     return indices
 
 
+FRAME_FPS = 10
+
+
+def expected_first(trigger_mono, pre_seconds, origin):
+    """First source frame of a requested window, from test-measured times.
+
+    Independent of pinning decisions: it uses the trigger time recorded by
+    the test, the configured pre-roll, the recorder's session time mapping
+    (origin), and the known source frame rate — not the segments that
+    happened to be pinned. A clip that starts later than this (beyond
+    rounding) is missing its beginning however complete it looks against
+    its own pinned segments.
+    """
+    return math.floor((trigger_mono - pre_seconds - origin) * FRAME_FPS)
+
+
+def expected_last(end_mono, origin):
+    """Last source frame of a requested window, on the same independent basis."""
+    return math.ceil((end_mono - origin) * FRAME_FPS)
+
+
 def frame_report(indices):
     """Missing/duplicated frames and the largest continuous gap, frame level."""
     seen, duplicates, missing = set(), [], []
@@ -506,9 +541,33 @@ class FrameAssemblyTests(unittest.TestCase):
         for path in (event_dir / source_name).glob('*.mkv'):
             os.link(path, refs / path.name)
 
+    def assert_clip_boundaries(self, indices, exp_first, exp_last, label, tail_slack=2):
+        """Bound missing beginnings/endings against independent expectations.
+
+        Correct coverage implies the clip starts at or before the first
+        expected frame and ends at or after the last, up to frame rounding:
+        measured mapping error across fixture runs was d_first <= 0 and
+        d_last >= -1, so the bounds below (1 frame at the start, 2 at the
+        end) leave a small margin while a missing edge segment (5 frames)
+        still fails. `tail_slack` widens only the ending bound where a
+        structural loss is possible (disconnect open segment).
+        """
+        report = frame_report(indices)
+        d_first = indices[0] - exp_first
+        d_last = indices[-1] - exp_last
+        print(f'{label}: first={indices[0]} last={indices[-1]} expected {exp_first}..{exp_last} '
+              f'd_first={d_first} d_last={d_last} missing={report["missing"]} '
+              f'duplicates={report["duplicates"]} largest_gap={report["largest_gap"]}')
+        self.assertLessEqual(d_first, 1, f'{label}: clip starts after its expected beginning')
+        self.assertGreaterEqual(d_last, -tail_slack, f'{label}: clip ends before its expected ending')
+        self.assertEqual(report['missing'], [], f'{label}: missing frames')
+        self.assertEqual(report['duplicates'], [], f'{label}: duplicated frames')
+
     def test_single_event_main_and_substream_frames_are_complete(self):
         self.until(lambda: len(self.rec.segments) >= 4 and len(self.sub.segments) >= 4)
+        t_trig = time.monotonic()
         event_id = self.rec.trigger('motion', {'track_id': 'target'})['event_id']
+        t_sub = time.monotonic()
         self.sub.trigger('motion', {'track_id': 'target'}, event_id=event_id)
         self.until(lambda: self.rec.active is None and self.sub.active is None)
         directory = self.cfg.root / 'events' / event_id
@@ -517,9 +576,10 @@ class FrameAssemblyTests(unittest.TestCase):
         self.link_segments(directory, 'source-substream', refs / 'sub')
         self.restore_assembly()
         self.until(lambda: not self.rec.jobs and not self.sub.jobs)
-        for label, clip_name, meta_name, ref_dir in (
-                ('main', 'clip.mkv', 'event.json', refs / 'main'),
-                ('substream', 'preview-substream.mp4', 'substream.json', refs / 'sub')):
+        for label, clip_name, meta_name, ref_dir, origin, ttrig in (
+                ('main', 'clip.mkv', 'event.json', refs / 'main', self.rec.origin, t_trig),
+                ('substream', 'preview-substream.mp4', 'substream.json', refs / 'sub',
+                 self.sub.origin, t_sub)):
             meta = json.loads((directory / meta_name).read_text())
             self.assertEqual(meta['state'], 'complete')
             clip_indices = decode_indices(directory / clip_name)
@@ -530,12 +590,11 @@ class FrameAssemblyTests(unittest.TestCase):
             # segments concatenated, with no frame dropped or duplicated.
             self.assertEqual(clip_indices, segment_indices,
                              f'{label}: assembled clip differs from pinned segments')
-            report = frame_report(clip_indices)
-            print(f'{label} frames: first={report["first"]} last={report["last"]} '
-                  f'count={report["count"]} missing={report["missing"]} '
-                  f'duplicates={report["duplicates"]} largest_gap={report["largest_gap"]}')
-            self.assertEqual(report['missing'], [], f'{label}: missing frames')
-            self.assertEqual(report['duplicates'], [], f'{label}: duplicated frames')
+            # Independent boundaries: the requested window, not the pinned set.
+            self.assert_clip_boundaries(
+                clip_indices,
+                expected_first(ttrig, self.cfg.pre, origin),
+                expected_last(ttrig + self.cfg.post, origin), label)
             # Segment timelines must be contiguous within the session.
             media = [(entry['media_start'], entry['media_end']) for entry in meta['segments']]
             for ( _start, end), (next_start, _end) in zip(media, media[1:]):
@@ -544,8 +603,23 @@ class FrameAssemblyTests(unittest.TestCase):
     def test_disconnect_clip_is_internally_complete_and_marked_interrupted(self):
         from magi.recorder import stop_process
         self.until(lambda: len(self.rec.segments) >= 4)
+        t_trig = time.monotonic()
         event_id = self.rec.trigger('motion', {'track_id': 'target'})['event_id']
-        self.until(lambda: len(self.rec.segments) >= 6)
+        # Keep extending so the deadline stays ahead of the disconnect:
+        # otherwise the event can finish normally on its post-roll just as
+        # the 6th segment lands, and the test would no longer exercise a
+        # mid-event disconnect at all.
+        end = time.monotonic() + 25
+        while time.monotonic() < end:
+            self.rec.extend_motion(time.monotonic())
+            self.rec.tick()
+            self.sub.tick()
+            if len(self.rec.segments) >= 6:
+                break
+            time.sleep(0.04)
+        else:
+            self.fail('timed out waiting for segments')
+        t_disc = time.monotonic()
         stop_process(self.rec.process)
         self.until(lambda: self.rec.reconnects >= 1)
         self.restore_assembly()
@@ -555,36 +629,45 @@ class FrameAssemblyTests(unittest.TestCase):
         self.assertEqual(meta['state'], 'interrupted')
         self.assertEqual(meta['interruption'], 'camera_disconnected')
         clip_indices = decode_indices(directory / 'clip.mkv')
-        report = frame_report(clip_indices)
-        print(f'disconnect clip: first={report["first"]} last={report["last"]} '
-              f'count={report["count"]} missing={report["missing"]} '
-              f'duplicates={report["duplicates"]} largest_gap={report["largest_gap"]}')
-        self.assertEqual(report['missing'], [])
-        self.assertEqual(report['duplicates'], [])
-        # Shortfall against the requested end, in media time: only
-        # completed (csv-listed) segments are pinned, so the open segment
-        # at disconnect bounds the tail that can be missing.
+        # Missing tail is bounded, not just excess: only completed
+        # (csv-listed) segments are pinned, so the open segment at
+        # disconnect can lose up to one segment (5 frames here) plus the
+        # usual 2-frame mapping slack. The beginning bound is unchanged.
+        self.assert_clip_boundaries(
+            clip_indices,
+            expected_first(t_trig, self.cfg.pre, self.rec.origin),
+            expected_last(t_disc, self.rec.origin), 'disconnect',
+            tail_slack=int(self.cfg.segment * FRAME_FPS) + 2)
+        # Shortfall against the requested end, in media time, for the record.
         origin_wall = meta['segments'][0]['host_start_unix'] - meta['segments'][0]['media_start']
         requested_media_end = meta['requested_end_unix'] - origin_wall
-        shortfall = requested_media_end - meta['segments'][-1]['media_end']
-        print(f'disconnect shortfall vs requested end: {shortfall:.3f}s')
-        # Negative means the last completed segment overshoots the
-        # requested end (extra coverage, bounded by one segment).
-        self.assertGreaterEqual(shortfall, -0.6)
+        print(f'disconnect shortfall vs requested end: '
+              f'{requested_media_end - meta["segments"][-1]["media_end"]:.3f}s')
 
     def test_split_clips_union_has_no_gap_and_reports_overlap(self):
         self.until(lambda: len(self.rec.segments) >= 4 and len(self.sub.segments) >= 4)
+        t_trig1 = time.monotonic()
         first_id = self.rec.trigger('motion', {'track_id': 'target'})['event_id']
+        t_sub1 = time.monotonic()
         self.sub.trigger('motion', {'track_id': 'target'}, event_id=first_id)
         first, sub_first = self.rec.active, self.sub.active
-        # Extend until the first clip hits its maximum-duration limit.
+        # Extend both streams, as Application.tick mirrors extensions to
+        # the substream, until the first clips hit the maximum-duration limit.
+        last_main = last_sub = None
         while self.rec.active is not None:
-            self.rec.extend_motion(time.monotonic())
+            stamp = time.monotonic()
+            if self.rec.extend_motion(stamp):
+                last_main = stamp
+            if self.sub.extend_motion(stamp):
+                last_sub = stamp
             self.rec.tick()
             self.sub.tick()
             time.sleep(0.04)
+        self.until(lambda: self.sub.active is None)
+        t_trig2 = time.monotonic()
         second_id = self.rec.trigger('motion', {'track_id': 'target'},
                                      continuation=first)['event_id']
+        t_sub2 = time.monotonic()
         self.sub.trigger('motion', {'track_id': 'target'}, event_id=second_id,
                          continuation=sub_first)
         self.until(lambda: self.rec.active is None and self.sub.active is None)
@@ -593,35 +676,64 @@ class FrameAssemblyTests(unittest.TestCase):
         second_dir = self.cfg.root / 'events' / second_id
         self.link_segments(first_dir, 'source', refs / 'first')
         self.link_segments(second_dir, 'source', refs / 'second')
+        self.link_segments(first_dir, 'source-substream', refs / 'first-sub')
+        self.link_segments(second_dir, 'source-substream', refs / 'second-sub')
         self.restore_assembly()
         self.until(lambda: not self.rec.jobs and not self.sub.jobs)
-        first_meta = json.loads((first_dir / 'event.json').read_text())
-        second_meta = json.loads((second_dir / 'event.json').read_text())
-        self.assertEqual(second_meta['continuation_of'], first_id)
-        first_indices = decode_indices(first_dir / 'clip.mkv')
-        second_indices = decode_indices(second_dir / 'clip.mkv')
-        # Assembly fidelity for both clips, as in the single-event test.
-        for label, meta, clip_indices, ref_dir in (
-                ('first', first_meta, first_indices, refs / 'first'),
-                ('second', second_meta, second_indices, refs / 'second')):
-            segment_indices = []
-            for entry in meta['segments']:
-                segment_indices.extend(decode_indices(ref_dir / entry['file']))
-            self.assertEqual(clip_indices, segment_indices,
-                             f'{label}: assembled clip differs from pinned segments')
-        union = sorted(set(first_indices) | set(second_indices))
-        overlap = sorted(set(first_indices) & set(second_indices))
-        report = frame_report(union)
-        print(f'split union: first={report["first"]} last={report["last"]} '
-              f'count={report["count"]} missing={report["missing"]} '
-              f'overlap_frames={len(overlap)} largest_gap={report["largest_gap"]}')
-        self.assertEqual(frame_report(first_indices)['missing'], [])
-        self.assertEqual(frame_report(second_indices)['missing'], [])
-        self.assertEqual(report['missing'], [], 'linked clips must not leave a gap')
-        self.assertEqual(report['duplicates'], [])
-        # The continuation's pre-roll intentionally overlaps the first clip;
-        # report its size rather than treating overlap as a defect.
-        self.assertGreater(len(overlap), 0, 'expected intentional pre-roll overlap at the split')
+        streams = (
+            ('main', 'clip.mkv', 'event.json', self.rec.origin, t_trig1, t_trig2, last_main,
+             refs / 'first', refs / 'second'),
+            ('substream', 'preview-substream.mp4', 'substream.json', self.sub.origin, t_sub1,
+             t_sub2, last_sub, refs / 'first-sub', refs / 'second-sub'),
+        )
+        for (label, clip_name, meta_name, origin, ttrig1, ttrig2, last_extend,
+             ref_first, ref_second) in streams:
+            first_meta = json.loads((first_dir / meta_name).read_text())
+            second_meta = json.loads((second_dir / meta_name).read_text())
+            self.assertEqual(second_meta['continuation_of'], first_id)
+            first_indices = decode_indices(first_dir / clip_name)
+            second_indices = decode_indices(second_dir / clip_name)
+            # Assembly fidelity for both clips, as in the single-event test.
+            for clip_label, meta, clip_indices, ref_dir in (
+                    ('first', first_meta, first_indices, ref_first),
+                    ('second', second_meta, second_indices, ref_second)):
+                segment_indices = []
+                for entry in meta['segments']:
+                    segment_indices.extend(decode_indices(ref_dir / entry['file']))
+                self.assertEqual(clip_indices, segment_indices,
+                                 f'{label} {clip_label}: assembled clip differs from pinned segments')
+            # Duplicates are checked on each clip's own frame list BEFORE
+            # any set conversion: converting first would hide them.
+            for clip_label, clip_indices in (('first', first_indices),
+                                             ('second', second_indices)):
+                report = frame_report(clip_indices)
+                self.assertEqual(report['missing'], [], f'{label} {clip_label}: missing frames')
+                self.assertEqual(report['duplicates'], [],
+                                 f'{label} {clip_label}: duplicated frames')
+            # Independent per-clip boundaries: first clip runs to its limit,
+            # the continuation starts at min(trigger - pre, limit) and runs
+            # to its inherited last motion + post-roll.
+            limit1 = (ttrig1 - self.cfg.pre) + self.cfg.max_event
+            start2 = min(ttrig2 - self.cfg.pre, limit1)
+            deadline2 = min(start2 + self.cfg.max_event, last_extend + self.cfg.post)
+            self.assert_clip_boundaries(
+                first_indices, expected_first(ttrig1, self.cfg.pre, origin),
+                expected_last(limit1, origin), f'{label} first')
+            self.assert_clip_boundaries(
+                second_indices, math.floor((start2 - origin) * FRAME_FPS),
+                expected_last(deadline2, origin), f'{label} second')
+            union = sorted(set(first_indices) | set(second_indices))
+            overlap = sorted(set(first_indices) & set(second_indices))
+            report = frame_report(union)
+            print(f'{label} split union: first={report["first"]} last={report["last"]} '
+                  f'count={report["count"]} missing={report["missing"]} '
+                  f'overlap_frames={len(overlap)} largest_gap={report["largest_gap"]}')
+            self.assertEqual(report['missing'], [],
+                             f'{label}: linked clips must not leave a gap')
+            # The continuation's pre-roll intentionally overlaps the first
+            # clip; report its size rather than treating overlap as a defect.
+            self.assertGreater(len(overlap), 0,
+                               f'{label}: expected intentional pre-roll overlap at the split')
 
 
 if __name__ == '__main__':

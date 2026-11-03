@@ -99,6 +99,18 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             hailo.ModelManifest.from_dict(bad)
 
+    def test_manifest_object_is_validated_like_a_dict(self):
+        config = hailo.validate_hailo_config({"mode": "shadow"})
+        bad_object = hailo.ModelManifest(name="night-sky", version="0.1.0",
+                                         runtime="hailo-10", labels=("aircraft", "cloud"))
+        with self.assertRaises(ValueError):
+            hailo.select_model(config, bad_object)
+        empty_labels = hailo.ModelManifest(name="night-sky", version="0.1.0", labels=())
+        with self.assertRaises(ValueError):
+            hailo.select_model(config, empty_labels)
+        good = hailo.stub_manifest()
+        self.assertEqual(hailo.select_model(config, good), good)
+
     def test_hef_export_produces_no_hef(self):
         plan = hailo.describe_hef_export("", "")
         self.assertEqual(plan["status"], "not_exported_stub_only")
@@ -147,6 +159,17 @@ class CropTests(unittest.TestCase):
         self.assertEqual(right - left, crop.crop_pixel_size)
         self.assertEqual(bottom - top, crop.crop_pixel_size)
 
+    def test_rejected_rows_are_preserved_with_reason(self):
+        rows = rows_for("a") + [{"seconds": 1.5, "target": [0.5, 0.5],
+                                 "box": [0.49, 0.49, 0.51, 0.51], "track_id": "a"}]
+        crops, rejected = hailo.extract_crops_with_rejected(
+            rows, source_width=640, source_height=360)
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0]["index"], 3)
+        self.assertEqual(rejected[0]["track_id"], "a")
+        self.assertEqual(rejected[0]["reason"], "missing_or_invalid_field")
+        self.assertTrue(crops)
+
     def test_tracker_frames_produce_usable_crops(self):
         rows = synthetic_tracker_rows()
         self.assertTrue(rows)
@@ -185,6 +208,43 @@ class RunnerTests(unittest.TestCase):
         result = hailo.run_event(meta, TwoLabelModel())
         self.assertIsNone(result["event"]["label"])
         self.assertEqual(result["event"]["abstention_reason"], "mixed_or_unresolved")
+
+    def test_rejected_track_rows_make_event_abstain_not_cloud(self):
+        class CloudModel:
+            manifest = hailo.stub_manifest()
+
+            def classify_track(self, crops):
+                return {"label": "cloud", "confidence": 0.9}
+
+        bad_row = {"seconds": 0.0, "target": [0.5, 0.5, 0.02, 0.02],
+                   "box": [0.51, 0.49, 0.49, 0.51], "track_id": "a"}
+        meta = {"id": "20261101T000000-abcdef012345",
+                "track_rows": rows_for("b") + [bad_row]}
+        result = hailo.run_event(meta, CloudModel())
+        self.assertIsNone(result["event"]["label"])
+        self.assertEqual(result["event"]["abstention_reason"], "incomplete_tracks_rejected")
+        self.assertEqual(result["rejected_count"], 1)
+        self.assertEqual(result["rejected_rows"][0]["track_id"], "a")
+        self.assertEqual(result["rejected_rows"][0]["reason"], "invalid_geometry")
+        self.assertEqual(result["tracks"][-1]["abstention_reason"], "rejected_track_rows")
+
+    def test_run_event_uses_meta_source_dimensions(self):
+        meta = {"id": "20261101T000000-abcdef012345", "track_rows": rows_for(),
+                "source_width": 1920, "source_height": 1080}
+        result = hailo.run_event(meta, hailo.StubModel())
+        self.assertEqual(result["source_width"], 1920)
+        self.assertEqual(result["source_height"], 1080)
+        self.assertFalse(result["source_dimensions_assumed"])
+        crop = result["tracks"][0]["crops"][0]
+        self.assertAlmostEqual(crop["object_pixel_width"], 0.02 * 1920)
+        self.assertNotIn("tiny_target_below_16px", crop["flags"])
+
+    def test_run_event_records_assumed_default_dimensions(self):
+        result = hailo.run_event({"id": "20261101T000000-abcdef012345",
+                                  "track_rows": rows_for()}, hailo.StubModel())
+        self.assertEqual(result["source_width"], 640)
+        self.assertEqual(result["source_height"], 360)
+        self.assertTrue(result["source_dimensions_assumed"])
 
     def test_single_unopposed_label_is_kept_at_lowest_confidence(self):
         class OneLabelModel:
@@ -259,6 +319,35 @@ class WorkerTests(unittest.TestCase):
         second = worker.run_once(now=1)
         self.assertEqual(first["camera_id"], "cam-1")
         self.assertEqual(second["camera_id"], "cam-2")
+
+    def test_worker_carries_main_stream_dimensions(self):
+        worker = self._worker()
+        meta = {"id": "20261101T000000-abcdef012345", "track_rows": rows_for()}
+        worker.submit("cam-1", meta, submitted_at=0,
+                      source_width=3840, source_height=2160)
+        result = worker.run_once(now=1)
+        self.assertEqual(result["source_width"], 3840)
+        self.assertEqual(result["source_height"], 2160)
+        self.assertFalse(result["source_dimensions_assumed"])
+        crop = result["tracks"][0]["crops"][0]
+        self.assertAlmostEqual(crop["object_pixel_width"], 0.02 * 3840)
+        self.assertNotIn("tiny_target_below_16px", crop["flags"])
+        self.assertEqual(crop["crop_pixel_size"], 461)
+
+    def test_worker_meta_dimensions_fallback(self):
+        worker = self._worker()
+        meta = {"id": "20261101T000000-abcdef012345", "track_rows": rows_for(),
+                "source_width": 1920, "source_height": 1080}
+        worker.submit("cam-1", meta, submitted_at=0)
+        result = worker.run_once(now=1)
+        self.assertEqual(result["source_width"], 1920)
+        self.assertFalse(result["source_dimensions_assumed"])
+
+    def test_worker_rejects_partial_source_dimensions(self):
+        worker = self._worker()
+        meta = {"id": "20261101T000000-abcdef012345", "track_rows": rows_for()}
+        with self.assertRaises(ValueError):
+            worker.submit("cam-1", meta, submitted_at=0, source_width=1920)
 
     def test_load_reduces_sampled_frames(self):
         worker = self._worker(max_queue=4, sample_frames=5)

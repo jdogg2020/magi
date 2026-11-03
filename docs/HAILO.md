@@ -62,6 +62,30 @@ unchanged, so a station without a HAT provisions exactly as
 before. Wiring discovery into one-touch provisioning is a
 follow-up review step, not a silent part of this PR.
 
+## Review fixes (2026-11-03, PR #60 follow-up, still unmerged)
+
+- Source dimensions are carried, not assumed. The worker's
+  `submit()` takes `source_width` / `source_height` for the job
+  and passes them to `run_event`; `run_event` falls back to
+  `meta`'s source fields, then to 640x360, and records the size
+  it used plus `source_dimensions_assumed` in the result. A
+  main-stream event must therefore be submitted with its real
+  frame size, or its crop sizes and tiny-target flags will be
+  wrong — and the result will say the size was assumed.
+- Rejected track rows are evidence, not silence.
+  `extract_crops_with_rejected()` returns the malformed rows
+  with index, track id, and reason; `run_event` uses it, and
+  any rejected row makes the whole event abstain with
+  `incomplete_tracks_rejected`, with the rejected rows in the
+  sidecar. A surviving cloud track can no longer label an
+  event whose unresolved target's rows were rejected.
+- Manifests are validated in both forms.
+  `validate_manifest()` round-trips a `ModelManifest` object
+  through `to_dict` / `from_dict`, so an object declaring an
+  unsupported runtime (or empty labels, or a bad checksum)
+  fails exactly as a bad dictionary would, in `select_model`,
+  `run_event`, and the worker.
+
 ## Configuration
 
 Per-camera Hailo section (all fields optional; absent section

@@ -225,22 +225,39 @@ class ModelManifest:
                    provenance=value.get("provenance", ""))
 
 
+def validate_manifest(manifest):
+    """Validate a manifest in either input form, returning a validated copy.
+
+    Dictionaries go through ``ModelManifest.from_dict``. An existing
+    ``ModelManifest`` object is round-tripped through ``to_dict`` /
+    ``from_dict`` so it gets exactly the same checks (hailo-8
+    runtime, non-empty labels, positive input dimensions, hex
+    checksum) instead of being trusted unchanged. ``None`` passes
+    through as ``None``; the caller decides whether a manifest is
+    required.
+    """
+    if manifest is None:
+        return None
+    if isinstance(manifest, ModelManifest):
+        return ModelManifest.from_dict(manifest.to_dict())
+    return ModelManifest.from_dict(manifest)
+
+
 def select_model(config, manifest):
     """Check a manifest against a validated config. Returns the manifest.
 
     With mode off, no model is required and any manifest is accepted
     without being used. With mode shadow, a manifest is required and
-    must be a hailo-8 manifest. This is an observable failure, not a
-    silent fallback to a different model.
+    must be a hailo-8 manifest, whether it arrived as a dictionary
+    or as a ``ModelManifest`` object. This is an observable
+    failure, not a silent fallback to a different model.
     """
     config = validate_hailo_config(config)
     if config["mode"] == "off":
         return manifest
     if manifest is None:
         raise ValueError("Hailo shadow mode requires a model manifest")
-    if not isinstance(manifest, ModelManifest):
-        manifest = ModelManifest.from_dict(manifest)
-    return manifest
+    return validate_manifest(manifest)
 
 
 def stub_manifest():
@@ -343,27 +360,41 @@ def _crop_rect_for(center, box, source_width, source_height, context):
             (left + size) / source_width, (top + size) / source_height), size, flags
 
 
-def extract_crops(rows, source_width=640, source_height=360, model_input=(640, 640),
-                  context=6.0, max_samples=5, gap_seconds=1.0):
-    """Track-centred crops from track_rows-style rows.
+def _rejected_row(index, row, reason):
+    """Evidence for one malformed track row, never dropped silently.
 
-    ``rows`` are dicts with ``seconds``, ``target`` ([x, y, w, h]
-    normalized), ``box`` ([left, top, right, bottom] normalized) and
-    ``track_id`` (or None for anonymous samples, which are kept as
-    separate single-sample tracks and never joined into an invented
-    identity). Returns a list of CropSpec, grouped by track in time
-    order, with at most ``max_samples`` evenly spaced samples per
-    track (first and last included). A gap larger than
-    ``gap_seconds`` starts a new segment for the same track id, so a
-    lost track is not drawn as one continuous passage.
+    ``track_id`` is recorded only when it is a usable string; a
+    malformed row with no usable id is still recorded, under None,
+    so its loss is visible rather than anonymous.
     """
-    if not isinstance(source_width, int) or not isinstance(source_height, int) \
+    track_id = None
+    if isinstance(row, dict) and isinstance(row.get("track_id"), str):
+        track_id = row["track_id"]
+    return {"index": index, "track_id": track_id, "reason": reason}
+
+
+def _extract_crops_with_rejected(rows, source_width=640, source_height=360,
+                                 model_input=(640, 640), context=6.0,
+                                 max_samples=5, gap_seconds=1.0):
+    """``extract_crops`` plus the malformed rows it rejected.
+
+    Returns ``(crops, rejected)``. A rejected row is one that the
+    old code silently skipped: a missing or unparseable field, a
+    non-finite value, or an invalid geometry. The rejection rules
+    are unchanged; only the evidence is new. Callers that classify
+    an event must treat a non-empty ``rejected`` list as an
+    incomplete event (see ``run_event``), never as a clean subset
+    of the tracks that happened to survive.
+    """
+    if not isinstance(source_width, int) or isinstance(source_width, bool) \
+            or not isinstance(source_height, int) or isinstance(source_height, bool) \
             or source_width <= 0 or source_height <= 0:
         raise ValueError("Source size must be positive integers")
     if not 1 <= max_samples <= 16:
         raise ValueError("max_samples must be from 1 to 16")
     groups = {}
     order = []
+    rejected = []
     for index, row in enumerate(rows or []):
         try:
             seconds = float(row["seconds"])
@@ -372,10 +403,13 @@ def extract_crops(rows, source_width=640, source_height=360, model_input=(640, 6
             x, y, w, h = (float(v) for v in target)
             left, top, right, bottom = (float(v) for v in box)
         except (KeyError, TypeError, ValueError):
+            rejected.append(_rejected_row(index, row, "missing_or_invalid_field"))
             continue
         if not all(math.isfinite(v) for v in (seconds, x, y, w, h, left, top, right, bottom)):
+            rejected.append(_rejected_row(index, row, "non_finite_value"))
             continue
         if not (0 <= x <= 1 and 0 <= y <= 1 and right > left and bottom > top):
+            rejected.append(_rejected_row(index, row, "invalid_geometry"))
             continue
         track_id = row.get("track_id") if isinstance(row.get("track_id"), str) else None
         key = track_id if track_id is not None else ("anonymous", index)
@@ -416,7 +450,50 @@ def extract_crops(rows, source_width=640, source_height=360, model_input=(640, 6
                     object_pixel_width=sample["target"][2] * source_width,
                     object_pixel_height=sample["target"][3] * source_height,
                     crop_pixel_size=size, flags=tuple(flags)))
+    return crops, rejected
+
+
+def extract_crops(rows, source_width=640, source_height=360, model_input=(640, 640),
+                  context=6.0, max_samples=5, gap_seconds=1.0):
+    """Track-centred crops from track_rows-style rows.
+
+    ``rows`` are dicts with ``seconds``, ``target`` ([x, y, w, h]
+    normalized), ``box`` ([left, top, right, bottom] normalized) and
+    ``track_id`` (or None for anonymous samples, which are kept as
+    separate single-sample tracks and never joined into an invented
+    identity). Returns a list of CropSpec, grouped by track in time
+    order, with at most ``max_samples`` evenly spaced samples per
+    track (first and last included). A gap larger than
+    ``gap_seconds`` starts a new segment for the same track id, so a
+    lost track is not drawn as one continuous passage.
+
+    Malformed rows are skipped here, as before, and are NOT
+    reported by this wrapper. Callers that classify an event must
+    use ``extract_crops_with_rejected`` or ``run_event`` instead,
+    so a rejected row cannot silently turn an incomplete event
+    into a clean label for a surviving track.
+    """
+    crops, _rejected = _extract_crops_with_rejected(
+        rows, source_width=source_width, source_height=source_height,
+        model_input=model_input, context=context, max_samples=max_samples,
+        gap_seconds=gap_seconds)
     return crops
+
+
+def extract_crops_with_rejected(rows, source_width=640, source_height=360,
+                                model_input=(640, 640), context=6.0,
+                                max_samples=5, gap_seconds=1.0):
+    """``extract_crops`` plus the malformed rows it rejected.
+
+    Returns ``(crops, rejected)``; each rejected entry carries the
+    row ``index``, its ``track_id`` when usable, and a ``reason``
+    (``missing_or_invalid_field``, ``non_finite_value``, or
+    ``invalid_geometry``).
+    """
+    return _extract_crops_with_rejected(
+        rows, source_width=source_width, source_height=source_height,
+        model_input=model_input, context=context, max_samples=max_samples,
+        gap_seconds=gap_seconds)
 
 
 # ------------------------------------------------------------- offline run
@@ -467,13 +544,53 @@ def _aggregate_track_results(track_results):
             "basis": f"labels={sorted(labels)} abstaining={len(abstaining)}"}
 
 
-def run_event(meta, model, manifest=None, *, source_width=640, source_height=360,
+def _resolve_source_dimensions(meta, source_width=None, source_height=None):
+    """Resolve the frame size crops are measured in.
+
+    Precedence: explicit caller dimensions, then ``meta``'s
+    ``source_width`` / ``source_height`` fields, then the 640x360
+    default. Returns ``(width, height, assumed)``; ``assumed`` is
+    True only when neither the caller nor ``meta`` supplied
+    dimensions, so a main-stream event processed without real
+    dimensions is recorded as an assumption in the result, not
+    silently treated as substream-sized footage. Supplying only
+    one dimension, or a non-positive integer, is an error: a
+    half-known frame size is worse than an explicit default.
+    """
+    if source_width is not None or source_height is not None:
+        if not isinstance(source_width, int) or isinstance(source_width, bool) \
+                or not isinstance(source_height, int) or isinstance(source_height, bool) \
+                or source_width <= 0 or source_height <= 0:
+            raise ValueError("Source size must be positive integers")
+        return source_width, source_height, False
+    if isinstance(meta, dict):
+        width, height = meta.get("source_width"), meta.get("source_height")
+        if width is not None or height is not None:
+            if not isinstance(width, int) or isinstance(width, bool) \
+                    or not isinstance(height, int) or isinstance(height, bool) \
+                    or width <= 0 or height <= 0:
+                raise ValueError("Source size must be positive integers")
+            return width, height, False
+    return 640, 360, True
+
+
+def run_event(meta, model, manifest=None, *, source_width=None, source_height=None,
                max_samples=5, context=6.0):
     """Classify one saved event offline. Does not mutate ``meta``.
 
     ``meta`` needs ``id`` and, for tracks, ``track_rows`` in
     track_rows-style format (see extract_crops). If no rows are
     supplied, the result is an abstention, not a silent empty label.
+    Source dimensions come from the explicit arguments, then
+    ``meta``'s ``source_width`` / ``source_height`` fields, then
+    the 640x360 default; the result records which size was used
+    and whether it was assumed, because crop sizes and
+    tiny-target assessments are meaningless without the real
+    frame size (a main-stream event must not be measured as
+    640x360). If any track row is rejected as malformed, the
+    event abstains with ``incomplete_tracks_rejected`` and the
+    rejected rows are preserved in the result, even if a
+    surviving track would otherwise label the whole event.
     The returned dict is the sidecar payload; it never overwrites
     the original trigger, track, reference, or human-label evidence,
     which lives in the original event files, not here.
@@ -483,13 +600,14 @@ def run_event(meta, model, manifest=None, *, source_width=640, source_height=360
         raise ValueError("Offline run needs an event dict with an id")
     if manifest is None:
         manifest = getattr(model, "manifest", None)
-    if manifest is not None and not isinstance(manifest, ModelManifest):
-        manifest = ModelManifest.from_dict(manifest)
+    manifest = validate_manifest(manifest)
     if manifest is None:
         raise ValueError("Offline run requires a model manifest")
+    width, height, assumed = _resolve_source_dimensions(meta, source_width, source_height)
     rows = meta.get("track_rows") or []
-    crops = extract_crops(rows, source_width=source_width, source_height=source_height,
-                          context=context, max_samples=max_samples)
+    crops, rejected = _extract_crops_with_rejected(
+        rows, source_width=width, source_height=height,
+        context=context, max_samples=max_samples)
     by_track = {}
     for crop in crops:
         by_track.setdefault(crop.track_id, []).append(crop)
@@ -516,15 +634,34 @@ def run_event(meta, model, manifest=None, *, source_width=640, source_height=360
                                   "crops": [c.to_dict() for c in track_crops],
                                   "label": None, "confidence": 0.0,
                                   "abstention_reason": "model_error"})
-    event = _aggregate_track_results(track_results)
+    if rejected:
+        # Incomplete event: a rejected row may belong to the very
+        # target that would change the label, so the surviving
+        # tracks must not speak for the whole event. Record the
+        # rejected rows as an abstaining evidence entry, then
+        # override the aggregation with an explicit incomplete
+        # reason rather than a generic unresolved one.
+        track_results.append({"track_id": "__rejected__",
+                              "crop_count": 0, "crops": [],
+                              "label": None, "confidence": 0.0,
+                              "abstention_reason": "rejected_track_rows",
+                              "rejected_rows": rejected})
+        event = {"label": None, "confidence": 0.0,
+                 "abstention_reason": "incomplete_tracks_rejected",
+                 "basis": "rejected_track_rows"}
+    else:
+        event = _aggregate_track_results(track_results)
     return {"schema": SCHEMA, "mode": "offline",
             "model": {"name": manifest.name, "version": manifest.version,
                       "checksum_sha256": manifest.checksum_sha256,
                       "preprocessing_version": manifest.preprocessing_version},
             "event_id": meta["id"], "camera_id": meta.get("camera_id"),
+            "source_width": width, "source_height": height,
+            "source_dimensions_assumed": assumed,
             "tracks": track_results, "event": event,
             "timing_seconds": round(time.perf_counter() - started, 6),
             "crop_count": len(crops), "errors": errors,
+            "rejected_rows": rejected, "rejected_count": len(rejected),
             "advisory_only": True}
 
 
@@ -627,13 +764,12 @@ class BoundedInferenceWorker:
                  clock=time.monotonic):
         self.model = model
         self.manifest = manifest if manifest is not None else getattr(model, "manifest", None)
-        if self.manifest is not None and not isinstance(self.manifest, ModelManifest):
-            self.manifest = ModelManifest.from_dict(self.manifest)
+        self.manifest = validate_manifest(self.manifest)
         self.max_queue = max_queue
         self.stale_seconds = stale_seconds
         self.sample_frames = sample_frames
         self.clock = clock
-        self._queue = []  # (camera_id, meta, submitted_at)
+        self._queue = []  # (camera_id, meta, submitted_at, source_width, source_height)
         self._camera_order = []
         self.stats = {"submitted": 0, "processed": 0, "rejected_queue_full": 0,
                       "dropped_stale": 0, "dropped_on_reset": 0, "errors": 0,
@@ -643,14 +779,30 @@ class BoundedInferenceWorker:
     def queue_depth(self):
         return len(self._queue)
 
-    def submit(self, camera_id, meta, submitted_at=None):
-        """Non-blocking submit. Returns False (counted) when full."""
+    def submit(self, camera_id, meta, submitted_at=None, source_width=None, source_height=None):
+        """Non-blocking submit. Returns False (counted) when full.
+
+        ``source_width`` / ``source_height`` are the actual frame
+        size for this job and are carried through to ``run_event``:
+        a main-stream event submitted without them would otherwise
+        be measured at the 640x360 default, with wrong crop sizes
+        and wrong tiny-target assessments. When the caller does not
+        supply them, ``run_event`` falls back to ``meta``'s source
+        fields, then to the default, and records the assumption in
+        the result. Supplying only one dimension is an error.
+        """
         if not isinstance(camera_id, str) or not camera_id or not isinstance(meta, dict) or not meta.get("id"):
             raise ValueError("Worker submit needs a camera id and an event dict with an id")
+        if source_width is not None or source_height is not None:
+            if not isinstance(source_width, int) or isinstance(source_width, bool) \
+                    or not isinstance(source_height, int) or isinstance(source_height, bool) \
+                    or source_width <= 0 or source_height <= 0:
+                raise ValueError("Source size must be positive integers")
         if len(self._queue) >= self.max_queue:
             self.stats["rejected_queue_full"] += 1
             return False
-        self._queue.append((camera_id, meta, self.clock() if submitted_at is None else submitted_at))
+        self._queue.append((camera_id, meta, self.clock() if submitted_at is None else submitted_at,
+                            source_width, source_height))
         if camera_id not in self._camera_order:
             self._camera_order.append(camera_id)
         self.stats["submitted"] += 1
@@ -661,7 +813,7 @@ class BoundedInferenceWorker:
         if not self._queue:
             return None
         for camera_id in list(self._camera_order):
-            for index, (cid, _meta, _at) in enumerate(self._queue):
+            for index, (cid, _meta, _at, _w, _h) in enumerate(self._queue):
                 if cid == camera_id:
                     # Rotate this camera to the back for the next pick.
                     self._camera_order.remove(camera_id)
@@ -674,7 +826,7 @@ class BoundedInferenceWorker:
         now = self.clock() if now is None else now
         while self._queue:
             index = self._next_index()
-            camera_id, meta, submitted_at = self._queue.pop(index)
+            camera_id, meta, submitted_at, job_width, job_height = self._queue.pop(index)
             if now - submitted_at > self.stale_seconds:
                 self.stats["dropped_stale"] += 1
                 continue
@@ -682,7 +834,11 @@ class BoundedInferenceWorker:
             samples = DEFAULT_REDUCED_SAMPLE_FRAMES if load >= max(1, self.max_queue // 2) else self.sample_frames
             self.stats["last_sample_frames"] = samples
             try:
-                result = run_event(meta, self.model, self.manifest, max_samples=samples)
+                # Job dimensions are carried through verbatim;
+                # run_event resolves them against meta fields and
+                # the default, and records the size it actually used.
+                result = run_event(meta, self.model, self.manifest, max_samples=samples,
+                                   source_width=job_width, source_height=job_height)
                 result["camera_id"] = camera_id
             except Exception as exc:
                 self.stats["errors"] += 1

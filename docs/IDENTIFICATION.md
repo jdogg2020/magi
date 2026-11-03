@@ -121,13 +121,17 @@ catalog makes the whole check incomplete: a likely result is downgraded
 to possible and the event stays visible, because a missing competing
 candidate could otherwise manufacture a false likely. The per-event
 deadline also bounds catalog fetching, through a single shared download
-worker: at most one catalog download is ever active station-wide, a
-download whose caller timed out is cancelled at the next chunk (or
-discarded before it starts), and a started download that expired earns
-the usual refresh backoff so the next event does not immediately retry
-the same slow source. On expiry no further sources are requested, and
-the check reports unavailable rather than matching against a partial
-catalog. Skyfield's SGP4 implementation
+worker: at most one catalog download is ever active station-wide, the
+waiting queue holds at most four jobs (further submissions fail fast
+instead of accumulating behind a monopolized worker), and a download
+whose caller timed out is cancelled at the next available chunk (or
+discarded before it starts). Reads use `read1`, so a trickling download
+is cancelled on the next arrival rather than waited out for a full
+64 KB buffer. A started download that expired earns refresh backoff
+measured from the failure time, not the load start, so the next event
+does not immediately retry the same slow source. On expiry no further
+sources are requested, and the check reports unavailable rather than
+matching against a partial catalog. Skyfield's SGP4 implementation
 predicts topocentric azimuth/elevation at each track time; built-in time
 tables avoid automatic ephemeris downloads. Elements more than three days
 from the observation time are skipped and coverage is marked partial. Old

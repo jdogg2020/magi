@@ -862,5 +862,191 @@ class DownloadWorkerTests(unittest.TestCase):
             self.assertNotIn('gp-test', _CATALOG_BACKOFF)
 
 
+class DownloadResponsivenessTests(unittest.TestCase):
+    """Cancellation during slow reads, queue bound, backoff timing.
+
+    These exercise the real download loop with a mocked response, not
+    a mocked downloader: mocking the downloader cannot see whether
+    cancellation is responsive inside a read."""
+
+    def setUp(self):
+        _SHARED_CATALOGS.clear()
+        _CATALOG_BACKOFF.clear()
+
+    def tearDown(self):
+        _SHARED_CATALOGS.clear()
+        _CATALOG_BACKOFF.clear()
+
+    def test_trickle_read_cancelled_promptly_at_downloader_level(self):
+        from magi.identification import CatalogDeadlineExpired, _fetch_catalog_json_sync
+
+        class TrickleResponse:
+            def __init__(self, chunks):
+                self.chunks = iter(chunks)
+                self.consumed = 0
+                self.closed = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.closed = True
+                return False
+
+            def read1(self, n):
+                time.sleep(0.05)
+                try:
+                    chunk = next(self.chunks)
+                except StopIteration:
+                    return b''
+                self.consumed += 1
+                return chunk
+
+            def read(self, n):
+                # The old full-buffer behaviour: wait until n bytes or EOF.
+                data = b''
+                while len(data) < n:
+                    time.sleep(0.05)
+                    try:
+                        data += next(self.chunks)
+                    except StopIteration:
+                        break
+                    self.consumed += 1
+                return data
+
+        chunks = [b'x' * 100] * 100  # 10 KB trickled; a full-buffer read waits ~5 s
+        response = TrickleResponse(chunks)
+        cancelled = threading.Event()
+        outcome = {}
+
+        def run():
+            try:
+                outcome['data'] = _fetch_catalog_json_sync(
+                    'https://example.invalid/x.json', cancelled=cancelled.is_set)
+            except BaseException as error:
+                outcome['error'] = error
+
+        with patch('magi.identification.urllib.request.urlopen', return_value=response):
+            thread = threading.Thread(target=run)
+            started = time.monotonic()
+            thread.start()
+            time.sleep(0.3)
+            cancelled.set()
+            thread.join(3)
+            self.assertFalse(thread.is_alive(), 'cancelled trickle must stop promptly')
+            self.assertLess(time.monotonic() - started, 2,
+                            'old read(65536) would wait ~5 s for the full buffer')
+            self.assertIsInstance(outcome.get('error'), CatalogDeadlineExpired)
+            self.assertLess(response.consumed, 20, 'only a few trickled chunks before cancellation')
+            self.assertTrue(response.closed, 'response must be closed on cancellation')
+
+    def test_read1_loop_downloads_correctly(self):
+        from magi.identification import _fetch_catalog_json_sync
+
+        class ChunkedResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read1(self, n):
+                if not hasattr(self, 'parts'):
+                    self.parts = iter([b'[', b'{"a": 1}', b']'])
+                try:
+                    return next(self.parts)
+                except StopIteration:
+                    return b''
+
+        with patch('magi.identification.urllib.request.urlopen', return_value=ChunkedResponse()):
+            data = _fetch_catalog_json_sync('https://example.invalid/x.json')
+        self.assertEqual(data, [{'a': 1}])
+
+    def test_queue_bound_fails_fast(self):
+        from magi.identification import (CatalogDeadlineExpired, _DOWNLOAD_QUEUE,
+                                        _DOWNLOAD_QUEUE_MAXSIZE, fetch_catalog_json)
+        import magi.identification as ident
+        started = threading.Event()
+        release = threading.Event()
+        state = {'calls': 0}
+
+        def blocking(url, cancelled=None):
+            state['calls'] += 1
+            started.set()
+            release.wait(10)
+            return [{**ISS, 'NORAD_CAT_ID': 25544}]
+
+        results = []
+
+        def attempt():
+            begin = time.monotonic()
+            try:
+                data = fetch_catalog_json('https://example.invalid/x.json', deadline=time.monotonic() + 30)
+                results.append(('ok', time.monotonic() - begin))
+            except BaseException as error:
+                results.append((type(error).__name__, time.monotonic() - begin))
+
+        with patch.object(ident, '_fetch_catalog_json_sync', side_effect=blocking):
+            holder = threading.Thread(target=attempt)
+            holder.start()
+            self.assertTrue(started.wait(2), 'worker must start the blocking download')
+            workers = [threading.Thread(target=attempt) for _ in range(6)]
+            for worker in workers:
+                worker.start()
+            time.sleep(1)
+            # Worker busy, queue full: exactly the bound queues, the rest
+            # fail fast instead of accumulating.
+            self.assertEqual(_DOWNLOAD_QUEUE.qsize(), _DOWNLOAD_QUEUE_MAXSIZE)
+            fast_failures = [r for r in results if r[0] == 'CatalogDeadlineExpired' and r[1] < 2]
+            self.assertGreaterEqual(len(fast_failures), 2)
+            release.set()
+            holder.join(5)
+            for worker in workers:
+                worker.join(5)
+            self.assertFalse(holder.is_alive())
+            self.assertFalse(any(worker.is_alive() for worker in workers))
+            self.assertEqual(state['calls'], 1 + _DOWNLOAD_QUEUE_MAXSIZE,
+                             'only the active plus queued downloads ever ran')
+            deadline = time.monotonic() + 2
+            while _DOWNLOAD_QUEUE.qsize() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(_DOWNLOAD_QUEUE.qsize(), 0)
+
+    def test_backoff_runs_from_failure_time(self):
+        from magi.identification import _CATALOG_BACKOFF, _load_one_catalog, CatalogDeadlineExpired
+        clock = [1_700_000_000.0]
+
+        def fake_time():
+            return clock[0]
+
+        def failing(url, deadline=None):
+            clock[0] += 120  # the download consumed the whole deadline
+            error = CatalogDeadlineExpired('satellite catalog deadline expired')
+            error.started = True
+            raise error
+
+        with patch('time.time', side_effect=fake_time):
+            with patch('magi.identification.fetch_catalog_json', side_effect=failing):
+                _, _, _, err = _load_one_catalog(None, 'gp-backoff', 'https://example.invalid/x.json',
+                                                 False, deadline=time.monotonic() + 60)
+            self.assertEqual(err, 'catalog_deadline_expired')
+            # Old code used the load-start time: T0 + 120 (first interval),
+            # already spent by the 120 s download itself.
+            self.assertEqual(_CATALOG_BACKOFF['gp-backoff'], 1_700_000_000.0 + 120 + 120)
+
+        clock[0] = 1_700_000_000.0
+
+        def slow_generic(url, deadline=None):
+            clock[0] += 100
+            raise OSError('offline')
+
+        with patch('time.time', side_effect=fake_time):
+            with patch('magi.identification.fetch_catalog_json', side_effect=slow_generic):
+                _, _, _, err = _load_one_catalog(None, 'gp-backoff2', 'https://example.invalid/x.json',
+                                                 False, deadline=time.monotonic() + 60)
+            self.assertEqual(err, 'catalog_download_failed')
+            self.assertEqual(_CATALOG_BACKOFF['gp-backoff2'], 1_700_000_000.0 + 100 + 120)
+
+
 if __name__ == '__main__':
     unittest.main()

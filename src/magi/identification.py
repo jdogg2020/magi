@@ -218,16 +218,32 @@ def _fetch_catalog_json_sync(url, cancelled=None):
     Starlink-sized catalog, so catalogs use their own larger cap and are
     never read unbounded. `cancelled`, when given, is checked before the
     request and after every chunk: a cancelled download raises instead
-    of running to completion, and the response is closed on the way out."""
+    of running to completion, and the response is closed on the way out.
+
+    Reads use `read1`, not `read`: a plain `read(65536)` waits for the
+    full 64 KB while small amounts trickle in (the socket timeout only
+    bounds silence, which a trickle never triggers), so cancellation
+    checked between reads could wait indefinitely. `read1` returns the
+    bytes already available, framing-safe for chunked and Content-Length
+    bodies, so a trickling download is cancelled at the next arrival.
+    A socket timeout during a silent gap is not a failure when a
+    cancellation callback exists: the loop re-checks it and keeps
+    waiting only until the caller's deadline cancels the job."""
     if cancelled is not None and cancelled():
         raise CatalogDeadlineExpired('satellite catalog deadline expired')
     request = urllib.request.Request(url, headers={'User-Agent': 'Magi/0.3 sky-observation prototype', 'Accept': 'application/json'})
     with urllib.request.urlopen(request, timeout=30) as response:
+        read_chunk = getattr(response, 'read1', None) or response.read
         chunks, total = [], 0
         while True:
             if cancelled is not None and cancelled():
                 raise CatalogDeadlineExpired('satellite catalog deadline expired')
-            chunk = response.read(65536)
+            try:
+                chunk = read_chunk(65536)
+            except TimeoutError:
+                if cancelled is not None and not cancelled():
+                    continue
+                raise
             if not chunk:
                 break
             total += len(chunk)
@@ -273,7 +289,13 @@ class _DownloadJob:
             return self.cancelled
 
 
-_DOWNLOAD_QUEUE = queue.Queue()
+# The queue holds waiting jobs only; the one download in progress is
+# not counted. With one worker, at most this many jobs can ever be
+# outstanding, so expired requests cannot accumulate without bound
+# while a slow download monopolizes the worker: further submissions
+# fail fast instead of queueing behind it.
+_DOWNLOAD_QUEUE_MAXSIZE = 4
+_DOWNLOAD_QUEUE = queue.Queue(maxsize=_DOWNLOAD_QUEUE_MAXSIZE)
 _DOWNLOAD_WORKER_LOCK = threading.Lock()
 _DOWNLOAD_WORKER = None
 
@@ -283,8 +305,9 @@ def _download_worker():
     a time, in submission order, so expired downloads can never pile up
     behind each other: at most one download is ever active, a job whose
     caller timed out is discarded before it starts, and a started job
-    whose caller timed out is cancelled at the next chunk (a silent
-    server is still bounded by the 30-second socket timeout)."""
+    whose caller timed out is cancelled at the next available chunk
+    (a silent server is still bounded by the 30-second socket timeout,
+    re-checked on each timeout)."""
     while True:
         job = _DOWNLOAD_QUEUE.get()
         try:
@@ -296,7 +319,11 @@ def _download_worker():
                 job.error.started = True
             else:
                 try:
-                    job.data = _fetch_catalog_json_sync(job.url, cancelled=job.is_cancelled)
+                    # A job without a deadline has no cancellation source:
+                    # pass no callback so a silent server still fails on
+                    # the socket timeout instead of waiting forever.
+                    cancelled = job.is_cancelled if job.deadline is not None else None
+                    job.data = _fetch_catalog_json_sync(job.url, cancelled=cancelled)
                 except CatalogDeadlineExpired as error:
                     error.started = True
                     job.error = error
@@ -322,16 +349,27 @@ def fetch_catalog_json(url, deadline=None):
     between reads, so a slowly progressing download could otherwise run
     past the deadline while holding the station-wide matcher slot. Here
     the caller waits only until the deadline, then cancels: the worker
-    discards the job if it never started, or aborts it at the next chunk
-    if it did. No download is ever abandoned to keep running, and no
-    second download starts while one is active."""
+    discards the job if it never started, or aborts it at the next
+    available chunk if it did (reads use `read1`, so a trickle is not
+    waited out for a full buffer). No download is ever abandoned to
+    keep running, no second download starts while one is active, and
+    the waiting queue is bounded: a submission past the bound fails
+    fast instead of accumulating behind a monopolized worker."""
     if deadline is not None and time.monotonic() >= deadline:
         error = CatalogDeadlineExpired('satellite catalog deadline expired')
         error.started = False
         raise error
     _ensure_download_worker()
     job = _DownloadJob(url, deadline)
-    _DOWNLOAD_QUEUE.put(job)
+    try:
+        _DOWNLOAD_QUEUE.put(job, block=False)
+    except queue.Full:
+        # Bounded queue: when the worker is monopolized and the queue
+        # is full, fail fast instead of accumulating another expired
+        # request behind it. No download was started, so no backoff.
+        error = CatalogDeadlineExpired('satellite catalog deadline expired')
+        error.started = False
+        raise error
     timeout = None if deadline is None else max(0, deadline - time.monotonic())
     if not job.done.wait(timeout):
         error = CatalogDeadlineExpired('satellite catalog deadline expired')
@@ -405,28 +443,32 @@ def _load_one_catalog(cfg, key, url, save_ok, deadline=None):
             if getattr(error, 'started', False):
                 failures = _CATALOG_BACKOFF.get(key + ':failures', 0) + 1
                 _CATALOG_BACKOFF[key + ':failures'] = failures
-                _CATALOG_BACKOFF[key] = now + min(3600, 60 * (2 ** min(failures, 6)))
+                # Backoff runs from the failure, not from the load start:
+                # a download that consumed the whole 120-second deadline
+                # must not find its 120-second backoff already spent.
+                _CATALOG_BACKOFF[key] = time.time() + min(3600, 60 * (2 ** min(failures, 6)))
             return [], 0, False, 'catalog_deadline_expired'
         except Exception:
             failures = _CATALOG_BACKOFF.get(key + ':failures', 0) + 1
             _CATALOG_BACKOFF[key + ':failures'] = failures
-            _CATALOG_BACKOFF[key] = now + min(3600, 60 * (2 ** min(failures, 6)))
+            _CATALOG_BACKOFF[key] = time.time() + min(3600, 60 * (2 ** min(failures, 6)))
             if shared:
                 return shared[1], shared[0], True, 'catalog_refresh_failed'
             if cached:
                 return cached['elements'], cached.get('fetched_unix', 0), True, 'catalog_refresh_failed'
             return [], 0, False, 'catalog_download_failed'
+        fetched_at = time.time()
         _CATALOG_BACKOFF.pop(key + ':failures', None)
         _CATALOG_BACKOFF.pop(key, None)
-        _SHARED_CATALOGS[key] = (now, elements)
+        _SHARED_CATALOGS[key] = (fetched_at, elements)
         if save_ok and cfg is not None:
             try:
                 if cfg.root.is_dir():
                     atomic_json(cfg.root / ('reference-celestrak-' + key + '.json'),
-                                {'fetched_unix': now, 'elements': elements})
+                                {'fetched_unix': fetched_at, 'elements': elements})
             except (OSError, ValueError):
                 pass
-        return elements, now, False, None
+        return elements, fetched_at, False, None
 
 
 def load_catalog_pool(settings, cfg, save_ok, deadline=None):

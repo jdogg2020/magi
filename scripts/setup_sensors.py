@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -136,20 +137,36 @@ def port_busy(path):
     return False
 
 
-def probe_sim7600(port_path, query_fn=None, port_opener=None):
+def probe_sim7600(port_path, query_fn=None, port_opener=None, time_left_fn=None):
     """True when the port answers AT commands as a SIM7600 AT port.
 
     Never raises: a probe failure means 'not the AT port', not an error.
+    When time_left_fn is given, it returns seconds of probe budget left:
+    the probe is skipped once it reaches zero, and each command's timeout
+    is capped by the remaining budget.
     """
+    if time_left_fn is not None and time_left_fn() <= 0:
+        return False
     if query_fn is None:
         sys.path.insert(0, str(ROOT/'src'))
-        from magi.sensor_service import query as query_fn
+        from magi.sensor_service import query as base_query
+
+        def query_fn(port, command):
+            if time_left_fn is not None and time_left_fn() <= 0:
+                raise ValueError('probe budget exhausted')
+            timeout = 3
+            if time_left_fn is not None:
+                timeout = max(0.0, min(3, time_left_fn()))
+            return base_query(port, command, timeout=timeout)
     if port_opener is None:
         import serial
 
         def port_opener(path):
-            return serial.Serial(path, 115200, timeout=.2, write_timeout=2,
-                                 exclusive=True)
+            remaining = time_left_fn() if time_left_fn is not None else None
+            timeout = .2 if remaining is None else max(0.0, min(.2, remaining))
+            write_timeout = 2 if remaining is None else max(0.0, min(2, remaining))
+            return serial.Serial(path, 115200, timeout=timeout,
+                                 write_timeout=write_timeout, exclusive=True)
     try:
         with port_opener(port_path) as port:
             query_fn(port, 'AT')
@@ -161,12 +178,15 @@ def probe_sim7600(port_path, query_fn=None, port_opener=None):
 def detect_sensors(sysfs_root=Path('/sys/bus/usb/devices'),
                    by_id_dir=Path('/dev/serial/by-id'),
                    query_fn=None, port_opener=None, busy=None,
-                   owned_ports=()):
+                   owned_ports=(), time_left_fn=None):
     """Detect attached sensor hardware.
 
     Returns {'adsb_serial', 'gnss_port', 'gnss_status', 'gnss_unusable'}.
     gnss_status is 'absent' (no SIMCom-named port), 'found', or 'unusable'
     (ports were seen but every one was busy or failed its AT probe).
+    When time_left_fn is given, it returns seconds of probe budget left:
+    probing stops once it reaches zero, and unprobed candidates are
+    reported unusable with a budget-expired reason.
     Multiple RTL-SDR receivers raise instead of guessing which one to bind.
     Ports in owned_ports were verified by Magi on a previous provisioning
     and are accepted without a fresh probe: our own collector may hold
@@ -192,8 +212,11 @@ def detect_sensors(sysfs_root=Path('/sys/bus/usb/devices'),
         if busy(candidate):
             unusable.append(f'{text} (busy)')
             continue
+        if time_left_fn is not None and time_left_fn() <= 0:
+            unusable.append(f'{text} (probe budget expired)')
+            break
         if probe_sim7600(candidate, query_fn=query_fn,
-                         port_opener=port_opener):
+                         port_opener=port_opener, time_left_fn=time_left_fn):
             gnss_port = text
             break
         unusable.append(f'{text} (probe failed)')
@@ -227,12 +250,23 @@ def check_receiver_ownership(gnss_port, nmea_port, adsb_serial, active_fn=None):
 
 
 def resolve_sensor_args(args, config, detect_fn=None, active_fn=None,
-                        candidates_fn=None):
+                        candidates_fn=None, sleep_fn=None,
+                        monotonic_fn=None,
+                        gnss_wait_seconds=300, gnss_poll_seconds=15):
     """Resolve explicit-or-detected hardware and run ownership guards.
 
     Returns True when provisioning should proceed, False when --detect
-    found no hardware at all. Raises on detected-but-unusable GNSS and
-    on competing-service ownership. Mutates args with detected values.
+    found no hardware at all. Detected-but-unusable GNSS waits until
+    recovery or a monotonic deadline gnss_wait_seconds after the wait
+    starts. The deadline is rechecked after every sleep and ownership
+    check, and each retry probe receives only the remaining budget, so
+    elapsed time stays within the budget plus a small cleanup tolerance;
+    slow probes therefore cannot extend the wait. Retries continue even
+    if the modem briefly disappears from USB, and modem-manager ownership
+    is rechecked before every retry probe. If the deadline passes without
+    recovery, setup warns about incomplete GNSS provisioning and
+    provisions whatever else was found instead of aborting the run.
+    Raises on competing-service ownership. Mutates args with detected values.
     """
     if detect_fn is None:
         detect_fn = detect_sensors
@@ -251,12 +285,36 @@ def resolve_sensor_args(args, config, detect_fn=None, active_fn=None,
                     raise RuntimeError(f'{unit} already owns modem/GNSS management; integration required before setup.')
         owned = {config.get('at_port')} if config.get('at_port') else set()
         found = detect_fn(owned_ports=owned)
+        gnss_incomplete = False
         if found['gnss_status'] == 'unusable':
-            raise RuntimeError(
-                'GNSS hardware detected but unusable: ' + '; '.join(found['gnss_unusable']) +
-                '. Stop the owning service or provision explicitly with --gnss-port.')
+            if sleep_fn is None:
+                sleep_fn = time.sleep
+            if monotonic_fn is None:
+                monotonic_fn = time.monotonic
+            deadline = monotonic_fn() + gnss_wait_seconds
+            print(f'GNSS hardware detected but not answering yet; waiting up to {gnss_wait_seconds}s for it to become ready...')
+            while found['gnss_status'] != 'found':
+                remaining = deadline - monotonic_fn()
+                if remaining <= 0:
+                    break
+                sleep_fn(min(gnss_poll_seconds, remaining))
+                for unit in ('ModemManager.service', 'gpsd.service', 'gpsd.socket'):
+                    if active_fn(unit):
+                        raise RuntimeError(f'{unit} already owns modem/GNSS management; integration required before setup.')
+                if deadline - monotonic_fn() <= 0:
+                    break
+                found = detect_fn(owned_ports=owned,
+                                  time_left_fn=lambda: deadline - monotonic_fn())
+            gnss_incomplete = found['gnss_status'] != 'found'
+        if gnss_incomplete:
+            reasons = '; '.join(found['gnss_unusable']) or 'modem no longer visible'
+            print('WARNING: GNSS provisioning incomplete: hardware was detected but could not be verified within ' +
+                  f'{gnss_wait_seconds}s ({reasons}). Provisioning without GNSS time; rerun setup once the modem is ready.')
         if not found['adsb_serial'] and not found['gnss_port']:
-            print('No sensor hardware detected; leaving sensor services unprovisioned.')
+            if gnss_incomplete:
+                print('No usable sensor hardware to provision; leaving sensor services unprovisioned.')
+            else:
+                print('No sensor hardware detected; leaving sensor services unprovisioned.')
             return False
         if found['adsb_serial']:
             if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', found['adsb_serial']):

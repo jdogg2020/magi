@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from magi.sensor_service import parse_fix, parse_gga, FixTracker, send_clock, clock_status, NmeaReader
+from magi.sensor_service import parse_fix, parse_gga, FixTracker, send_clock, clock_status, NmeaReader, query
 from subprocess import CompletedProcess
 from magi.sensors import effective, snapshot, aircraft_status
 from magi.identification import validate, Identifier
@@ -132,3 +132,59 @@ class SensorTests(unittest.TestCase):
                 send_clock(100.5,100.25,path)
                 values=struct.unpack('@lldiiii',sock.recv(256))
                 self.assertEqual(values,(100,250000,.25,0,0,0,0x534f434b))
+
+
+class TricklePort:
+    """Fake serial port: one byte per read, then nothing, forever."""
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.pos = 0
+        self.read_calls = 0
+        self.written = bytearray()
+
+    def reset_input_buffer(self):
+        pass
+
+    def write(self, data):
+        self.written += data
+        return len(data)
+
+    def flush(self):
+        raise AssertionError('query must not call flush')
+
+    def read(self, size):
+        self.read_calls += 1
+        if self.pos >= len(self.stream):
+            return b''
+        byte = self.stream[self.pos:self.pos + 1]
+        self.pos += 1
+        return byte
+
+
+class QueryTests(unittest.TestCase):
+    def test_chunked_response_assembles_lines(self):
+        port = TricklePort(b'SIM7600G-H\r\nOK\r\n')
+        self.assertEqual(query(port, 'AT+CGMM'), ['SIM7600G-H', 'OK'])
+        self.assertEqual(bytes(port.written), b'AT+CGMM\r')
+
+    def test_chunked_ok_response(self):
+        port = TricklePort(b'OK\r\n')
+        self.assertEqual(query(port, 'AT'), ['OK'])
+
+    def test_slow_unterminated_response_respects_deadline(self):
+        port = TricklePort(b'AT+CGMM\r')  # trickles, never terminates
+        start = time.monotonic()
+        with self.assertRaises(ValueError):
+            query(port, 'AT+CGMM', timeout=0.5)
+        elapsed = time.monotonic() - start
+        # Waited out the deadline instead of failing fast on empty reads
+        # or hanging on the unterminated response.
+        self.assertGreaterEqual(elapsed, 0.4)
+        self.assertLess(elapsed, 2.5)
+        self.assertGreater(port.read_calls, 5)
+
+    def test_no_response_raises_at_deadline(self):
+        port = TricklePort(b'')
+        with self.assertRaises(ValueError):
+            query(port, 'AT', timeout=0.2)

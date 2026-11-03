@@ -61,14 +61,22 @@ NOT in this PR, by design:
    IDs, target windows, path points time-ordered, inside
    their windows, coordinates in [0, 1]) and aborts on an
    invalid file rather than producing tracks from it.
-   **Provisional/accepted gate:** a version starting with
-   `draft-` is provisional; a version containing `accepted`
-   (and not starting with `draft-`) is accepted; anything
-   else is rejected. By default provisional targets are
-   skipped (recorded in the audit, not emitted). Passing
-   `--allow-provisional` emits them, marked
-   `annotation_status: provisional` on every track — they
-   are not accepted ground truth.
+   **Provisional/accepted gate:** acceptance is explicit,
+   never a substring match. If the file has an `acceptance`
+   field, exactly `accepted` means accepted and exactly
+   `provisional` means provisional. Otherwise a version
+   starting with `draft-` is provisional, and only an exact
+   approved version (`v1-accepted` or `accepted`) is
+   accepted — `unaccepted`, `not-accepted`, and any other
+   string containing `accepted` are rejected. By default
+   provisional targets are skipped (recorded in the audit,
+   not emitted). Passing `--allow-provisional` emits them,
+   marked `annotation_status: provisional` on every track —
+   they are not accepted ground truth.
+   Canonical kinds from `docs/DETECTOR-BENCHMARK.md`
+   (`aircraft`, and by analogy `bird`) are supported
+   alongside the legacy aliases (`user-labeled-aircraft`,
+   `user-confirmed-bird`).
 2. **Generated provenance preserves the license conflict.**
    A rerun previously wrote the old "CC BY 4.0 — verify
    inside zip" statement. Generated provenance now records

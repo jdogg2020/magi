@@ -77,26 +77,51 @@ class AnnotationError(ValueError):
 # target["label"] in magi-benchmark-annotation-v1; reading it
 # silently produced magi_label: null for every valid target.
 # Unknown kinds are rejected, never mapped to null.
+# Canonical kinds come from docs/DETECTOR-BENCHMARK.md
+# ("aircraft" for a target, "cloud" for nuisance); the
+# user-labeled-* / user-confirmed-* forms are legacy aliases
+# from the v2 annotation packages and map to the same labels.
 MAGI_KIND_TO_LABEL = {
+    "aircraft": "aircraft",
     "user-labeled-aircraft": "aircraft",
+    "bird": "bird",
     "user-confirmed-bird": "bird",
 }
 
+# Exact approved values only. A substring check for "accepted"
+# is wrong: "unaccepted" and "not-accepted" both contain it.
+ACCEPTED_VERSIONS = {"v1-accepted", "accepted"}
 
-def annotation_status(version):
-    """Classify an annotation version as provisional, accepted, or unknown.
 
-    Provisional: version starts with "draft-" (e.g. draft-v1-unconfirmed,
-    draft-v2-bird-identity-user-confirmed — identity may be confirmed
-    while coordinates remain draft).
-    Accepted: version contains "accepted" and does not start with "draft-".
-    Anything else is unknown and is rejected, not guessed.
+def annotation_status(data):
+    """Classify an annotation as provisional, accepted, or unknown.
+
+    Acceptance is explicit, never a substring match:
+    - If the file has an "acceptance" field, it is authoritative:
+      exactly "accepted" means accepted, exactly "provisional"
+      means provisional, anything else is unknown.
+    - Otherwise, a version starting with "draft-" is provisional
+      (e.g. draft-v1-unconfirmed, draft-v2-bird-identity-user-
+      confirmed — identity may be confirmed while coordinates
+      remain draft).
+    - Otherwise, only an exact approved version (see
+      ACCEPTED_VERSIONS) is accepted. "unaccepted",
+      "not-accepted", and any other string containing
+      "accepted" are unknown and are rejected, not guessed.
     """
-    if not isinstance(version, str) or not version:
+    if not isinstance(data, dict):
         return "unknown"
-    if version.startswith("draft-"):
+    acceptance = data.get("acceptance")
+    if acceptance is not None:
+        if acceptance == "accepted":
+            return "accepted"
+        if acceptance == "provisional":
+            return "provisional"
+        return "unknown"
+    version = data.get("version")
+    if isinstance(version, str) and version.startswith("draft-"):
         return "provisional"
-    if "accepted" in version:
+    if version in ACCEPTED_VERSIONS:
         return "accepted"
     return "unknown"
 
@@ -118,11 +143,12 @@ def validate_annotation(data, filename):
     clip = data.get("clip")
     if not isinstance(clip, dict) or not clip.get("camera_id") or not clip.get("event_id"):
         raise AnnotationError(f"{filename}: clip.camera_id/event_id missing")
-    status = annotation_status(data.get("version"))
+    status = annotation_status(data)
     if status == "unknown":
         raise AnnotationError(
-            f"{filename}: version {data.get('version')!r} is neither provisional (draft-*) "
-            "nor accepted; refusing to guess its status")
+            f"{filename}: acceptance {data.get('acceptance')!r} / version "
+            f"{data.get('version')!r} is neither provisional nor an exact "
+            "approved acceptance; refusing to guess its status")
     for key in ("targets", "nuisance", "unknown"):
         if not isinstance(data.get(key, []), list):
             raise AnnotationError(f"{filename}: {key} is not a list")
@@ -341,7 +367,8 @@ def main():
                 emitted += 1
         magi_audit.append({
             "file": jf.name, "schema": data.get("schema"),
-            "version": data.get("version"), "annotation_status": status,
+            "version": data.get("version"), "acceptance": data.get("acceptance"),
+            "annotation_status": status,
             "camera_id": clip.get("camera_id"), "event_id": event_id,
             "targets": len(targets),
             "nuisance": len(data.get("nuisance", [])),

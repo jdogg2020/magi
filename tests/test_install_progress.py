@@ -1,5 +1,7 @@
 """Installer cancellation and diagnostic contract, without touching the host OS."""
 import os
+import pty
+import select
 from pathlib import Path
 import signal
 import subprocess
@@ -13,6 +15,53 @@ RUNNER = ROOT / 'scripts/install_runner.py'
 
 
 class InstallProgressTests(unittest.TestCase):
+    def test_supervised_command_cannot_be_stopped_by_controlling_terminal(self):
+        # A real controlling terminal is essential: pipe-only tests miss SIGTTIN.
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / 'child.pid'
+            child = (
+                "import os,pathlib,sys; "
+                f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); "
+                "assert sys.stdin.read() == ''; "
+                "print('stdin reached EOF', flush=True); "
+                "\ntry: fd = os.open('/dev/tty', os.O_RDWR)"
+                "\nexcept OSError: print('no controlling terminal', flush=True)"
+                "\nelse: os.close(fd); raise AssertionError('controlling terminal inherited')"
+            )
+            pid, terminal = pty.fork()
+            if pid == 0:
+                os.execv(sys.executable, [sys.executable, str(RUNNER),
+                    '--timeout', '0', '--', sys.executable, '-c', child])
+            output = bytearray()
+            status = None
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    ready, _, _ = select.select([terminal], [], [], .1)
+                    if ready:
+                        try:
+                            output.extend(os.read(terminal, 4096))
+                        except OSError:
+                            pass  # PTY EOF on Linux.
+                    done, status_value = os.waitpid(pid, os.WNOHANG)
+                    if done:
+                        status = status_value
+                        break
+                self.assertIsNotNone(status, 'command stalled on terminal access')
+                self.assertEqual(os.waitstatus_to_exitcode(status), 0, output.decode())
+                self.assertIn(b'stdin reached EOF', output)
+                self.assertIn(b'no controlling terminal', output)
+            finally:
+                if pid_file.exists():
+                    try:
+                        os.killpg(int(pid_file.read_text()), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                if status is None:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                os.close(terminal)
+
     def test_output_failure_and_heartbeat(self):
         result = subprocess.run([sys.executable, str(RUNNER), '--timeout', '0',
             '--heartbeat', '.1', '--', sys.executable, '-c',

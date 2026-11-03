@@ -21,8 +21,13 @@ def main():
         requested[0] = signum
     signal.signal(signal.SIGINT, interrupted)
     signal.signal(signal.SIGTERM, interrupted)
-    # Keep the controlling terminal for input/getpass; isolate child cancellation.
-    process = subprocess.Popen(command, process_group=0)
+    # Supervised steps are noninteractive. A separate process group in the
+    # installer's terminal session is a background job: terminal reads/ioctls
+    # can stop apt with SIGTTIN/SIGTTOU even with DEBIAN_FRONTEND=noninteractive.
+    # Detach the session as well as stdin; keep a private group for cancellation.
+    # Interactive dashboard setup runs outside this wrapper in install.sh.
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                               start_new_session=True)
     started = time.monotonic()
     next_notice = started + args.heartbeat
     stopping = None

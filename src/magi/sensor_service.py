@@ -116,11 +116,11 @@ class NmeaReader:
         return (value, 'verified') if value else ({}, 'waiting_for_matching_fix')
 
 
-def query(port, command):
+def query(port, command, timeout=3):
     port.reset_input_buffer()
     port.write((command + '\r').encode('ascii'))
     port.flush()
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + timeout
     result = []
     while time.monotonic() < deadline:
         line = port.readline(512).decode('ascii', errors='replace').strip()

@@ -28,7 +28,12 @@ const fs=require('node:fs'),assert=require('node:assert/strict');
   assert.equal(await page.locator('#event-label-filter').inputValue(),'aircraft');
   await page.evaluate(()=>{document.getElementById('event-label-filter').value='';MagiFilterSelect.sync();});
   assert.match(await label.innerText(),/Any label/);
-  await label.click();await search.fill('<test>');await page.getByRole('option',{name:'night <test>',exact:true}).click();
+  await label.click();await search.fill('<test>');
+  const choice=page.getByRole('option',{name:'night <test>',exact:true});
+  await choice.hover();await page.mouse.down();
+  await page.waitForTimeout(100); // Let a deferred focusout run before release.
+  assert(await choice.isVisible(),'Holding the mouse down must keep the option open');
+  await page.mouse.up();
   assert.equal(await page.locator('#event-label-filter').inputValue(),'night <test>');
   await page.getByRole('button',{name:'Reference result',exact:true}).click();
   await page.getByRole('combobox',{name:'Search reference result'}).fill('satellite');

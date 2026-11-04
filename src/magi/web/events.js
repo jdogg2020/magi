@@ -88,9 +88,12 @@ const MagiEvents = (()=>{
   }
   function setOptions(values){
     const list=el('event-label-options'), filter=el('event-label-filter'), previous=filter.value;
+    const names=[...new Set([...presets,...values,...(previous?[previous]:[])])].sort();
+    // A background refresh must leave an open dropdown intact when its options match.
+    if(filter.options.length===names.length+1 && names.every((name,i)=>filter.options[i+1].value===name))return;
     list.replaceChildren();filter.replaceChildren();
     const any=node('option','Any label');any.value='';filter.append(any);
-    for(const name of [...new Set([...presets,...values,...(previous?[previous]:[])])].sort()){
+    for(const name of names){
       const option=node('option',name);option.value=name;list.append(option);
       const choice=node('option',name);choice.value=name;filter.append(choice);
     }
@@ -163,7 +166,7 @@ const MagiEvents = (()=>{
       const actions=node('td',null,'event-row-actions');actions.append(button('Review',()=>openReview(row),'secondary'));
       actions.append(downloadMenu(row));
       if(review.trashed_at!=null)actions.append(button('Restore',()=>mutate([row],'restore')));
-      else {actions.append(button(review.protected?'Unprotect':'Protect',()=>mutate([row],'update',{protected:!review.protected})));const trash=button('Trash',()=>mutate([row],'trash'));trash.disabled=!!review.protected;actions.append(trash);}
+      else {actions.append(button(review.protected?'Allow cleanup':'Keep',()=>mutate([row],'update',{protected:!review.protected})));const trash=button('Trash',()=>mutate([row],'trash'));trash.disabled=!!review.protected;actions.append(trash);}
       tr.append(actions);body.append(tr);
     }
     if(!rows.length){const tr=node('tr');const td=node('td','No events match these filters.');td.setAttribute('colspan','9');tr.append(td);body.append(tr);}
@@ -195,7 +198,7 @@ const MagiEvents = (()=>{
     el('review-event-prev').disabled=busy || !neighbors.previous;
     el('review-event-next').disabled=busy || !neighbors.next;
     el('review-mark').textContent=review.reviewed?'Mark unreviewed (R)':'Mark reviewed (R)';
-    el('review-keep').textContent=review.protected?'Remove protection':'Keep / protect';
+    el('review-keep').textContent=review.protected?'Allow automatic cleanup':'Keep this event';
     el('review-trash').textContent=review.trashed_at!=null?'Restore from trash':'Move to trash (Delete)';
     const pendingCurrent=reviewEvent && pendingSaves.has(eventKey(reviewEvent));
     for(const id of ['review-mark','review-keep','review-save'])el(id).disabled=busy || pendingCurrent || review.trashed_at!=null || !!review.annotation_error;
@@ -265,6 +268,7 @@ const MagiEvents = (()=>{
       };
       item.title=`Add or remove ${title.toLowerCase()}; saves in the background and opens the next matching event`;
     }
+    el('event-filters').addEventListener('change',event=>{if(event.target.matches('select'))applyFilters();});
     el('event-filters').onsubmit=event=>{event.preventDefault();return applyFilters();};
     el('event-reset').onclick=()=>{for(const id of ['event-search','event-label-filter','event-start','event-end'])el(id).value='';for(const id of ['event-reviewed','event-protected','event-state','event-reference','event-type'])el(id).value='all';el('event-hide-likely').checked=false;el('event-camera').value='all';el('event-folder').value='active';el('event-sort').value='newest';applyFilters();};
     el('event-select-page').onchange=()=>{for(const row of rows){if(el('event-select-page').checked && selected.size<100)selected.set(eventKey(row),row);else if(!el('event-select-page').checked)selected.delete(eventKey(row));}render();};

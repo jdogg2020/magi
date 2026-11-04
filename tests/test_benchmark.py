@@ -70,6 +70,23 @@ class PureTests(unittest.TestCase):
         self.assertFalse(info["capture_sampling_supported"])
         self.assertIn("not clamped", info["provenance"])
 
+    def test_legacy_export_fills_only_absent_settings_and_reports_them(self):
+        sampling = {"width": 640, "height": 360, "fps": 10}
+        exported = settings({"threshold": 21})
+        del exported["stream"]
+        tracker, info = capture_baseline({"detection_settings": exported}, sampling)
+        self.assertEqual(info["defaulted_settings"], {"stream": "substream"})
+        self.assertEqual(tracker["stream"], "substream")
+        self.assertEqual(tracker["threshold"], 21)
+        self.assertNotIn("stream", exported)
+        explicit = {**exported, "stream": "mainstream"}
+        tracker, info = capture_baseline({"detection_settings": explicit}, sampling)
+        self.assertEqual((tracker["stream"], info["defaulted_settings"]), ("mainstream", {}))
+        for bad in ({**exported, "typo": 1}, {**exported, "stream": "oops"},
+                    {k: v for k, v in exported.items() if k != "fps"}):
+            with self.assertRaises(ValueError):
+                capture_baseline({"detection_settings": bad}, sampling)
+
     def test_spatial_match_rejects_right_time_wrong_place(self):
         target = _target(path=[{"t": 1, "x": 0.5, "y": 0.5},
                                {"t": 3, "x": 0.6, "y": 0.5}])

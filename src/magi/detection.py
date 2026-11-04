@@ -162,6 +162,51 @@ class Tracker:
         return result
 
 
+class FrameTiming:
+    """Per-camera peaks by host receipt time, using at most 60 second buckets."""
+    def __init__(self):
+        self.seconds = deque(maxlen=60)
+        self.session = {}
+        self.reset_stream()
+
+    def reset_stream(self):
+        self.previous = None
+        self.skips = 0
+
+    def _peak(self, name, value, stamp, wall_offset):
+        second = int(stamp)
+        if not self.seconds or self.seconds[-1][0] != second:
+            self.seconds.append((second, {}))
+        peaks = self.seconds[-1][1]
+        if name not in peaks or value > peaks[name][0]:
+            record = (value, stamp + wall_offset)
+            peaks[name] = record
+            if name not in self.session or value > self.session[name][0]:
+                self.session[name] = record
+
+    def skipped(self, count, last_receipt, wall_offset):
+        self.skips += count
+        self._peak('skip_burst', self.skips, last_receipt, wall_offset)
+
+    def analyzed(self, receipt, wall_offset):
+        if self.previous is not None:
+            self._peak('gap_ms', (receipt - self.previous) * 1000, receipt, wall_offset)
+        self.previous = receipt
+        self.skips = 0
+
+    def status(self, now):
+        recent = {}
+        for second, peaks in self.seconds:
+            if second > int(now) - 60:
+                for key, record in peaks.items():
+                    if key not in recent or record[0] > recent[key][0]:
+                        recent[key] = record
+        def describe(peaks):
+            return {key: {'value': round(value, 2), 'end_unix': end}
+                    for key, (value, end) in peaks.items()}
+        return {'session': describe(self.session), 'last_minute': describe(recent)}
+
+
 class Analysis:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -173,6 +218,8 @@ class Analysis:
         self.frame_lock = threading.Lock()
         self.pending_frames = deque(maxlen=3)
         self.reader_dropped = 0
+        self.last_evicted = None
+        self.timing = FrameTiming()
         self.last_frame = 0
         self.retry_at = 0
         self.backoff = 1
@@ -246,6 +293,7 @@ class Analysis:
                  '-pix_fmt', 'gray', '-threads', '1', '-f', 'rawvideo', 'pipe:1']
         self.process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.reader_stop.clear()
+        self.timing.reset_stream()
         with self.frame_lock:
             self.pending_frames.clear()
             self.reader_dropped = 0
@@ -271,6 +319,7 @@ class Analysis:
                     partial.clear()
                     with self.frame_lock:
                         if len(self.pending_frames) == self.pending_frames.maxlen:
+                            self.last_evicted = self.pending_frames[0][0]
                             self.reader_dropped += 1
                         self.pending_frames.append(sample)
         except (OSError, ValueError):
@@ -286,11 +335,20 @@ class Analysis:
         with self.frame_lock:
             samples = list(self.pending_frames)
             self.pending_frames.clear()
-            self.dropped += self.reader_dropped
+            evicted = self.reader_dropped
+            last_evicted = self.last_evicted
+            self.dropped += evicted
             self.reader_dropped = 0
         # Receipt timestamps belong to the reader, not the later analysis poll.
-        fresh = [(timestamp, pixels) for timestamp, pixels in samples
-                 if now - timestamp <= 1]
+        wall_offset = time.time() - time.monotonic()
+        if evicted:
+            self.timing.skipped(evicted, last_evicted, wall_offset)
+        fresh = []
+        for sample in samples:
+            if now - sample[0] > 1:
+                self.timing.skipped(1, sample[0], wall_offset)
+            else:
+                fresh.append(sample)
         self.dropped += len(samples) - len(fresh)
         frames = []
         if fresh:
@@ -301,6 +359,7 @@ class Analysis:
                 objects, events = self.tracker.update(frame, timestamp)
                 frames.append((timestamp, frame, objects, events,
                                {'mask': self.tracker.last_mask.copy(), 'suppressed': self.tracker.mask_suppressed}))
+                self.timing.analyzed(timestamp, wall_offset)
                 self.frames += 1
             self.backoff = 1
         if self.process.poll() is not None or now - self.last_frame > 15:

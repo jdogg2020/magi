@@ -102,6 +102,13 @@ async function refreshCameras() {
       tile.state.textContent=`Main: ${camera.state.replaceAll('_',' ')} · Substream: ${(camera.substream?.state || 'idle').replaceAll('_',' ')} · Detection: ${(camera.analysis?.state || 'idle').replaceAll('_',' ')}`;
       tile.count.textContent=`${camera.event_count_since_start || 0} events this session · ${bytes(camera.storage_used_bytes)} used`;
       const a=camera.analysis || {};tile.analysis.textContent=`${a.stream === 'mainstream' ? 'Main stream' : 'Substream'} · ${a.width || '?'}×${a.height || '?'} @ ${a.fps || '?'} fps · ${a.frames || 0} detection frames · ${a.dropped_frames || 0} dropped`;
+      if (a.frame_timing) {
+        const recent = a.frame_timing.last_minute;
+        const peak = (record, unit) => record
+          ? `${record.value} ${unit} at ${new Date(record.end_unix*1000).toISOString().slice(11,23)} UTC`
+          : 'none';
+        tile.analysis.textContent += ` · Last minute: longest gap ${peak(recent.gap_ms, 'ms')}, largest skip burst ${peak(recent.skip_burst, 'frames')}`;
+      }
       tile.save.disabled=tile.saving || !!tile.pendingEvent || camera.state!=='buffering';
       if(tile.pendingEvent && !tile.saving){
         try {

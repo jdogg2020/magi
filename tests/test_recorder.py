@@ -109,6 +109,8 @@ class RecorderTests(unittest.TestCase):
         meta = self.event_meta(event_id)
         self.assertEqual(meta["state"], "complete")
         self.assertTrue(meta["pre_roll_complete"])
+        self.assertLessEqual(meta["trigger_unix"], meta["assembly_started_unix"])
+        self.assertLessEqual(meta["assembly_started_unix"], meta["assembly_finished_unix"])
         self.assertGreaterEqual(meta["estimated_duration_seconds"], 2)
         last_end = meta["segments"][-1]["host_end_unix"]
         self.assertGreaterEqual(last_end, meta["trigger_unix"] + self.cfg.post - 0.1)

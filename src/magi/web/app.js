@@ -5,6 +5,9 @@ function cameraPath(path, identity = selectedCamera) {
   if (identity === 'primary' || !path.startsWith('/api/') || path.startsWith('/api/cameras/') || path.startsWith('/api/station/') || ['/api/login','/api/logout','/api/session','/api/cameras'].includes(path)) return path;
   return '/api/cameras/'+encodeURIComponent(identity)+'/'+path.slice(5);
 }
+const frameTime = new Intl.DateTimeFormat(undefined, {
+  hour: 'numeric', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3, timeZoneName: 'short',
+});
 const cameraTiles = new Map();
 let stationCameras = [], cameraRefreshBusy = false, cameraAddBusy = false;
 const eventKey = row => `${row.camera_id || selectedCamera}:${row.id}`;
@@ -105,7 +108,7 @@ async function refreshCameras() {
       if (a.frame_timing) {
         const recent = a.frame_timing.last_minute;
         const peak = (record, unit) => record
-          ? `${record.value} ${unit} at ${new Date(record.end_unix*1000).toISOString().slice(11,23)} UTC`
+          ? `${record.value} ${unit} at ${frameTime.format(record.end_unix * 1000)}`
           : 'none';
         tile.analysis.textContent += ` · Last minute: longest gap ${peak(recent.gap_ms, 'ms')}, largest skip burst ${peak(recent.skip_burst, 'frames')}`;
       }

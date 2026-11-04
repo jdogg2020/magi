@@ -39,7 +39,11 @@ const MagiFilterSelect = (() => {
       matches.forEach((option, index) => {
         const item = document.createElement('div'); item.id = list.id + '-' + index;
         item.setAttribute('role', 'option'); item.setAttribute('aria-selected', String(option.value === select.value));
-        item.textContent = option.textContent; item.onclick = () => choose(option); list.append(item);
+        item.textContent = option.textContent;
+        // Keep focus on the search box until the pointer click commits the choice.
+        item.onmousedown = event => event.preventDefault();
+        item.onclick = event => { event.preventDefault(); choose(option); };
+        list.append(item);
       });
       empty.hidden = matches.length > 0;
     }

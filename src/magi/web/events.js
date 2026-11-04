@@ -88,9 +88,12 @@ const MagiEvents = (()=>{
   }
   function setOptions(values){
     const list=el('event-label-options'), filter=el('event-label-filter'), previous=filter.value;
+    const names=[...new Set([...presets,...values,...(previous?[previous]:[])])].sort();
+    // A background refresh must leave an open dropdown intact when its options match.
+    if(filter.options.length===names.length+1 && names.every((name,i)=>filter.options[i+1].value===name))return;
     list.replaceChildren();filter.replaceChildren();
     const any=node('option','Any label');any.value='';filter.append(any);
-    for(const name of [...new Set([...presets,...values,...(previous?[previous]:[])])].sort()){
+    for(const name of names){
       const option=node('option',name);option.value=name;list.append(option);
       const choice=node('option',name);choice.value=name;filter.append(choice);
     }
@@ -265,6 +268,7 @@ const MagiEvents = (()=>{
       };
       item.title=`Add or remove ${title.toLowerCase()}; saves in the background and opens the next matching event`;
     }
+    el('event-filters').addEventListener('change',event=>{if(event.target.matches('select'))applyFilters();});
     el('event-filters').onsubmit=event=>{event.preventDefault();return applyFilters();};
     el('event-reset').onclick=()=>{for(const id of ['event-search','event-label-filter','event-start','event-end'])el(id).value='';for(const id of ['event-reviewed','event-protected','event-state','event-reference','event-type'])el(id).value='all';el('event-hide-likely').checked=false;el('event-camera').value='all';el('event-folder').value='active';el('event-sort').value='newest';applyFilters();};
     el('event-select-page').onchange=()=>{for(const row of rows){if(el('event-select-page').checked && selected.size<100)selected.set(eventKey(row),row);else if(!el('event-select-page').checked)selected.delete(eventKey(row));}render();};

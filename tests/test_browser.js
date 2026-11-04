@@ -73,7 +73,7 @@ const base = process.argv[2];
     const primaryName=await page.locator('#event-camera option[value=primary]').textContent();
     await page.getByRole('combobox',{name:'Search camera',exact:true}).fill(primaryName);
     await page.locator('#event-camera-choices').getByRole('option',{name:primaryName,exact:true}).click();
-    await page.locator('#event-filters button[type=submit]').click();
+    // Choosing the camera applies the filter immediately.
     await page.waitForFunction(()=>document.getElementById('event-filter-summary').textContent.includes('1 active'));
     await page.locator('#event-filter-summary').click();
     assert(await page.locator('#event-filter-summary').textContent().then(text=>text.includes('1 active')));

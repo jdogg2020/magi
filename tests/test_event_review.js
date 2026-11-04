@@ -1,7 +1,7 @@
 // Exercise the real review controller with a deterministic, paginated archive.
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const elements=new Map();
-function el(id){if(!elements.has(id))elements.set(id,{value:'',checked:false,disabled:false,textContent:'',open:true,tagName:'DIV',children:[],dataset:{},classList:{contains:()=>false,toggle(){}},append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;},setAttribute(name,value){this[name]=value;},addEventListener(name,fn){this[name]=fn;}});return elements.get(id);}
+function el(id){if(!elements.has(id))elements.set(id,{value:'',checked:false,disabled:false,textContent:'',open:true,tagName:'DIV',children:[],get options(){return this.children;},dataset:{},classList:{contains:()=>false,toggle(){}},append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;},setAttribute(name,value){this[name]=value;},addEventListener(name,fn){this[name]=fn;}});return elements.get(id);}
 const records=Array.from({length:230},(_,i)=>({id:String(i).padStart(4,'0'),camera_id:'a',trigger_unix:i,review:{labels:[],notes:'',reviewed:false,protected:false,trashed_at:null}}));
 // Same timestamp/id on another camera must remain a distinct navigation target.
 records.push({...records[125],camera_id:'b',review:{...records[125].review}});

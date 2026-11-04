@@ -12,6 +12,7 @@ const cameraId = process.argv[3] || 'primary';
 const base = process.argv[2] || 'http://127.0.0.1:18790';
 class Element {
   constructor(tag='div') { this.tagName=tag; this.children=[]; this.value=''; this.textContent=''; this.checked=false; this.disabled=false; this.open=false; this.listeners={}; this.classes=new Set(); this.dataset={}; this.style={}; this.classList={add:(...n)=>n.forEach(v=>this.classes.add(v)),remove:(...n)=>n.forEach(v=>this.classes.delete(v)),toggle:(n,yes)=>{if(yes ?? !this.classes.has(n)) this.classes.add(n);else this.classes.delete(n);},contains:n=>this.classes.has(n)}; }
+  get options() { return this.children.filter(child=>child.tagName==="option"); }
   append(...children) { for(const child of children){if(child && typeof child==='object'){if(child.parentNode)child.parentNode.children=child.parentNode.children.filter(item=>item!==child);child.parentNode=this;}this.children.push(child);} }
   remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(child=>child!==this);}
   replaceChildren(...children) { this.children=[...children]; }

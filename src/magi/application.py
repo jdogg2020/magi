@@ -922,6 +922,7 @@ class Application:
                        'health': self.health, 'star_calibration': self.calibration_report, 'event_count_since_start': self.event_count,
                        'analysis': {'stream': self.cfg.detection.get('stream', 'substream'), 'state': self.analysis.state if self.analysis else 'idle',
                                     'frames': self.analysis.frames if self.analysis else 0,
+                                    'frame_timing': self.analysis.timing.status(time.monotonic()) if self.analysis else None,
                                     'dropped_frames': self.analysis.dropped if self.analysis else 0,
                                     'suppressed_frames': self.analysis.tracker.suppressed_frames if self.analysis else 0,
                                     'probe_error': self.analysis.probe_error if self.analysis else None,

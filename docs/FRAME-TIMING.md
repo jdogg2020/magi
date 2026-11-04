@@ -2,7 +2,7 @@
 
 Open Overview and find UAP2. Keep both cameras on their usual substreams, with
 the normal ignore zones. Each camera reports two peaks over the current and
-previous 59 one-second buckets. The timestamps are UTC on the station clock.
+previous 59 one-second buckets. The timestamps are shown in your dashboard device’s local timezone, like Captured (local) in Events.
 
 - **Longest gap** is the elapsed time between host receipts of two frames that
   were both analyzed. At 25 fps a normal interval is about 40 ms. A delayed
@@ -14,7 +14,7 @@ previous 59 one-second buckets. The timestamps are UTC on the station clock.
 
 ## Two-minute UAP2 check
 
-1. Note the analyzed and dropped counters and the UTC start time. Leave the
+1. Note the analyzed and dropped counters and the local start time. Leave the
    scene quiet for 60 seconds. Copy the UAP2 line, including both peaks.
 2. Immediately start another 60-second interval. About ten seconds in, wave
    for three seconds inside the unmasked area, then leave the scene still.

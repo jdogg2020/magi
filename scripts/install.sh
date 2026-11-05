@@ -7,10 +7,12 @@ lan=false
 identification=false
 require_mounted_ssd=false
 skip_sensors=false
+hailo=false
 sensor_options=()
 for argument in "$@"; do
   case "$argument" in
     --dry-run) dry_run=true ;;
+    --hailo) hailo=true ;;
     --skip-dependencies) skip_dependencies=true ;;
     --lan) lan=true ;;
     --identification) identification=true ;;
@@ -20,7 +22,7 @@ for argument in "$@"; do
     --gnss-time) sensor_options+=(--gnss-time) ;;
     --require-mounted-ssd) require_mounted_ssd=true ;;
     --skip-sensors) skip_sensors=true ;;
-    *) echo "Usage: $0 [--dry-run] [--skip-dependencies] [--lan] [--identification] [--require-mounted-ssd] [--skip-sensors] [--gnss-port=PATH] [--nmea-port=PATH] [--adsb-serial=SERIAL] [--gnss-time]" >&2; exit 2 ;;
+    *) echo "Usage: $0 [--dry-run] [--hailo] [--skip-dependencies] [--lan] [--identification] [--require-mounted-ssd] [--skip-sensors] [--gnss-port=PATH] [--nmea-port=PATH] [--adsb-serial=SERIAL] [--gnss-time]" >&2; exit 2 ;;
   esac
 done
 source_dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -36,19 +38,22 @@ if "$dry_run"; then
   if "$skip_sensors"; then echo "Sensor provisioning explicitly skipped.";
   elif [[ ${#sensor_options[@]} -gt 0 ]]; then echo "Would provision explicitly selected GNSS/ADS-B sensors and optional chrony using setup_sensors.py.";
   else echo "Would auto-detect attached GNSS/ADS-B sensors and provision any found hardware using setup_sensors.py."; fi
+  if "$hailo"; then echo "Would install dkms and hailo-all, verify Hailo-8, and report whether a reboot is needed."; fi
   exit 0
 fi
 if [[ "$EUID" -ne 0 ]]; then echo "Run the reviewed installer with sudo." >&2; exit 1; fi
 # Save diagnostics without terminal input or setup credentials.
 install -d -m 0750 /var/log/magi
+exec 9>/var/log/magi/installer.lock
+if ! flock -n -x 9; then echo "Another Magi installer is running; wait for it to finish." >&2; exit 1; fi
 log_file="$(mktemp /var/log/magi/install-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX.log)"
-exec 9>"$log_file.lock"
-flock -x 9
 exec 3>&1 4>&2
 exec > >(tee -a "$log_file") 2>&1
 current_step="initial checks"
 active_runner=""
 started_at=$SECONDS
+partial=false
+reboot_required=false
 progress() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*"; }
 finish() {
   result=$?
@@ -58,7 +63,13 @@ finish() {
     wait "$active_runner" 2>/dev/null || true
   fi
   if [[ "$result" -eq 0 ]]; then
-    progress "INSTALL COMPLETE ($((SECONDS-started_at)) seconds)."
+    if "$reboot_required"; then
+      progress "INSTALL FINISHED: AI HAT verification pending reboot ($((SECONDS-started_at)) seconds)."
+    else
+      progress "INSTALL COMPLETE ($((SECONDS-started_at)) seconds)."
+    fi
+  elif [[ "$result" -eq 2 && "$partial" == true ]]; then
+    progress "INSTALL INCOMPLETE: dashboard installed; see component warnings above (exit 2)."
   else
     progress "INSTALL STOPPED: $current_step (exit $result)."
     echo "It is safe to rerun the installer after fixing the reported issue."
@@ -140,14 +151,8 @@ cp "$source_dir/README.md" "$source_dir/START-HERE.md" "$source_dir/config.examp
 # Application code is public-readable; secrets live separately in /etc/magi.
 /usr/bin/python3 "$source_dir/scripts/update.py" --repair-permissions
 run_step 30 "Verify installed source is readable by the service account" runuser -u magi -- env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/opt/magi/src /usr/bin/python3 -c 'from magi import __version__; print("Installed Magi", __version__)'
-fresh_config=false
-if [[ ! -e /etc/magi/config.json ]]; then
-  install -m 0600 -o magi -g magi "$source_dir/config.example.json" /etc/magi/config.json
-  fresh_config=true
-fi
 setup_options=()
 if "$lan"; then setup_options+=(--lan); fi
-if "$fresh_config"; then setup_options+=(--fresh-storage); fi
 if "$require_mounted_ssd"; then setup_options+=(--require-mounted-ssd); fi
 current_step="Step 6/7: Configure dashboard login (waiting for your input)"
 progress "$current_step"
@@ -186,11 +191,29 @@ if ! "$ready"; then
 fi
 if ! "$skip_sensors"; then
   if [[ ${#sensor_options[@]} -eq 0 ]]; then sensor_options+=(--detect); fi
-  run_step 0 "Provision station sensors" /usr/bin/python3 /opt/magi/scripts/setup_sensors.py "${sensor_options[@]}"
+  sensor_result=0
+  run_step 0 "Provision station sensors" /usr/bin/python3 -u /opt/magi/scripts/setup_sensors.py "${sensor_options[@]}" || sensor_result=$?
+  if [[ "$sensor_result" -eq 2 ]]; then partial=true;
+  elif [[ "$sensor_result" -ne 0 ]]; then exit "$sensor_result"; fi
+else
+  echo "Sensor provisioning: skipped by --skip-sensors; existing configuration unchanged."
 fi
 if [[ -f /etc/systemd/system/magi-sensors.service ]]; then
   systemctl try-restart magi-sensors.service
 fi
+if "$hailo"; then
+  hailo_result=0
+  run_step 0 "Install and verify optional Hailo-8 support" /usr/bin/python3 -u /opt/magi/scripts/setup_hailo.py || hailo_result=$?
+  if [[ "$hailo_result" -eq 10 ]]; then reboot_required=true;
+  elif [[ "$hailo_result" -ne 0 ]]; then partial=true; fi
+fi
+run_step 60 "Verify final dashboard and configured services" /usr/bin/python3 /opt/magi/scripts/verify_install.py
+if "$reboot_required"; then
+  echo "AI HAT: reboot required. When ready: sudo reboot"
+  echo "After reconnecting: python3 /opt/magi/scripts/setup_hailo.py --verify-only"
+fi
+if "$partial"; then exit 2; fi
+echo "Magi dashboard: final health check passed. Sensor configuration is summarized above; GPS lock is not required."
 echo "Magi is running. Open http://PI-IP:8090 if LAN access is enabled."
 echo "Otherwise use http://localhost:8090 on the Pi, or an SSH tunnel."
 echo "Sign in with your dashboard login, then connect the camera in Settings."

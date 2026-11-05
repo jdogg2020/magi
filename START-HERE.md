@@ -94,6 +94,15 @@ then rerun the installer. Avoid forcibly powering off during package installatio
 
 ## 4. Open the webpage
 
+The installer automatically considers SIM7600/SIMCom and SimTech USB serial
+ports, verifies the modem's AT identity, and configures attached supported sensors.
+Its sensor summary distinguishes configured components from those not configured.
+GNSS setup does **not** wait for a satellite fix: the sensor service acquires
+satellites in the background, and `no_fix` is normal during acquisition.
+Chrony retains network time sources while GNSS time is unavailable. A configured
+service does not by itself establish a GPS fix, aircraft reception, or synchronized
+time; check the live sensor status after installation.
+
 Find the Pi address with:
 
 ```bash
@@ -207,3 +216,50 @@ Settings → Motion detection → **Event types & footage retention** contains t
 lightning/meteor candidate switches and footage retention choices. All footage
 is kept by default. Aircraft/satellite discard uses tentative reference matches;
 leave it off while checking calibration/data quality. See [Events](docs/EVENTS.md).
+
+### Reference Pi 5: optional AI HAT+
+
+For the 26 TOPS Hailo-8 reference build, add `--hailo` to the installer:
+
+```bash
+sudo bash scripts/install.sh --lan --identification --hailo
+```
+
+This opt-in installs OS-managed `dkms` and `hailo-all`. It requires the Hailo-8
+already to be visible on PCIe and does not change boot settings, upgrade the
+whole OS, or reboot automatically. It follows the Raspberry Pi
+[AI HAT+ software setup](https://www.raspberrypi.com/documentation/computers/ai.html).
+It is not the AI HAT+ 2 / Hailo-10 installation path. `--skip-dependencies` skips
+the base application packages; explicitly requested sensor and AI packages
+are still provisioned.
+
+If firmware communication is not ready after package installation, the summary
+reports verification pending reboot. At a convenient time run `sudo reboot`,
+then after reconnecting:
+
+```bash
+python3 /opt/magi/scripts/setup_hailo.py --verify-only
+```
+
+This verifies hardware/driver/firmware communication, not model inference or
+Magi acceleration. If it still fails after reboot, inspect `dkms status` and
+`sudo journalctl -k -b`. A missing PCIe device points to hardware/connection
+troubleshooting before software installation.
+
+### Installer completion and retry behavior
+
+Only one `install.sh` can run at a time. An interrupted login does not commit a
+new example configuration; rerunning also recognizes unfinished configurations
+from older installers. Completed settings and recordings are preserved.
+
+Final checks cover the dashboard and services required by saved sensor
+configuration. GPS lock and aircraft reception are not installation requirements.
+A detected modem that cannot be configured reports **INSTALL INCOMPLETE** with
+exit code 2, even if ADS-B and the dashboard work. Serial probe diagnostics
+include the exception type and reason. Fix the reported component and rerun;
+there is no need to reimage for a recoverable setup failure. Other failed steps
+retain a nonzero exit and log the last step. AI packages awaiting a reboot are
+explicitly reported as pending verification, not as a verified AI installation.
+
+Reference acceptance still requires a clean-card run, reboot recovery, live
+GNSS/ADS-B checks and a Hailo inference test. Startup clock stepping is unchanged.

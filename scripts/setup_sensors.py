@@ -26,7 +26,7 @@ def run(*args):
 
 
 def apt(*packages):
-    run('apt-get', '-o', 'DPkg::Lock::Timeout=60', '-o', 'Dpkg::Options::=--force-confold', 'install', '-y', *packages)
+    run('env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', '-o', 'DPkg::Lock::Timeout=60', '-o', 'Dpkg::Options::=--force-confold', 'install', '-y', *packages)
 
 
 def write(path, content, mode=0o644):
@@ -116,7 +116,7 @@ def find_rtlsdr_serials(sysfs_root=Path('/sys/bus/usb/devices'),
 
 
 def sim7600_candidates(by_id_dir=Path('/dev/serial/by-id')):
-    """Stable by-id serial ports whose name suggests a SIMCom modem.
+    """Stable by-id ports named SIMCom, SIM7600, or SimTech.
 
     A name is not evidence of function; every candidate still gets an AT
     identity probe before it is used.
@@ -126,7 +126,21 @@ def sim7600_candidates(by_id_dir=Path('/dev/serial/by-id')):
     except OSError:
         return []
     return [p for p in entries
-            if 'sim7600' in p.name.lower() or 'simcom' in p.name.lower()]
+            if any(name in p.name.lower() for name in ('sim7600', 'simcom', 'simtech'))]
+
+
+def provisioning_summary(config):
+    """Report saved configuration, without claiming live reception or GPS lock."""
+    print('Sensor installation summary:')
+    print('  ADS-B: ' + ('configured; verify live aircraft reception' if config.get('adsb_serial')
+                         else 'not configured'))
+    if config.get('at_port'):
+        print('  GNSS: configured; satellite acquisition continues in the background.')
+        print('  A GPS fix is not required to complete installation; no_fix is normal while acquiring satellites.')
+    else:
+        print('  GNSS: not configured; satellite acquisition is not enabled.')
+    print('  GNSS time: ' + ('chrony configured with network fallback; synchronization not verified'
+                             if config.get('clock_socket') else 'not configured'))
 
 
 def port_busy(path):
@@ -137,7 +151,7 @@ def port_busy(path):
     return False
 
 
-def probe_sim7600(port_path, query_fn=None, port_opener=None, time_left_fn=None):
+def probe_sim7600(port_path, query_fn=None, port_opener=None, time_left_fn=None, errors=None):
     """True when the port answers AT commands as a SIM7600 AT port.
 
     Never raises: a probe failure means 'not the AT port', not an error.
@@ -165,13 +179,18 @@ def probe_sim7600(port_path, query_fn=None, port_opener=None, time_left_fn=None)
             remaining = time_left_fn() if time_left_fn is not None else None
             timeout = .2 if remaining is None else max(0.0, min(.2, remaining))
             write_timeout = 2 if remaining is None else max(0.0, min(2, remaining))
-            return serial.Serial(path, 115200, timeout=timeout,
+            return serial.Serial(str(path), 115200, timeout=timeout,
                                  write_timeout=write_timeout, exclusive=True)
     try:
         with port_opener(port_path) as port:
             query_fn(port, 'AT')
-            return any('SIM7600' in line for line in query_fn(port, 'AT+CGMM'))
-    except Exception:
+            identified = any('SIM7600' in line for line in query_fn(port, 'AT+CGMM'))
+            if not identified and errors is not None:
+                errors.append('model did not identify as SIM7600')
+            return identified
+    except Exception as exc:
+        if errors is not None:
+            errors.append(f'{type(exc).__name__}: {str(exc)[:200]}')
         return False
 
 
@@ -215,11 +234,12 @@ def detect_sensors(sysfs_root=Path('/sys/bus/usb/devices'),
         if time_left_fn is not None and time_left_fn() <= 0:
             unusable.append(f'{text} (probe budget expired)')
             break
+        errors = []
         if probe_sim7600(candidate, query_fn=query_fn,
-                         port_opener=port_opener, time_left_fn=time_left_fn):
+                         port_opener=port_opener, time_left_fn=time_left_fn, errors=errors):
             gnss_port = text
             break
-        unusable.append(f'{text} (probe failed)')
+        unusable.append(f'{text} (probe failed: {"; ".join(errors) or "no response within budget"})')
     if gnss_port:
         gnss_status = 'found'
     elif unusable:
@@ -306,6 +326,7 @@ def resolve_sensor_args(args, config, detect_fn=None, active_fn=None,
                 found = detect_fn(owned_ports=owned,
                                   time_left_fn=lambda: deadline - monotonic_fn())
             gnss_incomplete = found['gnss_status'] != 'found'
+        args.provisioning_incomplete = gnss_incomplete
         if gnss_incomplete:
             reasons = '; '.join(found['gnss_unusable']) or 'modem no longer visible'
             print('WARNING: GNSS provisioning incomplete: hardware was detected but could not be verified within ' +
@@ -353,7 +374,8 @@ def main():
         parser.error('GNSS time requires a verified AT port.')
     apt('python3-serial')
     if not resolve_sensor_args(args, config):
-        return
+        provisioning_summary(config)
+        return 2 if getattr(args, 'provisioning_incomplete', False) else 0
     if args.gnss_port:
         # Stop only our own collector before verifying the explicitly selected port.
         if active('magi-sensors.service'):
@@ -435,8 +457,10 @@ def main():
     if args.adsb_serial:
         run('systemctl', 'enable', 'readsb.service')
         run('systemctl', 'restart', 'readsb.service')
+    provisioning_summary(config)
     print('Sensor services configured. Verify live fixes, aircraft freshness and chronyc sources before relying on integration.')
+    return 2 if getattr(args, 'provisioning_incomplete', False) else 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

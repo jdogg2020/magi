@@ -313,3 +313,38 @@ binary; normal dashboard application updates do not acquire that capability.
 Sources: [OpenSky Debian feeder](https://opensky-network.org/feed/debian),
 [receiver setup](https://opensky-network.org/feed/raspberry).
 Live arm64 feeding and actual cellular usage still need reference-Pi testing.
+
+### Export events for training
+
+In **Events**, filter by label, camera, date, review state, or **Not exported**.
+Select up to 100 events across pages, choose **Originals + previews** or
+**Previews only (smaller)**, then click **Download selected ZIP**. Wait for any
+label saves to finish first. Choose your external drive in your browser's save
+dialog, or move the finished download there afterward. The destination is on
+the computer running the browser; this does not mount or write to a Pi USB drive.
+
+Each ZIP has camera/event folders with the selected existing videos, best frame
+and thumbnail when available, event metadata, operator labels/notes in
+review.json, and available motion, radio, identification and Hailo reports.
+manifest.json lists included files with SHA-256 checksums and reports missing
+optional files and failed events. Operator labels remain separate from automated
+suggestions and are not certified ground truth. Only finished or interrupted
+events with the requested video are exportable. Originals mode requires the
+original clip. No videos are transcoded and camera passwords/configuration files
+are not included.
+
+Downloads stream directly from the Pi without creating a second full archive
+on its storage. One ZIP can stream at a time. Large exports use network bandwidth,
+including cellular data. Keep the dashboard open for its completion report;
+the browser download indicator shows transfer progress.
+
+After the server finishes sending the ZIP, successfully exported events receive
+a persistent **Exported** timestamp and media choice. Interrupted downloads do
+not set new flags. This records server transmission, not confirmation that the
+browser saved the file to your drive. Check the downloaded ZIP and its manifest
+before relying on your copy. Missing events or failed flag writes are reported;
+retention can remove events during an export, so use **Keep selected events**
+first if you need them protected. Exporting itself never protects or deletes
+footage, changes labels, or prevents exporting the same event again. The flag
+describes the last export; later label edits do not clear it. The older
+**Export selected JSON** action remains metadata-only and does not set this flag.

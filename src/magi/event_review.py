@@ -52,12 +52,12 @@ def read(directory):
 
 
 def filters(value):
-    if not isinstance(value, dict) or set(value)-{'q','label','reviewed','protected','state','reference','type','trash','start','end','sort','offset','limit','hide_likely_satellites'}:
+    if not isinstance(value, dict) or set(value)-{'q','label','reviewed','protected','state','reference','type','trash','start','end','sort','offset','limit','hide_likely_satellites','exported'}:
         raise ReviewError('Invalid event filters.')
-    result = {'q':'','label':'','reviewed':'all','protected':'all','state':'all','reference':'all','type':'all','trash':'active','start':None,'end':None,'sort':'newest','offset':0,'limit':25,'hide_likely_satellites':False, **value}
+    result = {'q':'','label':'','exported':'all','reviewed':'all','protected':'all','state':'all','reference':'all','type':'all','trash':'active','start':None,'end':None,'sort':'newest','offset':0,'limit':25,'hide_likely_satellites':False, **value}
     if not isinstance(result['hide_likely_satellites'], bool):
         raise ReviewError('Hide likely satellites must be true or false.')
-    for key, allowed in [('reviewed',('all','yes','no')),('protected',('all','yes','no')),('trash',('active','trash','all')),('sort',('newest','oldest')),('type',('all','manual','motion','lightning_candidate','meteor_candidate')),('state',('all','collecting','assembling','complete','interrupted','failed','not_retained')),('reference',('all','possible_aircraft','possible_aircraft_bearing_only','possible_satellite','likely_satellite','ambiguous_possible_matches','no_match_in_checked_data','reference_coverage_incomplete','calibration_required','insufficient_track_data','disabled','pending','not_checked','event_calibration_differs_from_current'))]:
+    for key, allowed in [('exported',('all','yes','no')),('reviewed',('all','yes','no')),('protected',('all','yes','no')),('trash',('active','trash','all')),('sort',('newest','oldest')),('type',('all','manual','motion','lightning_candidate','meteor_candidate')),('state',('all','collecting','assembling','complete','interrupted','failed','not_retained')),('reference',('all','possible_aircraft','possible_aircraft_bearing_only','possible_satellite','likely_satellite','ambiguous_possible_matches','no_match_in_checked_data','reference_coverage_incomplete','calibration_required','insufficient_track_data','disabled','pending','not_checked','event_calibration_differs_from_current'))]:
         if result[key] not in allowed:
             raise ReviewError('Invalid event filter choice.')
     for key in ('q','label'):

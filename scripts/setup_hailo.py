@@ -37,7 +37,12 @@ def verify():
     return 0
 
 
-def install():
+def install(detect=False):
+    if detect:
+        if not hardware_present():
+            print('AI HAT: no supported Hailo-8 detected on PCIe; skipping AI setup.')
+            return 0
+        print('AI HAT: detected Hailo-8 on PCIe; installing and verifying support.')
     model = Path('/proc/device-tree/model')
     if platform.machine() != 'aarch64' or not model.exists() or 'Raspberry Pi 5' not in model.read_text():
         raise RuntimeError('--hailo supports the 64-bit Raspberry Pi 5 reference build only.')
@@ -57,14 +62,17 @@ def install():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--verify-only', action='store_true')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--verify-only', action='store_true')
+    mode.add_argument('--detect', action='store_true',
+                      help='Install if Hailo-8 is visible on PCIe; skip successfully if absent.')
     args = parser.parse_args()
     try:
         if args.verify_only:
             return verify()
         if os.geteuid() != 0:
             parser.error('Run installation with sudo; --verify-only does not require root.')
-        return install()
+        return install(detect=args.detect)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f'AI HAT setup failed: {exc}')
         return 1

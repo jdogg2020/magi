@@ -20,9 +20,10 @@ parser.add_argument('--fresh-storage', action='store_true')
 parser.add_argument('--require-mounted-ssd', action='store_true')
 args = parser.parse_args()
 path = Path('/etc/magi/config.json')
-raw = json.loads(path.read_text())
+from install_config import load_setup_config
+raw, fresh = load_setup_config(path, Path(__file__).resolve().parent.parent / 'config.example.json')
 raw['storage'] = installation_storage_defaults(
-    raw['storage'], fresh=args.fresh_storage, strict=args.require_mounted_ssd,
+    raw['storage'], fresh=fresh or args.fresh_storage, strict=args.require_mounted_ssd,
     mounted=os.path.ismount(raw['storage']['mount']),
     free_bytes=shutil.disk_usage(raw['storage']['mount']).free)
 web = raw.setdefault('web', {})

@@ -216,3 +216,50 @@ Settings → Motion detection → **Event types & footage retention** contains t
 lightning/meteor candidate switches and footage retention choices. All footage
 is kept by default. Aircraft/satellite discard uses tentative reference matches;
 leave it off while checking calibration/data quality. See [Events](docs/EVENTS.md).
+
+### Reference Pi 5: optional AI HAT+
+
+For the 26 TOPS Hailo-8 reference build, add `--hailo` to the installer:
+
+```bash
+sudo bash scripts/install.sh --lan --identification --hailo
+```
+
+This opt-in installs OS-managed `dkms` and `hailo-all`. It requires the Hailo-8
+already to be visible on PCIe and does not change boot settings, upgrade the
+whole OS, or reboot automatically. It follows the Raspberry Pi
+[AI HAT+ software setup](https://www.raspberrypi.com/documentation/computers/ai.html).
+It is not the AI HAT+ 2 / Hailo-10 installation path. `--skip-dependencies` skips
+the base application packages; explicitly requested sensor and AI packages
+are still provisioned.
+
+If firmware communication is not ready after package installation, the summary
+reports verification pending reboot. At a convenient time run `sudo reboot`,
+then after reconnecting:
+
+```bash
+python3 /opt/magi/scripts/setup_hailo.py --verify-only
+```
+
+This verifies hardware/driver/firmware communication, not model inference or
+Magi acceleration. If it still fails after reboot, inspect `dkms status` and
+`sudo journalctl -k -b`. A missing PCIe device points to hardware/connection
+troubleshooting before software installation.
+
+### Installer completion and retry behavior
+
+Only one `install.sh` can run at a time. An interrupted login does not commit a
+new example configuration; rerunning also recognizes unfinished configurations
+from older installers. Completed settings and recordings are preserved.
+
+Final checks cover the dashboard and services required by saved sensor
+configuration. GPS lock and aircraft reception are not installation requirements.
+A detected modem that cannot be configured reports **INSTALL INCOMPLETE** with
+exit code 2, even if ADS-B and the dashboard work. Serial probe diagnostics
+include the exception type and reason. Fix the reported component and rerun;
+there is no need to reimage for a recoverable setup failure. Other failed steps
+retain a nonzero exit and log the last step. AI packages awaiting a reboot are
+explicitly reported as pending verification, not as a verified AI installation.
+
+Reference acceptance still requires a clean-card run, reboot recovery, live
+GNSS/ADS-B checks and a Hailo inference test. Startup clock stepping is unchanged.

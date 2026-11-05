@@ -29,6 +29,14 @@ def apt(*packages):
     run('env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', '-o', 'DPkg::Lock::Timeout=60', '-o', 'Dpkg::Options::=--force-confold', 'install', '-y', *packages)
 
 
+def feeder_network_options(config):
+    """Expose Beast only on loopback after explicit OpenSky setup consent."""
+    if not config.get('opensky_feeding_output'):
+        return ''
+    return (' --net --net-bind-address 127.0.0.1 --net-bo-port 30005'
+            ' --net-bi-port 0 --net-ri-port 0 --net-ro-port 0 --net-sbs-port 0')
+
+
 def write(path, content, mode=0o644):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -419,7 +427,7 @@ def main():
         # Create a base unit only on systems without the distro service.
         if not any(Path(p).exists() for p in ('/usr/lib/systemd/system/readsb.service', '/lib/systemd/system/readsb.service', '/etc/systemd/system/readsb.service')):
             write('/etc/systemd/system/readsb.service', '[Unit]\nDescription=Local ADS-B receiver\n[Service]\nUser=readsb\nRuntimeDirectory=readsb\nRuntimeDirectoryMode=0755\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=multi-user.target\n')
-        write('/etc/systemd/system/readsb.service.d/magi-receiver.conf', f'[Service]\nExecStart=\nExecStart={binary} --device-type rtlsdr --device {args.adsb_serial} --gain 49.6 --write-json /run/readsb --write-json-every 1 --quiet\nNice=5\nUMask=0022\n')
+        write('/etc/systemd/system/readsb.service.d/magi-receiver.conf', f'[Service]\nExecStart=\nExecStart={binary} --device-type rtlsdr --device {args.adsb_serial} --gain 49.6 --write-json /run/readsb --write-json-every 1 --quiet{feeder_network_options(config)}\nNice=5\nUMask=0022\n')
         config['adsb_serial'] = args.adsb_serial
     if args.gnss_time:
         for unit in ('ntp.service', 'ntpsec.service', 'openntpd.service'):

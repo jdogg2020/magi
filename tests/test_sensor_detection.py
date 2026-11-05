@@ -76,6 +76,61 @@ class FakeClock:
 
 
 class DetectionTests(unittest.TestCase):
+    def test_reference_simtech_ports_verified_without_satellite_fix(self):
+        commands = []
+        prefix = 'usb-SimTech__Incorporated_SimTech__Incorporated_0123456789ABCDEF'
+
+        def query(port, command):
+            commands.append(command)
+            # Diagnostic/NMEA interfaces must not be accepted by name alone.
+            if 'if02-port0' not in port.label:
+                raise ValueError('not an AT port')
+            # Deliberately no GPS commands or fix data: setup needs identity only.
+            return {'AT': ['OK'], 'AT+CGMM': ['SIM7600G-H', 'OK']}[command]
+
+        with tempfile.TemporaryDirectory() as directory:
+            by_id = make_by_id(directory, [f'{prefix}-if{i:02d}-port0' for i in range(5)])
+            found = SETUP.detect_sensors(
+                make_sysfs(directory, []), by_id, query_fn=query,
+                port_opener=lambda path: FakePort(str(path)), busy=lambda p: False)
+            self.assertEqual(found['gnss_port'], str(by_id / f'{prefix}-if02-port0'))
+            self.assertEqual(found['gnss_status'], 'found')
+            args = sensor_args(detect=True)
+            self.assertTrue(SETUP.resolve_sensor_args(
+                args, {}, detect_fn=lambda **kwargs: found,
+                active_fn=lambda unit: False, candidates_fn=lambda: list(by_id.iterdir()),
+                sleep_fn=lambda seconds: self.fail('Must not wait for satellite lock')))
+            self.assertTrue(args.gnss_time)
+            self.assertEqual(set(commands), {'AT', 'AT+CGMM'})
+
+    def test_simtech_name_does_not_accept_wrong_modem(self):
+        with tempfile.TemporaryDirectory() as directory:
+            by_id = make_by_id(directory, ['usb-SimTech_Other-if02-port0'])
+            found = SETUP.detect_sensors(
+                make_sysfs(directory, []), by_id,
+                query_fn=query_stub({'AT': ['OK'], 'AT+CGMM': ['SIM800', 'OK']}),
+                port_opener=lambda path: FakePort(str(path)), busy=lambda p: False)
+            self.assertEqual(found['gnss_status'], 'unusable')
+            self.assertIsNone(found['gnss_port'])
+
+    def test_summary_distinguishes_configured_from_missing_gnss(self):
+        for configured in (False, True):
+            config = {'adsb_serial': '62856230'}
+            if configured:
+                config.update(at_port='verified-port', clock_socket='chrony-socket')
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                SETUP.provisioning_summary(config)
+            summary = output.getvalue()
+            self.assertIn('ADS-B: configured', summary)
+            if configured:
+                self.assertIn('A GPS fix is not required', summary)
+                self.assertIn('chrony configured with network fallback', summary)
+                self.assertIn('synchronization not verified', summary)
+            else:
+                self.assertIn('GNSS: not configured', summary)
+                self.assertIn('GNSS time: not configured', summary)
+
     def test_rtlsdr_scan_matches_products_not_just_vendor(self):
         with tempfile.TemporaryDirectory() as directory:
             root = make_sysfs(directory, [

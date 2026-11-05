@@ -187,10 +187,13 @@ fi
 if ! "$skip_sensors"; then
   if [[ ${#sensor_options[@]} -eq 0 ]]; then sensor_options+=(--detect); fi
   run_step 0 "Provision station sensors" /usr/bin/python3 /opt/magi/scripts/setup_sensors.py "${sensor_options[@]}"
+else
+  echo "Sensor provisioning: skipped by --skip-sensors; existing configuration unchanged."
 fi
 if [[ -f /etc/systemd/system/magi-sensors.service ]]; then
   systemctl try-restart magi-sensors.service
 fi
+echo "Magi dashboard: initial health check passed. Sensor configuration is summarized above; GPS lock is not required."
 echo "Magi is running. Open http://PI-IP:8090 if LAN access is enabled."
 echo "Otherwise use http://localhost:8090 on the Pi, or an SSH tunnel."
 echo "Sign in with your dashboard login, then connect the camera in Settings."

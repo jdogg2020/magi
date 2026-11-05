@@ -94,6 +94,15 @@ then rerun the installer. Avoid forcibly powering off during package installatio
 
 ## 4. Open the webpage
 
+The installer automatically considers SIM7600/SIMCom and SimTech USB serial
+ports, verifies the modem's AT identity, and configures attached supported sensors.
+Its sensor summary distinguishes configured components from those not configured.
+GNSS setup does **not** wait for a satellite fix: the sensor service acquires
+satellites in the background, and `no_fix` is normal during acquisition.
+Chrony retains network time sources while GNSS time is unavailable. A configured
+service does not by itself establish a GPS fix, aircraft reception, or synchronized
+time; check the live sensor status after installation.
+
 Find the Pi address with:
 
 ```bash

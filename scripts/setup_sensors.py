@@ -116,7 +116,7 @@ def find_rtlsdr_serials(sysfs_root=Path('/sys/bus/usb/devices'),
 
 
 def sim7600_candidates(by_id_dir=Path('/dev/serial/by-id')):
-    """Stable by-id serial ports whose name suggests a SIMCom modem.
+    """Stable by-id ports named SIMCom, SIM7600, or SimTech.
 
     A name is not evidence of function; every candidate still gets an AT
     identity probe before it is used.
@@ -126,7 +126,21 @@ def sim7600_candidates(by_id_dir=Path('/dev/serial/by-id')):
     except OSError:
         return []
     return [p for p in entries
-            if 'sim7600' in p.name.lower() or 'simcom' in p.name.lower()]
+            if any(name in p.name.lower() for name in ('sim7600', 'simcom', 'simtech'))]
+
+
+def provisioning_summary(config):
+    """Report saved configuration, without claiming live reception or GPS lock."""
+    print('Sensor installation summary:')
+    print('  ADS-B: ' + ('configured; verify live aircraft reception' if config.get('adsb_serial')
+                         else 'not configured'))
+    if config.get('at_port'):
+        print('  GNSS: configured; satellite acquisition continues in the background.')
+        print('  A GPS fix is not required to complete installation; no_fix is normal while acquiring satellites.')
+    else:
+        print('  GNSS: not configured; satellite acquisition is not enabled.')
+    print('  GNSS time: ' + ('chrony configured with network fallback; synchronization not verified'
+                             if config.get('clock_socket') else 'not configured'))
 
 
 def port_busy(path):
@@ -353,6 +367,7 @@ def main():
         parser.error('GNSS time requires a verified AT port.')
     apt('python3-serial')
     if not resolve_sensor_args(args, config):
+        provisioning_summary(config)
         return
     if args.gnss_port:
         # Stop only our own collector before verifying the explicitly selected port.
@@ -435,6 +450,7 @@ def main():
     if args.adsb_serial:
         run('systemctl', 'enable', 'readsb.service')
         run('systemctl', 'restart', 'readsb.service')
+    provisioning_summary(config)
     print('Sensor services configured. Verify live fixes, aircraft freshness and chronyc sources before relying on integration.')
 
 

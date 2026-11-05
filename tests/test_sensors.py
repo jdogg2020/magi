@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from magi.sensor_service import parse_fix, parse_gga, FixTracker, send_clock, clock_status, NmeaReader, query
+from magi.sensor_service import parse_fix, parse_gga, FixTracker, send_clock, clock_status, NmeaReader, query, automatic_nmea_port
 from subprocess import CompletedProcess
 from magi.sensors import effective, snapshot, aircraft_status
 from magi.identification import validate, Identifier
@@ -16,6 +16,47 @@ LINE = '+CGPSINFO: 4000.000000,N,10000.000000,W,011126,004912.0,364.9,0.0,'
 
 
 class SensorTests(unittest.TestCase):
+    def test_automatic_nmea_is_same_modem_stable_sibling(self):
+        prefix = '/dev/serial/by-id/usb-SimTech__Incorporated_SimTech__Incorporated_0123456789ABCDEF'
+        with patch('magi.sensor_service.Path.exists', return_value=True):
+            self.assertEqual(automatic_nmea_port(prefix+'-if02-port0'), prefix+'-if01-port0')
+            self.assertEqual(automatic_nmea_port(prefix+'-if03-port0'), prefix+'-if01-port0')
+            self.assertIsNone(automatic_nmea_port('/dev/ttyUSB2'))
+            self.assertIsNone(automatic_nmea_port(prefix+'-if01-port0'))
+            self.assertIsNone(automatic_nmea_port(prefix+'-unknown'))
+        with patch('magi.sensor_service.Path.exists', return_value=False):
+            self.assertIsNone(automatic_nmea_port(prefix+'-if02-port0'))
+
+    def test_late_gga_enriches_saved_position_once(self):
+        fix = parse_fix(LINE)
+        station = {'latitude': fix['latitude'], 'longitude': fix['longitude'], 'utc': fix['utc']}
+        tracker = FixTracker(dict(station))
+        for i in range(3):
+            tracker.accept({**fix, 'utc_unix': fix['utc_unix']+i*5}, i*5)
+        self.assertNotIn('elevation_m', tracker.station)
+        # A checksummed matching GGA adds ellipsoid height without changing the
+        # previously saved horizontal position or requiring a location reset.
+        body = 'GPGGA,004912.00,4000.000000,N,10000.000000,W,1,08,0.9,364.9,M,-30.0,M,,'
+        checksum = 0
+        for char in body:
+            checksum ^= ord(char)
+        height = parse_gga(f'${body}*{checksum:02X}', fix)
+        tracker.accept({**fix, **height, 'utc_unix': fix['utc_unix']+15}, 15)
+        self.assertAlmostEqual(tracker.station['elevation_m'], 334.9)
+        self.assertEqual({k: tracker.station[k] for k in station}, station)
+        tracker.accept({**fix, **height, 'elevation_m': 340, 'utc_unix': fix['utc_unix']+20}, 20)
+        self.assertAlmostEqual(tracker.station['elevation_m'], 334.9)
+
+    def test_late_height_rejects_unverified_or_moved_fix(self):
+        fix = parse_fix(LINE)
+        for moved, verified, height in ((False, False, 350), (True, True, 350), (False, True, float('nan'))):
+            tracker = FixTracker({'latitude': fix['latitude'], 'longitude': fix['longitude']})
+            for i in range(3):
+                tracker.accept({**fix, 'latitude': fix['latitude']+(1 if moved else 0),
+                                'utc_unix': fix['utc_unix']+5*i,
+                                'elevation_m': height, 'nmea_verified': verified}, 5*i)
+            self.assertNotIn('elevation_m', tracker.station)
+
     def test_clock_selection_does_not_imply_system_clock_has_settled(self):
         for offset, dispersion, expected in [('437.320068359', '0.003119021', 'correcting'), ('-0.000791585', '0.004170983', 'synchronized'), ('0.001', '35.8', 'correcting')]:
             tracking = f'A29FC801,162.159.200.1,4,1793497507,{offset},0,0,0,0,0,0,{dispersion},64.4,Normal'

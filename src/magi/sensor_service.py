@@ -78,6 +78,22 @@ def parse_gga(line, fix):
         return None
 
 
+def automatic_nmea_port(at_port):
+    """Find the SIM7600 USB NMEA sibling; data still requires GGA validation.
+
+    Use only interface 01 of the same stable USB identity as the verified AT
+    port. Never guess a ttyUSB number or select another modem's stream.
+    """
+    path = Path(at_port)
+    if path.parent != Path('/dev/serial/by-id'):
+        return None
+    name = re.sub(r'-if\d{2}-port0$', '-if01-port0', path.name)
+    candidate = path.with_name(name)
+    if name == path.name or not candidate.exists():
+        return None
+    return str(candidate)
+
+
 class NmeaReader:
     """Continuously drain the read-only NMEA stream; retain only recent GGA."""
     def __init__(self, path, stop):
@@ -216,6 +232,14 @@ class FixTracker:
         dx = ((fix['longitude']-self.station['longitude']+180)%360-180)*111320*math.cos(math.radians(fix['latitude']))
         if math.hypot(dx, dy) > 100:
             self.station['movement_detected'] = True
+        # A first position can precede NMEA reception. Fill its missing height
+        # later, but never move the latched position or replace an existing height.
+        if (not self.station.get('movement_detected')
+                and not number(self.station.get('elevation_m'))
+                and fix.get('nmea_verified') is True
+                and number(fix.get('elevation_m'))
+                and -500 <= fix['elevation_m'] <= 9000):
+            self.station['elevation_m'] = fix['elevation_m']
         return 'station_moved' if self.station.get('movement_detected') else 'fix'
 
 
@@ -260,6 +284,11 @@ def main():
                         raise ValueError('unknown_gnss_state')
                     if state.group(1) == '0':
                         query(port, 'AT+CGPS=1,1')
+                if nmea is None:
+                    candidate = automatic_nmea_port(config['at_port'])
+                    if candidate:
+                        nmea = NmeaReader(candidate, stop)
+                        nmea.thread.start()
                 begin, mono = time.time(), time.monotonic()
                 response = query(port, 'AT+CGPSINFO')
                 received = time.time()

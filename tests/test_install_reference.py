@@ -179,3 +179,39 @@ run_step() { printf 'RUN'; printf ' <%s>' "$@"; printf '\\n'; return "$MOCK_RESU
                                     env={**os.environ, 'MOCK_RESULT': code},
                                     capture_output=True, text=True, check=True)
             self.assertIn(summary, result.stdout)
+
+    def test_hailo_check_uses_private_directory_and_cleans_up(self):
+        module = load('setup_hailo')
+        directories = []
+        def run(command, **kwargs):
+            directory = Path(kwargs['cwd'])
+            directories.append(directory)
+            self.assertNotEqual(directory, Path.cwd())
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+            (directory / 'hailort.log').write_text('vendor diagnostic')
+            self.assertEqual(command, ['hailortcli', 'fw-control', 'identify'])
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(module, 'hardware_present', return_value=True), \
+             patch.object(module.shutil, 'which', return_value='/usr/bin/hailortcli'), \
+             patch.object(module.subprocess, 'run', side_effect=run):
+            self.assertEqual(module.verify(), 0)
+            self.assertEqual(module.verify(), 0)
+        self.assertNotEqual(directories[0], directories[1])
+        self.assertTrue(all(not directory.exists() for directory in directories))
+
+    def test_hailo_working_directory_cleanup_on_timeout_and_failure(self):
+        module = load('setup_hailo')
+        for timed_out in (False, True):
+            directories = []
+            def run(command, **kwargs):
+                directory = Path(kwargs['cwd'])
+                directories.append(directory)
+                (directory / 'hailort.log').write_text('vendor diagnostic')
+                if timed_out:
+                    raise subprocess.TimeoutExpired(command, 30)
+                return subprocess.CompletedProcess(command, 1)
+            with patch.object(module, 'hardware_present', return_value=True), \
+                 patch.object(module.shutil, 'which', return_value='/usr/bin/hailortcli'), \
+                 patch.object(module.subprocess, 'run', side_effect=run):
+                self.assertEqual(module.verify(), 1)
+            self.assertFalse(directories[0].exists())

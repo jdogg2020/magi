@@ -5,6 +5,7 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import tempfile
 
 
 def hardware_present(root=Path('/sys/bus/pci/devices')):
@@ -26,7 +27,12 @@ def verify():
         print('AI HAT: hardware visible, HailoRT not installed.')
         return 1
     try:
-        result = subprocess.run(['hailortcli', 'fw-control', 'identify'], timeout=30)
+        # HailoRT writes hailort.log relative to cwd. Give each check a private,
+        # writable directory, so sudo installation cannot leave a root-owned
+        # file in the caller's home. Console diagnostics still reach the installer log.
+        with tempfile.TemporaryDirectory(prefix='magi-hailo-verify-') as workdir:
+            result = subprocess.run(['hailortcli', 'fw-control', 'identify'],
+                                    timeout=30, cwd=workdir)
     except subprocess.TimeoutExpired:
         print('AI HAT: firmware identification timed out after 30 seconds.')
         return 1

@@ -53,6 +53,22 @@ bash scripts/install.sh --dry-run --lan
 sudo bash scripts/install.sh --lan
 ```
 
+A successful installation sets **text-mode boot** (`multi-user.target`) for the
+next reboot. The current desktop session keeps running, desktop packages remain
+installed, and the installer does not reboot. Use SSH or the dashboard for remote
+access; a local text console remains available. Configure SSH access in Raspberry
+Pi OS before relying on remote administration.
+
+Add `--keep-desktop` to preserve your current boot target. This applies on
+installer reruns too; it does not re-enable a desktop that is already disabled.
+Normal dashboard application updates do not change the boot target.
+
+To restore desktop boot later (takes effect after your next reboot):
+
+```bash
+sudo systemctl set-default graphical.target
+```
+
 `--lan` explicitly lets other devices on your local network reach the dashboard.
 The installer uses the configured OS package repositories, asks you to choose a
 **dashboard** username/password, and starts the service automatically. You can

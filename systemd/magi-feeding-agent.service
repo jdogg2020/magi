@@ -1,0 +1,23 @@
+[Unit]
+Description=Magi fixed-purpose OpenSky feeding helper
+Requires=magi-feeding-agent.socket
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /usr/local/lib/magi/feeding_agent.py
+StateDirectory=magi-feeding
+StateDirectoryMode=0700
+LogsDirectory=magi
+LogsDirectoryMode=0750
+UMask=0077
+PrivateTmp=true
+ProtectHome=true
+# Package installation needs system-wide writes; the socket protocol permits
+# only validated OpenSky setup and fixed service actions, never shell commands.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+TimeoutStopSec=720

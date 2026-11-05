@@ -266,44 +266,36 @@ GNSS/ADS-B checks and a Hailo inference test. Startup clock stepping is unchange
 
 ### Optional OpenSky feeding
 
-Aircraft settings include **Share local ADS-B data with OpenSky**. This guided
-option is off by default and separate from OpenSky API lookups. Opening the
-panel or saving camera settings does not start uploads. To install and enable
-feeding on an arm64 station with its local receiver already configured:
+In aircraft settings open **Share local ADS-B data with OpenSky**. Enter your
+OpenSky website username, verify the suggested GPS antenna position (or enter
+it manually), acknowledge the bandwidth warning, and click **Enable OpenSky
+feeding**. No SSH command or API client secret is required. Setup runs in the
+background; the panel reports progress and the actual feeder service state.
 
-```bash
-sudo python3 /opt/magi/scripts/setup_opensky.py
-```
+This is a separate station-wide choice, off by default. Adding API credentials,
+saving camera settings, or opening the panel never enables feeding. Uploads
+continue even when Magi is not recording and can use cellular data. There is no
+data cap or automatic metered-network pause. OpenSky receives aircraft radio
+data and the antenna location, not footage. Local detection needs no feeder.
 
-Read the bandwidth warning and type `FEED` to consent. Uploads continue even when
-Magi is not recording and may use cellular data; usage depends on received
-traffic. There is no data cap or metered-network pause. OpenSky receives aircraft
-radio data and the antenna location, not camera footage. Local detection needs
-no feeding service.
+**Disable feeding** stops uploads and disables automatic startup without stopping
+local reception. The existing OpenSky receiver identity is retained for later
+re-enablement. Once linked, changing its username requires contacting OpenSky.
+The location uses altitude above sea level, not WGS84 observer height.
 
-The helper enables loopback-only Beast output on the existing readsb decoder,
-then installs the reviewed official OpenSky arm64 feeder package. It verifies
-its SHA-256 before installation and refuses a changed upstream package until
-reviewed. Normal Magi installer reruns preserve this local output. The feeder
-remains a separate service; it never opens the SDR itself.
+The system helper accepts only status, enable with validated settings and consent,
+and disable. It installs the SHA-256-pinned official OpenSky 2.1.7-1 arm64 package,
+configures it noninteractively, and uses loopback-only Beast output from the
+existing readsb decoder. It never takes over the SDR. A changed upstream package
+requires a reviewed hash update. Both the installer and dashboard updater install
+the helper; older installs must update before dashboard control is available.
 
-During package setup use your OpenSky username (not OAuth client credentials),
-antenna latitude/longitude, and **altitude above sea level**. Choose receiver
-branch `default`, host `127.0.0.1`, port `30005`. Leave serial blank for a new
-receiver; preserve your assigned serial on reruns. Do not clone receiver
-identity into reference images. Confirm incoming data in OpenSky's My Sensors;
-a running service is not proof of successful delivery.
-
-Stop uploads without stopping local reception:
-
-```bash
-sudo python3 /opt/magi/scripts/setup_opensky.py --disable
-```
-
-This disables the OpenSky service's automatic startup and leaves its identity
-available for later re-enablement. Local loopback output remains available.
-Use `sudo journalctl -u opensky-feeder -n 80 --no-pager` for feeder diagnostics.
+A running service does not prove delivery. Verify incoming data in OpenSky's
+**My Sensors**. For diagnostics use `sudo journalctl -u magi-feeding-agent -u
+opensky-feeder`; emergency CLI disable remains available with
+`sudo python3 /opt/magi/scripts/setup_opensky.py --disable`.
+Do not copy receiver identity or account settings into a reusable station image.
 
 Sources: [OpenSky Debian feeder](https://opensky-network.org/feed/debian),
 [receiver setup](https://opensky-network.org/feed/raspberry).
-Live arm64 feeding and actual cellular usage still require reference-Pi testing.
+Live arm64 feeding and actual cellular usage still need reference-Pi testing.

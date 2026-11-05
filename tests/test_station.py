@@ -153,6 +153,15 @@ class StationTests(unittest.TestCase):
                     with self.assertRaises(urllib.error.HTTPError) as caught:
                         request('/api/station/update', payload, csrf)
                     self.assertEqual(caught.exception.code,409)
+            with patch('magi.web.feeding_request', return_value={'helper_available':True,'active':False}) as helper:
+                self.assertTrue(request('/api/station/feeding')['helper_available'])
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    request('/api/station/feeding', {'action':'disable'})
+                self.assertEqual(caught.exception.code,403)
+                request('/api/station/feeding', {'action':'disable'}, csrf)
+                helper.assert_called_with({'action':'disable'})
+                with self.assertRaises(urllib.error.HTTPError):
+                    request('/api/station/feeding', {'action':'shell'}, csrf)
             identity = request('/api/cameras', {'action':'add','name':'East'}, csrf)['id']
             scoped = '/api/cameras/'+identity
             self.assertEqual(request(scoped+'/status')['camera_id'], identity)

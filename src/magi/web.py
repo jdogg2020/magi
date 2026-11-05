@@ -13,6 +13,7 @@ from urllib.parse import urlsplit, parse_qs
 from .auth import Sessions
 from . import __version__
 from .updates import request as update_request
+from .feeding import request as feeding_request
 from .reolink_setup import suggested_network
 
 STATIC = Path(__file__).parent / 'web'
@@ -159,6 +160,12 @@ class Handler(BaseHTTPRequestHandler):
             station = self.server.app
             self.reply(200, station.recent_events() if hasattr(station, 'recent_events') else {'clips': station.read()['clips'], 'limit': 200})
             return
+        if path == '/api/station/feeding':
+            try:
+                self.reply(200, feeding_request({'action': 'status'}))
+            except ValueError as exc:
+                self.reply(400, {'error': str(exc)})
+            return
         if path == '/api/station/storage':
             station = self.server.app
             self.reply(200, station.storage_status() if hasattr(station, 'storage_status') else {'cameras': [], 'volumes': [], 'partial': True})
@@ -281,6 +288,11 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, {'ok': True}, {'Set-Cookie': 'magi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})
             return
         try:
+            if path == '/api/station/feeding':
+                if body.get('action') not in ('enable', 'disable'):
+                    raise ValueError('Choose Enable feeding or Disable feeding.')
+                self.reply(200, feeding_request(body))
+                return
             if path == '/api/station/storage/purge':
                 self.reply(200, self.server.app.purges.request(body))
                 return

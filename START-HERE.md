@@ -263,3 +263,47 @@ explicitly reported as pending verification, not as a verified AI installation.
 
 Reference acceptance still requires a clean-card run, reboot recovery, live
 GNSS/ADS-B checks and a Hailo inference test. Startup clock stepping is unchanged.
+
+### Optional OpenSky feeding
+
+The normal arm64 installer supplies the feeder executable but does not start
+feeding. `--skip-dependencies` skips provisioning it. The dashboard cannot
+install software: it can only configure and control the preinstalled feeder.
+
+In aircraft settings open **Share local ADS-B data with OpenSky**. Enter your
+OpenSky username (no password or API secret), verify the GPS-suggested antenna
+position or enter it manually, acknowledge the bandwidth warning, and click
+**Enable OpenSky feeding**. This choice is station-wide and independent of API
+lookups. Camera settings, API credentials, and page loads never enable uploads.
+
+Feeding continuously sends aircraft data and antenna location, including over
+cellular connections when Magi is not recording. There is no data cap or automatic
+metered-network pause. Camera footage is not uploaded. **Disable feeding** stops
+the feeder process and its automatic restart without affecting local reception.
+A running process does not prove delivery; confirm data in OpenSky **My Sensors**.
+
+The controller and feeder run as the dedicated unprivileged `magi-feed` account.
+Systemd restricts writes to feeder state, denies access to camera secrets and the
+standard recording directory, removes capabilities, and prevents privilege gain.
+The controller has no package-installation or systemctl commands. It can spawn
+only the fixed feeder executable, and it supervises that process directly.
+Enabling is persisted only after explicit consent; previously enabled stations
+resume after reboot. Fresh stations remain off. Receiver identity is preserved
+when disabling; transferring its linked username requires OpenSky assistance.
+Altitude for feeding is above sea level, not WGS84 observer height.
+
+At installation, Magi checks a pinned SHA-256 for OpenSky's official 2.1.7-1 arm64
+package and copies only its executable and copyright file. It does not execute
+the package's maintainer scripts or install its auto-starting service. Updates
+to this binary require rerunning the administrator installer with a reviewed
+package version. Existing standalone OpenSky installations are left untouched
+and require explicit migration. No receiver identity belongs in reusable images.
+
+Diagnostics: `sudo journalctl -u magi-feeding-agent`. Emergency administrator stop:
+`sudo systemctl stop magi-feeding-agent.service magi-feeding-agent.socket`.
+For older Magi installations, rerun the installer once to supply the account and
+binary; normal dashboard application updates do not acquire that capability.
+
+Sources: [OpenSky Debian feeder](https://opensky-network.org/feed/debian),
+[receiver setup](https://opensky-network.org/feed/raspberry).
+Live arm64 feeding and actual cellular usage still need reference-Pi testing.

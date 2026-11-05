@@ -28,6 +28,7 @@ done
 source_dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 if "$dry_run"; then
   echo "Would install Python 3, NumPy, Pillow and FFmpeg from OS package sources unless skipped."
+  echo "Would supply the arm64 OpenSky feeder, disabled on new stations until dashboard consent."
   echo "Would create /mnt/magi-ssd if needed; use the Pi's storage when no SSD is mounted;"
   echo "create the magi service user with a private recording folder;"
   echo "install /opt/magi, preserve existing /etc/magi/config.json and recordings;"
@@ -108,6 +109,12 @@ if ! "$skip_dependencies"; then
   run_step 300 "Step 1/7: Refresh package lists (limit 5 minutes)" apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
   run_step 0 "Step 2/7: Install required packages (no overall time limit)" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confold install -y python3 python3-numpy python3-pil ffmpeg openssl
   if "$identification"; then run_step 0 "Step 2/7: Install satellite packages (no overall time limit)" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confold install -y python3-skyfield; fi
+fi
+if ! "$skip_dependencies"; then
+  if ! run_step 120 "Supply optional OpenSky feeder (new stations remain disabled)" /usr/bin/python3 "$source_dir/scripts/install_opensky.py"; then
+    partial=true
+    echo "WARNING: Optional OpenSky feeder provisioning failed. Local recording and receiver setup will continue."
+  fi
 fi
 current_step='Step 3/7: Validate dependencies'
 progress "$current_step"

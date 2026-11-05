@@ -7,6 +7,10 @@ import subprocess
 import tempfile
 
 FILES = {
+    'scripts/setup_opensky.py': ('usr/local/lib/magi/setup_opensky.py', 0o644),
+    'scripts/feeding_agent.py': ('usr/local/lib/magi/feeding_agent.py', 0o644),
+    'systemd/magi-feeding-agent.socket': ('etc/systemd/system/magi-feeding-agent.socket', 0o644),
+    'systemd/magi-feeding-agent.service': ('etc/systemd/system/magi-feeding-agent.service', 0o644),
     'scripts/maintain_logs.py': ('usr/local/lib/magi/maintain_logs.py', 0o644),
     'systemd/magi-log-maintenance.service': ('etc/systemd/system/magi-log-maintenance.service', 0o644),
     'systemd/magi-log-maintenance.timer': ('etc/systemd/system/magi-log-maintenance.timer', 0o644),
@@ -52,6 +56,10 @@ def install(source, prefix=Path('/'), runner=subprocess.run):
     runner(['systemctl', 'enable', '--now', 'magi-log-maintenance.timer'], check=True, timeout=30)
     # Enabling a socket never restarts an in-flight helper or camera recorder.
     runner(['systemctl', 'enable', '--now', 'magi-update-agent.socket'], check=True, timeout=30)
+    runner(['systemctl', 'enable', '--now', 'magi-feeding-agent.socket'], check=True, timeout=30)
+    if (prefix/'usr/local/lib/magi-feeder/managed-by-magi').exists():
+        runner(['systemctl', 'enable', '--now', 'magi-feeding-agent.service'], check=True, timeout=30)
+        runner(['systemctl', 'try-restart', 'magi-feeding-agent.service'], check=True, timeout=30)
 
 
 def main():

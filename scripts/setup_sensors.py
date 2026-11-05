@@ -31,7 +31,7 @@ def apt(*packages):
 
 def feeder_network_options(config):
     """Expose Beast only on loopback after explicit OpenSky setup consent."""
-    if not config.get('opensky_feeding_output'):
+    if not config.get('opensky_feeding_output') and not Path('/usr/local/lib/magi-feeder/managed-by-magi').exists():
         return ''
     return (' --net --net-bind-address 127.0.0.1 --net-bo-port 30005'
             ' --net-bi-port 0 --net-ri-port 0 --net-ro-port 0 --net-sbs-port 0')

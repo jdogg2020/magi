@@ -57,6 +57,9 @@ def install(source, prefix=Path('/'), runner=subprocess.run):
     # Enabling a socket never restarts an in-flight helper or camera recorder.
     runner(['systemctl', 'enable', '--now', 'magi-update-agent.socket'], check=True, timeout=30)
     runner(['systemctl', 'enable', '--now', 'magi-feeding-agent.socket'], check=True, timeout=30)
+    if (prefix/'usr/local/lib/magi-feeder/managed-by-magi').exists():
+        runner(['systemctl', 'enable', '--now', 'magi-feeding-agent.service'], check=True, timeout=30)
+        runner(['systemctl', 'try-restart', 'magi-feeding-agent.service'], check=True, timeout=30)
 
 
 def main():

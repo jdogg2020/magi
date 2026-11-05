@@ -1,4 +1,4 @@
-"""Socket-activated, fixed-purpose root helper for OpenSky feeding only."""
+"""Unprivileged OpenSky controller; never installs packages or calls systemctl."""
 import fcntl
 import json
 import os
@@ -20,30 +20,58 @@ STATE = Path('/var/lib/magi-feeding')
 
 
 class Agent:
-    def __init__(self, state=STATE, run=subprocess.run):
-        self.state, self.run = Path(state), run
+    def __init__(self, state=STATE, spawn=subprocess.Popen):
+        self.state, self.spawn = Path(state), spawn
         self.state.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.lock = threading.RLock()
-        self.busy = False
-        self.last_request = time.monotonic()
-        self.worker = None
-        self.message = 'Feeding is separate from aircraft API lookups.'
+        self.child = None
+        self.enabled = False
+        self.retry_at = 0
+        self.message = 'Feeding is off until you explicitly enable it.'
         self.settings = {}
         try:
             saved = json.loads((self.state / 'status.json').read_text())
             self.settings = saved.get('settings', {})
-            self.message = 'Previous feeding setup was interrupted; check service status before retrying.' if saved.get('busy') else saved.get('message', self.message)
+            # Only this controller's explicit consent record permits reboot resume.
+            self.enabled = saved.get('enabled') is True and saved.get('consent_version') == 1
         except (OSError, ValueError):
             pass
 
     def save(self):
-        setup.write(self.state / 'status.json', json.dumps({'busy': self.busy, 'message': self.message, 'settings': self.settings}))
+        setup.write(self.state / 'status.json', json.dumps({'enabled': self.enabled,
+                    'consent_version': 1, 'settings': self.settings}))
+
+    def stop(self):
+        if self.child is not None:
+            if self.child.poll() is None:
+                self.child.terminate()
+                try:
+                    self.child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.child.kill()
+                    self.child.wait(timeout=2)
+            self.child = None
+
+    def tick(self):
+        with self.lock:
+            if not self.enabled:
+                return
+            if self.child is not None and self.child.poll() is None:
+                return
+            if time.monotonic() < self.retry_at:
+                return
+            self.retry_at = time.monotonic() + 10
+            try:
+                self.child = self.spawn([setup.BINARY], stdin=subprocess.DEVNULL,
+                    env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}, close_fds=True)
+                self.message = 'Feeder process started. Verify delivery in OpenSky My Sensors.'
+            except OSError:
+                self.child = None
+                self.message = 'Feeder could not start. Check the station installation; retrying while enabled.'
 
     def snapshot(self):
         with self.lock:
-            active = self.run(['systemctl', 'is-active', '--quiet', 'opensky-feeder'], timeout=5, check=False).returncode == 0
-            enabled = self.run(['systemctl', 'is-enabled', '--quiet', 'opensky-feeder'], timeout=5, check=False,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+            active = self.child is not None and self.child.poll() is None
             suggestion = None
             try:
                 status = json.loads(Path('/run/magi-sensors/status.json').read_text())
@@ -57,12 +85,11 @@ class Agent:
             except (OSError, ValueError, KeyError, TypeError):
                 pass
             username = setup.existing_username()
-            return {'helper_available': True, 'busy': self.busy, 'active': active, 'enabled': enabled,
+            return {'helper_available': True, 'busy': False, 'active': active, 'enabled': self.enabled,
                     'message': self.message, 'settings': {**self.settings, **({'username': username} if username else {})},
                     'username_locked': bool(username), 'gps': suggestion}
 
     def request(self, value):
-        self.last_request = time.monotonic()
         if not isinstance(value, dict) or value.get('action') not in ('status', 'enable', 'disable'):
             raise ValueError('Unknown feeding action.')
         action = value['action']
@@ -72,43 +99,34 @@ class Agent:
         if action == 'status':
             return self.snapshot()
         with self.lock:
-            if self.busy:
-                raise ValueError('Feeding setup is already running.')
-            # Validate ownership before changing debconf or installing anything.
-            if settings and setup.existing_username() not in ('', settings['username']):
-                raise ValueError('This receiver is linked to another username; contact OpenSky to transfer it.')
-            self.busy = True
-            self.message = 'Enabling OpenSky feeding…' if action == 'enable' else 'Stopping OpenSky feeding…'
-            try:
-                self.save()
-            except OSError:
-                self.busy = False
-                raise ValueError('Cannot save feeding setup status.') from None
-            self.worker = threading.Thread(target=self.perform, args=(action, settings), daemon=False)
-            self.worker.start()
+            if action == 'enable':
+                # A connection check cannot send aircraft data or take SDR ownership.
+                try:
+                    with socket.create_connection(('127.0.0.1', 30005), timeout=2):
+                        pass
+                except OSError:
+                    raise ValueError('Local ADS-B output is unavailable. Check receiver installation and service status.') from None
+                setup.configure(settings)
+                self.settings = {k: v for k, v in settings.items() if k != 'bandwidth_consent'}
+                self.enabled = True
+                try:
+                    self.save()
+                except OSError:
+                    self.enabled = False
+                    raise ValueError('Cannot save feeding consent; feeding was not enabled.') from None
+                self.stop()
+                self.retry_at = 0
+                self.tick()
+            else:
+                self.enabled = False
+                # Removing consent works even when no space remains for a new file.
+                # Receiver identity remains in its separate OpenSky configuration.
+                try:
+                    (self.state / 'status.json').unlink(missing_ok=True)
+                finally:
+                    self.stop()
+                self.message = 'Feeding disabled. Local aircraft reception continues.'
             return self.snapshot()
-
-    def perform(self, action, settings):
-        try:
-            Path('/var/log/magi').mkdir(mode=0o750, parents=True, exist_ok=True)
-            with open('/var/log/magi/installer.lock', 'a') as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                if action == 'enable':
-                    setup.configure(settings)
-                    self.settings = {k: v for k, v in settings.items() if k != 'bandwidth_consent'}
-                    self.message = 'Feeder running. Verify incoming data in OpenSky My Sensors; delivery is not verified here.'
-                else:
-                    setup.disable()
-                    self.message = 'Feeding disabled. Local aircraft reception continues.'
-        except BlockingIOError:
-            self.message = 'Another Magi installer is running. Try again after it finishes.'
-        except Exception:
-            # Never return package output or arbitrary exception contents to the browser.
-            self.message = 'Feeding setup failed. Check the current service state and the magi-feeding-agent journal before retrying.'
-        finally:
-            with self.lock:
-                self.busy = False
-                self.save()
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -131,8 +149,10 @@ class Handler(socketserver.StreamRequestHandler):
 
 
 def main():
-    if os.geteuid() != 0 or os.environ.get('LISTEN_PID') != str(os.getpid()) or os.environ.get('LISTEN_FDS') != '1':
-        raise SystemExit('Requires root and exactly one systemd socket.')
+    if os.geteuid() != pwd.getpwnam('magi-feed').pw_uid or os.geteuid() == 0:
+        raise SystemExit('Must run as the unprivileged magi-feed account.')
+    if os.environ.get('LISTEN_PID') != str(os.getpid()) or os.environ.get('LISTEN_FDS') != '1':
+        raise SystemExit('Requires exactly one systemd socket.')
     agent = Agent()
     with open(STATE / 'agent.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -145,12 +165,12 @@ def main():
         server.agent = agent
         server.timeout = 1
         try:
-            while agent.busy or time.monotonic() - agent.last_request < 30:
+            while True:
+                agent.tick()
                 server.handle_request()
         finally:
+            agent.stop()
             server.server_close()
-            if agent.worker:
-                agent.worker.join()
 
 
 if __name__ == '__main__':

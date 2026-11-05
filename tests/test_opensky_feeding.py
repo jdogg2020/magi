@@ -1,5 +1,6 @@
 """Feeding consent, service isolation and privileged input boundaries."""
 import io
+import os
 import json
 from pathlib import Path
 import subprocess
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 import setup_opensky as feeder
 import feeding_agent
+import install_opensky
 from setup_sensors import feeder_network_options
 
 VALID = {'username': 'station-user', 'latitude': 41.1, 'longitude': -96.1,
@@ -44,68 +46,106 @@ class OpenSkyFeedingTests(unittest.TestCase):
         self.assertEqual(feeder_network_options({'opensky_feeding_output': True}), feeder.NETWORK)
         self.assertIn('--net-bind-address 127.0.0.1', feeder.NETWORK)
 
-    def test_changed_package_rejected(self):
+    def test_installer_supplies_binary_without_running_or_enabling_feeder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            user = SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())
+            with patch.object(install_opensky.os, 'geteuid', return_value=0), patch.object(install_opensky.pwd, 'getpwnam', return_value=user), patch.object(install_opensky.subprocess, 'check_output', return_value='arm64\n'), patch.object(install_opensky.subprocess, 'run') as run, patch.object(install_opensky.urllib.request, 'urlopen', return_value=io.BytesIO(b'package')), patch.object(install_opensky, 'package_files', return_value=(b'binary', b'license')):
+                install_opensky.install(root)
+                run.assert_not_called()
+            self.assertEqual((root/'usr/local/lib/magi-feeder/openskyd-dump1090').read_bytes(), b'binary')
+            self.assertEqual((root/'usr/local/lib/magi-feeder').stat().st_mode & 0o777, 0o755)
+            self.assertFalse((root/'var/lib/magi-feeding/status.json').exists())
+            self.assertFalse((root/'var/lib/openskyd/conf.d/10-magi.conf').exists())
+            self.assertFalse((root/'etc/systemd/system/opensky-feeder.service').exists())
+
+    def test_changed_package_rejected_before_archive_processing(self):
         with tempfile.TemporaryDirectory() as tmp:
             package = Path(tmp) / 'bad.deb'
             package.write_bytes(b'changed package')
-            with self.assertRaises(RuntimeError):
-                feeder.validate_package(package)
-
-    def test_receiver_rerun_preserves_settings_and_does_not_duplicate_network_flags(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config, unit = Path(tmp)/'config.json', Path(tmp)/'receiver.conf'
-            config.write_text('{"adsb_serial":"receiver", "at_port":"GPS"}')
-            unit.write_text('[Service]\nExecStart=\nExecStart=/usr/local/lib/magi-sensors/readsb --device receiver\n')
-            with patch.object(feeder, 'CONFIG', config), patch.object(feeder, 'RECEIVER', unit), patch.object(feeder.subprocess, 'run') as run:
-                feeder.prepare_receiver()
-                feeder.prepare_receiver()
-                self.assertEqual(unit.read_text().count('--net-bo-port'), 1)
-                self.assertEqual(json.loads(config.read_text())['at_port'], 'GPS')
-                self.assertFalse(any('magi' in call.args[0] for call in run.call_args_list))
+            with patch.object(install_opensky.subprocess, 'check_output') as run:
+                with self.assertRaises(ValueError):
+                    install_opensky.package_files(package)
+                run.assert_not_called()
 
     def test_existing_receiver_username_cannot_be_changed(self):
-        with patch.object(feeder, 'existing_username', return_value='original'), patch.object(feeder.subprocess, 'run') as run:
+        with patch.object(feeder, 'existing_username', return_value='original'):
             with self.assertRaises(ValueError):
                 feeder.configure(VALID)
-            run.assert_not_called()
 
-    def test_noninteractive_setup_preserves_existing_serial(self):
+    def test_configure_only_writes_feeder_settings_and_preserves_serial(self):
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp)/'config.json'
-            config.write_text('{"adsb_serial":"receiver"}')
-            with patch.object(feeder, 'CONFIG', config), \
-                 patch.object(feeder, 'existing_username', return_value=VALID['username']), \
-                 patch.object(feeder.subprocess, 'check_output', return_value='arm64\n'), \
-                 patch.object(feeder.urllib.request, 'urlopen', return_value=io.BytesIO(b'package')), \
-                 patch.object(feeder, 'validate_package'), patch.object(feeder, 'prepare_receiver'), \
-                 patch.object(feeder.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, 'install ok installed')) as run:
+            identity = Path(tmp)/'10-magi.conf'
+            serial = Path(tmp)/'05-serial.conf'
+            serial.write_text('[DEVICE]\nSerial=123456789\n')
+            binary = Path(tmp)/'feeder'
+            binary.touch()
+            with patch.object(feeder, 'IDENTITY', identity), patch.object(feeder, 'BINARY', str(binary)):
                 feeder.configure(VALID)
-                seeds = next(call.kwargs['input'] for call in run.call_args_list if call.args[0] == ['debconf-set-selections'])
-                self.assertNotIn('openskyd/serial', seeds)
-                self.assertIn('openskyd/altitude string 350.4', seeds)
-                self.assertIn('openskyd/host string 127.0.0.1', seeds)
-                self.assertTrue(any(call.args[0] == ['dpkg-reconfigure', '-f', 'noninteractive', 'opensky-feeder'] for call in run.call_args_list))
-
-    def test_disable_only_touches_feeder(self):
-        with patch.object(feeder.subprocess, 'run') as run:
-            feeder.disable()
-            run.assert_called_once_with(['systemctl', 'disable', '--now', 'opensky-feeder'], check=True, timeout=30)
+                feeder.configure(VALID)
+                self.assertEqual(serial.read_text(), '[DEVICE]\nSerial=123456789\n')
+                self.assertIn('Altitude=350.4', identity.read_text())
+                self.assertIn('Host=127.0.0.1', identity.read_text())
+                self.assertEqual(identity.stat().st_mode & 0o777, 0o600)
 
     def test_agent_rejects_arbitrary_actions_and_missing_consent(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent = feeding_agent.Agent(Path(tmp))
+            spawn = Mock()
+            agent = feeding_agent.Agent(Path(tmp), spawn=spawn)
             for request in ({'action':'shell'}, {'action':'disable','command':'sh'}, {'action':'enable','settings':{}}):
                 with self.assertRaises(ValueError):
                     agent.request(request)
-            self.assertFalse(agent.busy)
+            spawn.assert_not_called()
+            self.assertFalse(agent.enabled)
 
-    def test_agent_recovers_interrupted_state_without_enabling_feeder(self):
+    def test_old_or_absent_state_never_starts_feeding(self):
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp)/'status.json').write_text(json.dumps({'busy':True,'settings':{'username':'saved'}}))
-            agent = feeding_agent.Agent(Path(tmp))
-            self.assertFalse(agent.busy)
-            self.assertIn('interrupted', agent.message)
-            self.assertEqual(agent.settings['username'], 'saved')
+            for saved in ({}, {'busy':True,'settings':{'username':'saved'}}, {'enabled': True}):
+                (Path(tmp)/'status.json').write_text(json.dumps(saved))
+                spawn = Mock()
+                agent = feeding_agent.Agent(Path(tmp), spawn=spawn)
+                agent.tick()
+                spawn.assert_not_called()
+                self.assertFalse(agent.enabled)
+
+    def test_enable_disable_and_reboot_resume_only_after_consent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            child = Mock()
+            child.poll.return_value = None
+            spawn = Mock(return_value=child)
+            with patch.object(feeder, 'configure'), patch.object(feeder, 'existing_username', return_value=''), patch.object(feeding_agent.socket, 'create_connection'):
+                agent = feeding_agent.Agent(Path(tmp), spawn=spawn)
+                self.assertFalse(agent.snapshot()['active'])
+                agent.request({'action': 'enable', 'settings': VALID})
+                spawn.assert_called_once()
+                self.assertEqual(spawn.call_args.args[0], [feeder.BINARY])
+                self.assertTrue(agent.snapshot()['active'])
+                resumed = feeding_agent.Agent(Path(tmp), spawn=Mock(return_value=child))
+                resumed.tick()
+                resumed.spawn.assert_called_once()
+                agent.request({'action': 'disable'})
+                child.terminate.assert_called_once()
+                self.assertFalse(agent.snapshot()['active'])
+                off = feeding_agent.Agent(Path(tmp), spawn=Mock())
+                off.tick()
+                off.spawn.assert_not_called()
+
+    def test_unavailable_receiver_cannot_enable_or_spawn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spawn = Mock()
+            agent = feeding_agent.Agent(Path(tmp), spawn=spawn)
+            with patch.object(feeding_agent.socket, 'create_connection', side_effect=OSError), patch.object(feeder, 'configure') as configure:
+                with self.assertRaises(ValueError):
+                    agent.request({'action': 'enable', 'settings': VALID})
+                configure.assert_not_called()
+                spawn.assert_not_called()
+
+    def test_service_is_unprivileged_and_readonly_except_feeder_state(self):
+        unit = (ROOT/'systemd/magi-feeding-agent.service').read_text()
+        for setting in ('User=magi-feed', 'Group=magi-feed', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'CapabilityBoundingSet=', 'ReadWritePaths=/var/lib/openskyd'):
+            self.assertIn(setting, unit)
+        self.assertNotIn('User=root', unit)
+        self.assertIn('-/etc/magi', unit)
 
 
 class FeedingBoundaryTests(unittest.TestCase):

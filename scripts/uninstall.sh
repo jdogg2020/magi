@@ -11,13 +11,13 @@ read -r -p "Remove Magi service, code, configuration and user? Type REMOVE: " an
 [[ "$answer" == REMOVE ]] || exit 1
 echo "Stopping and disabling service..."
 systemctl disable --now magi-feeding-agent.socket magi-feeding-agent.service || true
-if [[ -f /var/lib/magi-feeding/status.json ]]; then systemctl disable --now opensky-feeder || true; fi
 systemctl disable --now magi-update-agent.socket magi-update-agent.service || true
 systemctl disable --now magi.service || true
 rm -f /etc/systemd/system/magi-feeding-agent.socket /etc/systemd/system/magi-feeding-agent.service
 rm -f /etc/systemd/system/magi.service /etc/systemd/system/magi-update-agent.socket /etc/systemd/system/magi-update-agent.service
 systemctl daemon-reload
 echo "Removing installed code and configuration; retaining recordings..."
+rm -f /usr/local/lib/magi-feeder/openskyd-dump1090 /usr/local/lib/magi-feeder/COPYRIGHT
 rm -rf /opt/magi /etc/magi /opt/magi.releases /var/lib/magi-updater /var/lib/magi-feeding /usr/local/lib/magi
 rm -f /usr/local/bin/magi-update /usr/local/bin/magi-update-github
 for backup in /opt/magi.previous.*; do

@@ -7,12 +7,13 @@ lan=false
 identification=false
 require_mounted_ssd=false
 skip_sensors=false
-hailo=false
+hailo=auto
 sensor_options=()
 for argument in "$@"; do
   case "$argument" in
     --dry-run) dry_run=true ;;
-    --hailo) hailo=true ;;
+    --hailo) hailo=required ;;
+    --skip-hailo) hailo=skip ;;
     --skip-dependencies) skip_dependencies=true ;;
     --lan) lan=true ;;
     --identification) identification=true ;;
@@ -22,7 +23,7 @@ for argument in "$@"; do
     --gnss-time) sensor_options+=(--gnss-time) ;;
     --require-mounted-ssd) require_mounted_ssd=true ;;
     --skip-sensors) skip_sensors=true ;;
-    *) echo "Usage: $0 [--dry-run] [--hailo] [--skip-dependencies] [--lan] [--identification] [--require-mounted-ssd] [--skip-sensors] [--gnss-port=PATH] [--nmea-port=PATH] [--adsb-serial=SERIAL] [--gnss-time]" >&2; exit 2 ;;
+    *) echo "Usage: $0 [--dry-run] [--hailo | --skip-hailo] [--skip-dependencies] [--lan] [--identification] [--require-mounted-ssd] [--skip-sensors] [--gnss-port=PATH] [--nmea-port=PATH] [--adsb-serial=SERIAL] [--gnss-time]" >&2; exit 2 ;;
   esac
 done
 source_dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -39,7 +40,13 @@ if "$dry_run"; then
   if "$skip_sensors"; then echo "Sensor provisioning explicitly skipped.";
   elif [[ ${#sensor_options[@]} -gt 0 ]]; then echo "Would provision explicitly selected GNSS/ADS-B sensors and optional chrony using setup_sensors.py.";
   else echo "Would auto-detect attached GNSS/ADS-B sensors and provision any found hardware using setup_sensors.py."; fi
-  if "$hailo"; then echo "Would install dkms and hailo-all, verify Hailo-8, and report whether a reboot is needed."; fi
+  if [[ "$hailo" == skip || ( "$hailo" == auto && "$skip_dependencies" == true ) ]]; then
+    echo "AI HAT setup skipped."
+  elif [[ "$hailo" == required ]]; then
+    echo "Would require Hailo-8 on PCIe, install dkms and hailo-all, verify firmware, and report whether a reboot is needed."
+  else
+    echo "Would auto-detect Hailo-8 on PCIe and install/verify support if present; skip if absent."
+  fi
   exit 0
 fi
 if [[ "$EUID" -ne 0 ]]; then echo "Run the reviewed installer with sudo." >&2; exit 1; fi
@@ -208,9 +215,13 @@ fi
 if [[ -f /etc/systemd/system/magi-sensors.service ]]; then
   systemctl try-restart magi-sensors.service
 fi
-if "$hailo"; then
+if [[ "$hailo" == skip || ( "$hailo" == auto && "$skip_dependencies" == true ) ]]; then
+  echo "AI HAT: setup skipped by installer option; existing installation unchanged."
+else
+  hailo_options=()
+  if [[ "$hailo" == auto ]]; then hailo_options+=(--detect); fi
   hailo_result=0
-  run_step 0 "Install and verify optional Hailo-8 support" /usr/bin/python3 -u /opt/magi/scripts/setup_hailo.py || hailo_result=$?
+  run_step 0 "Install and verify optional Hailo-8 support" /usr/bin/python3 -u /opt/magi/scripts/setup_hailo.py "${hailo_options[@]}" || hailo_result=$?
   if [[ "$hailo_result" -eq 10 ]]; then reboot_required=true;
   elif [[ "$hailo_result" -ne 0 ]]; then partial=true; fi
 fi

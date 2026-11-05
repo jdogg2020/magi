@@ -107,3 +107,75 @@ class ReferenceInstallTests(unittest.TestCase):
             self.assertIn('hailo-all', run.call_args_list[0].args[0])
             verify.return_value = 0
             self.assertEqual(module.install(), 0)
+
+    def test_hailo_detection_matches_only_supported_pci_ids(self):
+        module = load('setup_hailo')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, vendor, device in [('rp1', '0x1de4', '0x0001'),
+                                          ('other_hailo', '0x1e60', '0x9999')]:
+                entry = root / name
+                entry.mkdir()
+                (entry / 'vendor').write_text(vendor + '\n')
+                (entry / 'device').write_text(device + '\n')
+            self.assertFalse(module.hardware_present(root))
+            entry = root / 'hailo'
+            entry.mkdir()
+            (entry / 'vendor').write_text('0x1e60\n')
+            (entry / 'device').write_text('0x2864\n')
+            self.assertTrue(module.hardware_present(root))
+
+    def test_auto_hailo_absent_skips_without_package_commands(self):
+        module = load('setup_hailo')
+        with patch.object(module, 'hardware_present', return_value=False), \
+             patch.object(module.subprocess, 'run') as run, \
+             patch.object(module.platform, 'machine') as machine:
+            self.assertEqual(module.install(detect=True), 0)
+            run.assert_not_called()
+            machine.assert_not_called()
+
+    def test_auto_hailo_present_success_reboot_and_package_failure(self):
+        module = load('setup_hailo')
+        with patch.object(module.platform, 'machine', return_value='aarch64'), \
+             patch.object(module.Path, 'exists', return_value=True), \
+             patch.object(module.Path, 'read_text', return_value='Raspberry Pi 5 Model B'), \
+             patch.object(module, 'hardware_present', return_value=True), \
+             patch.object(module.subprocess, 'run') as run, \
+             patch.object(module, 'verify', return_value=0) as verify:
+            self.assertEqual(module.install(detect=True), 0)
+            self.assertIn('hailo-all', run.call_args_list[0].args[0])
+            verify.return_value = 1
+            self.assertEqual(module.install(detect=True), 10)
+            run.side_effect = subprocess.CalledProcessError(1, 'apt-get')
+            with self.assertRaises(subprocess.CalledProcessError):
+                module.install(detect=True)
+
+    def test_installer_hailo_policy_and_failure_summary(self):
+        shell = (ROOT / 'scripts/install.sh').read_text()
+        # Execute the real argument parser and Hailo dispatch, with package work
+        # replaced by a runner that records arguments and returns a chosen result.
+        parser = shell[:shell.index('source_dir=')]
+        start = shell.index('if [[ "$hailo" == skip', shell.index('systemctl try-restart magi-sensors.service'))
+        block = shell[start:shell.index('run_step 60 "Verify final', start)]
+        script = parser + '\npartial=false; reboot_required=false\n' + """
+run_step() { printf 'RUN'; printf ' <%s>' "$@"; printf '\\n'; return "$MOCK_RESULT"; }
+""" + block + '\nprintf "partial=%s reboot=%s\\n" "$partial" "$reboot_required"'
+        import os
+        for args, invoked, detect in [
+            ([], True, True), (['--hailo'], True, False),
+            (['--skip-hailo'], False, False),
+            (['--skip-dependencies'], False, False),
+            (['--skip-dependencies', '--hailo'], True, False),
+            (['--hailo', '--skip-hailo'], False, False),
+        ]:
+            result = subprocess.run(['bash', '-c', script, 'installer', *args],
+                                    env={**os.environ, 'MOCK_RESULT': '0'},
+                                    capture_output=True, text=True, check=True)
+            self.assertEqual('RUN <' in result.stdout, invoked, args)
+            self.assertEqual('<--detect>' in result.stdout, detect, args)
+        for code, summary in [('1', 'partial=true reboot=false'),
+                              ('10', 'partial=false reboot=true')]:
+            result = subprocess.run(['bash', '-c', script, 'installer'],
+                                    env={**os.environ, 'MOCK_RESULT': code},
+                                    capture_output=True, text=True, check=True)
+            self.assertIn(summary, result.stdout)

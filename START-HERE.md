@@ -219,19 +219,25 @@ leave it off while checking calibration/data quality. See [Events](docs/EVENTS.m
 
 ### Reference Pi 5: optional AI HAT+
 
-For the 26 TOPS Hailo-8 reference build, add `--hailo` to the installer:
+The installer automatically detects the supported Hailo-8 on PCIe, including
+the 26 TOPS reference build. Use the same command with or without the AI HAT:
 
 ```bash
-sudo bash scripts/install.sh --lan --identification --hailo
+sudo bash scripts/install.sh --lan --identification
 ```
 
-This opt-in installs OS-managed `dkms` and `hailo-all`. It requires the Hailo-8
-already to be visible on PCIe and does not change boot settings, upgrade the
+When detected, it installs OS-managed `dkms` and `hailo-all`. If absent, AI
+setup is skipped successfully. Use `--skip-hailo` to opt out even when attached,
+or `--hailo` to require the device (a missing device then reports incomplete
+setup). If both options are supplied, the last one wins. Detection requires
+the device already to be visible on PCIe: a disconnected or faulty ribbon
+looks like absent hardware. The installer does not change boot settings, upgrade the
 whole OS, or reboot automatically. It follows the Raspberry Pi
 [AI HAT+ software setup](https://www.raspberrypi.com/documentation/computers/ai.html).
 It is not the AI HAT+ 2 / Hailo-10 installation path. `--skip-dependencies` skips
-the base application packages; explicitly requested sensor and AI packages
-are still provisioned.
+the base application packages and automatic AI provisioning; explicit
+`--hailo` still provisions AI packages. Sensor provisioning is controlled
+separately with `--skip-sensors`.
 
 If firmware communication is not ready after package installation, the summary
 reports verification pending reboot. At a convenient time run `sudo reboot`,

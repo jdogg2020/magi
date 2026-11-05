@@ -107,6 +107,12 @@ const base = process.argv[2];
     await page.screenshot({path:'dist/browser/events.png',fullPage:true});
     const event=rows.find(row=>row.camera!=='primary' && row.hasImage && row.hasVideo) || rows.find(row=>row.camera!=='primary' && row.hasImage);
     const eventRow=page.locator(`#all-events tr[data-camera-id="${event.camera}"][data-event-id="${event.id}"]`);
+    // Recording completion and report publication are asynchronous. Open the
+    // fixture only once its radio report exists; the review fetch happens once.
+    await page.waitForFunction(async ({camera,id})=>{
+      const response=await fetch('/api/cameras/'+camera+'/clips/'+id+'/identification');
+      return response.ok() && !!(await response.json()).radio_evidence;
+    },event);
     await eventRow.getByRole('button',{name:'Review',exact:true}).click();
     await page.locator('#review').waitFor();
     for(const id of ['review-event-prev','review-event-next']){

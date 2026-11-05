@@ -179,3 +179,68 @@ run_step() { printf 'RUN'; printf ' <%s>' "$@"; printf '\\n'; return "$MOCK_RESU
                                     env={**os.environ, 'MOCK_RESULT': code},
                                     capture_output=True, text=True, check=True)
             self.assertIn(summary, result.stdout)
+
+    def test_desktop_boot_policy_preserves_live_session_and_opt_out(self):
+        shell = (ROOT / 'scripts/install.sh').read_text()
+        parser = shell[:shell.index('source_dir=')]
+        start = shell.index('# Change only the next boot')
+        block = shell[start:shell.index('echo "Magi dashboard: final', start)]
+        script = parser + """
+systemctl() { printf 'SYSTEMCTL'; printf ' <%s>' "$@"; printf '\\n'; return "${MOCK_RESULT:-0}"; }
+run_step() { shift 2; "$@"; }
+""" + block
+        import os
+        for args, expected in [([], 'SYSTEMCTL <set-default> <multi-user.target>'),
+                               (['--keep-desktop'], 'current default target preserved')]:
+            result = subprocess.run(['bash', '-c', script, 'installer', *args],
+                                    capture_output=True, text=True, check=True)
+            self.assertIn(expected, result.stdout)
+            commands = [line for line in result.stdout.splitlines() if line.startswith('SYSTEMCTL')]
+            self.assertEqual(commands, [] if args else [expected])
+        result = subprocess.run(['bash', '-c', script, 'installer'],
+                                env={**os.environ, 'MOCK_RESULT': '1'},
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn('Desktop boot: disabled', result.stdout)
+        # A dry run describes the choice without executing any systemctl calls.
+        for args, expected in [([], 'Would boot to text mode'),
+                               (['--keep-desktop'], 'Would preserve the current default boot target')]:
+            result = subprocess.run(['bash', str(ROOT/'scripts/install.sh'), '--dry-run', *args],
+                                    capture_output=True, text=True, check=True)
+            self.assertIn(expected, result.stdout)
+
+    def test_hailo_check_uses_private_directory_and_cleans_up(self):
+        module = load('setup_hailo')
+        directories = []
+        def run(command, **kwargs):
+            directory = Path(kwargs['cwd'])
+            directories.append(directory)
+            self.assertNotEqual(directory, Path.cwd())
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+            (directory / 'hailort.log').write_text('vendor diagnostic')
+            self.assertEqual(command, ['hailortcli', 'fw-control', 'identify'])
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(module, 'hardware_present', return_value=True), \
+             patch.object(module.shutil, 'which', return_value='/usr/bin/hailortcli'), \
+             patch.object(module.subprocess, 'run', side_effect=run):
+            self.assertEqual(module.verify(), 0)
+            self.assertEqual(module.verify(), 0)
+        self.assertNotEqual(directories[0], directories[1])
+        self.assertTrue(all(not directory.exists() for directory in directories))
+
+    def test_hailo_working_directory_cleanup_on_timeout_and_failure(self):
+        module = load('setup_hailo')
+        for timed_out in (False, True):
+            directories = []
+            def run(command, **kwargs):
+                directory = Path(kwargs['cwd'])
+                directories.append(directory)
+                (directory / 'hailort.log').write_text('vendor diagnostic')
+                if timed_out:
+                    raise subprocess.TimeoutExpired(command, 30)
+                return subprocess.CompletedProcess(command, 1)
+            with patch.object(module, 'hardware_present', return_value=True), \
+                 patch.object(module.shutil, 'which', return_value='/usr/bin/hailortcli'), \
+                 patch.object(module.subprocess, 'run', side_effect=run):
+                self.assertEqual(module.verify(), 1)
+            self.assertFalse(directories[0].exists())

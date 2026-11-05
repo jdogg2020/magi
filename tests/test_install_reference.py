@@ -180,6 +180,35 @@ run_step() { printf 'RUN'; printf ' <%s>' "$@"; printf '\\n'; return "$MOCK_RESU
                                     capture_output=True, text=True, check=True)
             self.assertIn(summary, result.stdout)
 
+    def test_desktop_boot_policy_preserves_live_session_and_opt_out(self):
+        shell = (ROOT / 'scripts/install.sh').read_text()
+        parser = shell[:shell.index('source_dir=')]
+        start = shell.index('# Change only the next boot')
+        block = shell[start:shell.index('echo "Magi dashboard: final', start)]
+        script = parser + """
+systemctl() { printf 'SYSTEMCTL'; printf ' <%s>' "$@"; printf '\\n'; return "${MOCK_RESULT:-0}"; }
+run_step() { shift 2; "$@"; }
+""" + block
+        import os
+        for args, expected in [([], 'SYSTEMCTL <set-default> <multi-user.target>'),
+                               (['--keep-desktop'], 'current default target preserved')]:
+            result = subprocess.run(['bash', '-c', script, 'installer', *args],
+                                    capture_output=True, text=True, check=True)
+            self.assertIn(expected, result.stdout)
+            commands = [line for line in result.stdout.splitlines() if line.startswith('SYSTEMCTL')]
+            self.assertEqual(commands, [] if args else [expected])
+        result = subprocess.run(['bash', '-c', script, 'installer'],
+                                env={**os.environ, 'MOCK_RESULT': '1'},
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn('Desktop boot: disabled', result.stdout)
+        # A dry run describes the choice without executing any systemctl calls.
+        for args, expected in [([], 'Would boot to text mode'),
+                               (['--keep-desktop'], 'Would preserve the current default boot target')]:
+            result = subprocess.run(['bash', str(ROOT/'scripts/install.sh'), '--dry-run', *args],
+                                    capture_output=True, text=True, check=True)
+            self.assertIn(expected, result.stdout)
+
     def test_hailo_check_uses_private_directory_and_cleans_up(self):
         module = load('setup_hailo')
         directories = []

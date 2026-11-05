@@ -111,7 +111,7 @@ const base = process.argv[2];
     // fixture only once its radio report exists; the review fetch happens once.
     await page.waitForFunction(async ({camera,id})=>{
       const response=await fetch('/api/cameras/'+camera+'/clips/'+id+'/identification');
-      return response.ok() && !!(await response.json()).radio_evidence;
+      return response.ok && !!(await response.json()).radio_evidence;
     },event);
     await eventRow.getByRole('button',{name:'Review',exact:true}).click();
     await page.locator('#review').waitFor();

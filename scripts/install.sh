@@ -186,7 +186,7 @@ if ! "$ready"; then
 fi
 if ! "$skip_sensors"; then
   if [[ ${#sensor_options[@]} -eq 0 ]]; then sensor_options+=(--detect); fi
-  run_step 0 "Provision station sensors" /usr/bin/python3 /opt/magi/scripts/setup_sensors.py "${sensor_options[@]}"
+  run_step 0 "Provision station sensors" /usr/bin/python3 -u /opt/magi/scripts/setup_sensors.py "${sensor_options[@]}"
 else
   echo "Sensor provisioning: skipped by --skip-sensors; existing configuration unchanged."
 fi

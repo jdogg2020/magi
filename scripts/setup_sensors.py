@@ -179,7 +179,7 @@ def probe_sim7600(port_path, query_fn=None, port_opener=None, time_left_fn=None)
             remaining = time_left_fn() if time_left_fn is not None else None
             timeout = .2 if remaining is None else max(0.0, min(.2, remaining))
             write_timeout = 2 if remaining is None else max(0.0, min(2, remaining))
-            return serial.Serial(path, 115200, timeout=timeout,
+            return serial.Serial(str(path), 115200, timeout=timeout,
                                  write_timeout=write_timeout, exclusive=True)
     try:
         with port_opener(port_path) as port:

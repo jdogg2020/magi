@@ -5,6 +5,8 @@ import importlib.util
 import io
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +78,22 @@ class FakeClock:
 
 
 class DetectionTests(unittest.TestCase):
+    def test_default_opener_converts_discovered_path_for_pyserial(self):
+        opened = []
+
+        def serial_port(path, baudrate, **kwargs):
+            if not isinstance(path, str):
+                raise ValueError('port must be a string')
+            opened.append(path)
+            return FakePort(path)
+
+        path = Path('/dev/serial/by-id/usb-SimTech_reference-if02-port0')
+        with patch.dict('sys.modules', serial=SimpleNamespace(Serial=serial_port)):
+            self.assertTrue(SETUP.probe_sim7600(
+                path, query_fn=query_stub({'AT': ['OK'],
+                    'AT+CGMM': ['SIMCOM_SIM7600G-H', 'OK']})))
+        self.assertEqual(opened, [str(path)])
+
     def test_reference_simtech_ports_verified_without_satellite_fix(self):
         commands = []
         prefix = 'usb-SimTech__Incorporated_SimTech__Incorporated_0123456789ABCDEF'

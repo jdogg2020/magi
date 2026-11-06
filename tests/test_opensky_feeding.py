@@ -73,6 +73,23 @@ class OpenSkyFeedingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 feeder.configure(VALID)
 
+    def test_missing_binary_is_an_actionable_validation_error(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(feeder, 'existing_username', return_value=''), patch.object(feeder, 'BINARY', str(Path(tmp)/'missing')):
+            with self.assertRaisesRegex(ValueError, 'feeder is not installed'):
+                feeder.configure(VALID)
+
+    def test_configuration_write_failure_is_safe_and_does_not_enable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spawn = Mock()
+            agent = feeding_agent.Agent(Path(tmp), spawn=spawn)
+            with patch.object(feeding_agent.socket, 'create_connection'), patch.object(feeder, 'configure', side_effect=PermissionError('private-path-sentinel')):
+                with self.assertRaisesRegex(ValueError, 'Cannot save OpenSky receiver settings') as caught:
+                    agent.request({'action':'enable','settings':VALID})
+            self.assertNotIn('private-path-sentinel', str(caught.exception))
+            self.assertFalse(agent.enabled)
+            self.assertFalse((Path(tmp)/'status.json').exists())
+            spawn.assert_not_called()
+
     def test_configure_only_writes_feeder_settings_and_preserves_serial(self):
         with tempfile.TemporaryDirectory() as tmp:
             identity = Path(tmp)/'10-magi.conf'
@@ -171,3 +188,45 @@ class FeedingBoundaryTests(unittest.TestCase):
         handler = self.handler(123, b'x' * 2050 + b'\n')
         handler.handle()
         handler.server.agent.request.assert_not_called()
+
+
+class FeedingHttpTests(unittest.TestCase):
+    """Exercise POST routing without a Pi or a listening socket."""
+    def request(self, body, csrf='token', error=None):
+        from magi.web import Handler
+        handler = Handler.__new__(Handler)
+        handler.path = '/api/station/feeding'
+        handler.headers = {'X-CSRF-Token': csrf}
+        handler.valid_host = handler.origin_ok = lambda: True
+        handler.body = lambda: body
+        handler.session = lambda: ('session', {'csrf':'token'})
+        handler.reply = Mock()
+        with patch('magi.web.feeding_request', return_value={'helper_available':True,'active':True}, side_effect=error) as helper:
+            handler.do_POST()
+        return handler.reply.call_args.args, helper
+
+    def test_enable_keeps_valid_payload_and_requires_csrf(self):
+        payload = {'action':'enable','settings':VALID}
+        reply, helper = self.request(payload)
+        self.assertEqual(reply[0], 200)
+        helper.assert_called_once_with(payload)
+        reply, helper = self.request(payload, csrf='wrong')
+        self.assertEqual(reply[0], 403)
+        helper.assert_not_called()
+
+    def test_expected_feeder_errors_reach_the_dashboard_unchanged(self):
+        for message in ('Local ADS-B output is unavailable. Check receiver installation and service status.',
+                        'This receiver is already linked to another username. Contact OpenSky to change its ownership.',
+                        'Cannot save feeding consent; feeding was not enabled.',
+                        'Feeding helper unavailable. Refresh status before retrying; the operation may still be running.'):
+            with self.subTest(message=message):
+                reply, _ = self.request({'action':'enable','settings':VALID}, error=ValueError(message))
+                self.assertEqual(reply, (409, {'error':message}))
+
+    def test_unknown_actions_and_raw_os_errors_stay_safe(self):
+        reply, helper = self.request({'action':'shell'})
+        self.assertEqual(reply, (409, {'error':'Choose Enable feeding or Disable feeding.'}))
+        helper.assert_not_called()
+        reply, _ = self.request({'action':'disable'}, error=OSError('private-path-sentinel'))
+        self.assertEqual(reply[0], 409)
+        self.assertNotIn('private-path-sentinel', json.dumps(reply))

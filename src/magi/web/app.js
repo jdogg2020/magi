@@ -1267,56 +1267,65 @@ async function openStarPicker(manual){
 (() => {
   const panel=$('opensky-feeding-setup');
   if(!panel)return;
-  let state=null, loading=false, initialized=false;
+  let state=null, refreshing=false, submitting=false, initialized=false, generation=0, actionError='', refreshError='';
+  const edited=new Set();
   const fields={username:'feeding-username',latitude:'feeding-latitude',longitude:'feeding-longitude',altitude_msl_m:'feeding-altitude'};
   function controls(){
-    const unavailable=!state?.helper_available, busy=loading || !!state?.busy;
+    const unavailable=!state?.helper_available, busy=submitting || !!state?.busy;
     $('feeding-enable').disabled=unavailable || busy || !$('feeding-consent').checked;
     $('feeding-disable').disabled=unavailable || busy || !(state?.active || state?.enabled);
     $('feeding-gps').disabled=busy || !state?.gps;
+    $('feeding-refresh').disabled=refreshing || submitting;
+    $('feeding-consent').disabled=busy;
     for(const [key,id] of Object.entries(fields))$(id).disabled=busy || (key==='username' && !!state?.username_locked);
   }
+  function status(){
+    const service=state?.active?'Running':state?.enabled?'Enabled but not running':'Off';
+    $('feeding-status').textContent=actionError || refreshError || (state?.helper_available?service+'. ':'')+(state?.message || 'Status unavailable.');
+  }
   function render(next){
-    state=next;
-    const service=next.active?'Running':next.enabled?'Enabled but not running':'Off';
-    $('feeding-status').textContent=(next.helper_available?service+'. ':'')+(next.message || 'Status unavailable.');
+    state=next;status();
     if(!initialized && next.helper_available){
       const values={...(next.gps || {}),...(next.settings || {})};
-      for(const [key,id] of Object.entries(fields))if(!$(id).value && values[key]!==undefined)$(id).value=values[key];
+      for(const [key,id] of Object.entries(fields))if(!edited.has(key) && !$(id).value && values[key]!==undefined)$(id).value=values[key];
       initialized=true;
     }
     if(next.username_locked && next.settings?.username)$('feeding-username').value=next.settings.username;
     controls();
   }
   async function refresh(){
-    if(!csrf || loading)return;
-    loading=true;controls();
-    try{render(await api('/api/station/feeding'));}
-    catch(error){state=null;$('feeding-status').textContent=error.message;}
-    finally{loading=false;controls();}
+    if(!csrf || refreshing || submitting)return;
+    const requestGeneration=generation;
+    // A status poll must not disable or blur inputs or interrupt a submission.
+    refreshing=true;controls();
+    try{const next=await api('/api/station/feeding');if(requestGeneration===generation){refreshError='';render(next);}}
+    catch(error){if(requestGeneration===generation){state={...state,helper_available:false};refreshError=error.message;status();}}
+    finally{refreshing=false;controls();}
   }
   async function action(action){
-    if(loading || state?.busy)return;
+    if(submitting || state?.busy || !state?.helper_available)return;
     let settings;
     if(action==='enable'){
       if(!$('feeding-consent').checked)return;
       settings={username:$('feeding-username').value.trim(),bandwidth_consent:true};
       for(const [key,id] of Object.entries(fields))if(key!=='username'){
-        if(!$(id).value.trim() || !$(id).checkValidity()){$('feeding-status').textContent='Enter valid antenna coordinates and altitude, or use a GPS fix.';return;}
+        if(!$(id).value.trim() || !$(id).checkValidity()){actionError='Enter valid antenna coordinates and altitude, or use a GPS fix.';status();return;}
         settings[key]=Number($(id).value);
       }
-      if(!settings.username){$('feeding-status').textContent='Enter your OpenSky username.';return;}
+      if(!/^[A-Za-z0-9_.@-]{1,40}$/.test(settings.username)){actionError='Enter your OpenSky username (1–40 letters, numbers, dots, underscores, @ or hyphens).';status();return;}
     }
-    loading=true;controls();
+    generation++;submitting=true;actionError=refreshError='';controls();
     try{render(await api('/api/station/feeding',{action,...(settings?{settings}:{})}));$('feeding-consent').checked=false;}
-    catch(error){$('feeding-status').textContent=error.message;}
-    finally{loading=false;controls();}
+    catch(error){actionError=error.message;status();}
+    finally{submitting=false;controls();}
   }
   panel.addEventListener('toggle',()=>{if(panel.open)refresh();});
-  $('feeding-consent').onchange=controls;
+  function edit(){actionError='';status();controls();}
+  for(const [key,id] of Object.entries(fields))$(id).oninput=()=>{edited.add(key);edit();};
+  $('feeding-consent').onchange=edit;
   $('feeding-refresh').onclick=refresh;
   $('feeding-enable').onclick=()=>action('enable');
   $('feeding-disable').onclick=()=>action('disable');
-  $('feeding-gps').onclick=()=>{if(state?.gps)for(const [key,value] of Object.entries(state.gps))$(fields[key]).value=value;};
+  $('feeding-gps').onclick=()=>{if(submitting || state?.busy)return;if(state?.gps)for(const [key,value] of Object.entries(state.gps)){if(!fields[key] || key==='username')continue;$(fields[key]).value=value;edited.add(key);}edit();};
   setInterval(()=>{if(panel.open && !$('settings').classList.contains('hidden'))refresh();},5000);
 })();

@@ -10,6 +10,16 @@ const base = process.argv[2];
     const page = await browser.newPage({viewport:{width:1600,height:1100}});
     const errors=[];
     page.on('pageerror', error=>errors.push(error.message));
+    const reportRequests=[];
+    page.on('requestfailed', request=>{
+      if(request.url().endsWith('/identification'))reportRequests.push({url:request.url(),failure:request.failure()});
+    });
+    page.on('response', async response=>{
+      if(!response.url().endsWith('/identification'))return;
+      const result={url:response.url(),status:response.status()};reportRequests.push(result);
+      try {const report=await response.json();Object.assign(result,{reportStatus:report.status,radio:!!report.radio_evidence});}
+      catch(error){result.error=String(error);}
+    });
     await page.goto(base);
     await page.locator('#login-user').fill('admin');
     await page.locator('#login-password').fill('demo-password-123');
@@ -156,8 +166,9 @@ const base = process.argv[2];
       console.error('Radio report failure context:', await page.evaluate(()=>({
         status:document.getElementById('identification-status').textContent,
         radio:document.getElementById('radio-status').textContent,
+        trackReport:!!document.getElementById('track-report'),
         event:reviewEvent, generation:reviewGeneration,
-      })), errors);
+      })), errors, reportRequests);
       throw error;
     }
     assert((await page.locator('#radio-status').textContent()).includes('aircraft recorded'));

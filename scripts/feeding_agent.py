@@ -106,7 +106,10 @@ class Agent:
                         pass
                 except OSError:
                     raise ValueError('Local ADS-B output is unavailable. Check receiver installation and service status.') from None
-                setup.configure(settings)
+                try:
+                    setup.configure(settings)
+                except OSError:
+                    raise ValueError('Cannot save OpenSky receiver settings. Check feeder installation, permissions and free space.') from None
                 self.settings = {k: v for k, v in settings.items() if k != 'bandwidth_consent'}
                 self.enabled = True
                 try:

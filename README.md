@@ -5,6 +5,13 @@ will be developed privately and licensed separately, with inference running
 locally on the Raspberry Pi / AI HAT. No proprietary model or hosted inference
 service is included here. See [model policy](docs/MODEL-POLICY.md).
 
+## Event track contract groundwork (0.20.28)
+
+Adds an explicit reader for separately attributed recovered-track revisions,
+with capture-evidence, geometry and timing validation. This is groundwork for
+video-based recovery: automatic recovery, review overlays and exports are not
+enabled by this change. See the [contract and current limits](docs/EVENT-TRACK-CONTRACT.md).
+
 ## Dynamic sensor replacement (0.20.27)
 
 Automatically configured RTL-SDR and SIM7600 roles rediscover replacement hardware

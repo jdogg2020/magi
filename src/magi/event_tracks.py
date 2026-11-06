@@ -232,6 +232,15 @@ def validate_revision(payload, event, camera_id, timeline=None):
         tick = base[0] / base[1]
         _require(abs((anchor_pts - origin) * tick - mapped_seconds(anchor_host)) <= tick + 1e-6,
                  'anchor PTS/timeline mismatch')
+        # Project only validated fields before copying source onto each point.
+        # Unknown nested metadata must not be multiplied by the point count.
+        validated_source = {
+            'stream': stream, 'file': SOURCE_FILES[stream],
+            'video_sha256': source['video_sha256'],
+            'timeline_sha256': source['timeline_sha256'],
+            'width': width, 'height': height,
+            'time_base': list(base), 'pts_origin': origin,
+        }
         previous = None
         segment_id = track.get('segment_id')
         _require(isinstance(segment_id, str) and bool(segment_id), 'missing continuous segment identity')
@@ -266,7 +275,7 @@ def validate_revision(payload, event, camera_id, timeline=None):
             points.append({**deepcopy(p), 'track_id': tid, 'segment_id': segment_id,
                            'anchor_sample_index': index, 'anchor_frame_index': anchor_frame,
                            'anchor_pts': anchor_pts, 'anchor_host_unix': anchor_host,
-                           'source': deepcopy(source)})
+                           'source': deepcopy(validated_source)})
     return points
 
 

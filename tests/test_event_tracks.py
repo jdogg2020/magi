@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import tracemalloc
 import unittest
 from unittest.mock import patch
 
@@ -294,6 +295,33 @@ class EventTrackTests(unittest.TestCase):
             return original(path, flags, *args, **kwargs)
         with patch.object(tracks.os, 'open', side_effect=read_only):
             self.assertEqual(self.read()['status'], 'partial')
+
+    def test_source_extensions_are_not_multiplied_per_point(self):
+        track = self.payload['tracks'][0]
+        expected_source = deepcopy(track['source'])
+        track['source']['extra'] = [{'value': i} for i in range(2000)]
+        track['anchor_frame_index'] = 400
+        point = track['points'][0]
+        track['points'] = [
+            {**deepcopy(point), 'frame_index': i, 'pts': 1000 + i,
+             'host_unix': 99. + i / 1000}
+            for i in range(tracks.MAX_POINTS)]
+        self.publish()
+        tracemalloc.start()
+        try:
+            result = self.read()
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(result['status'], 'partial', result.get('reason'))
+        points = result['recovered_points']
+        self.assertEqual(len(points), tracks.MAX_POINTS)
+        self.assertTrue(all(p['source'] == expected_source for p in points))
+        # The 106 KB fixture formerly allocated >100 MiB from repeated source copies.
+        self.assertLess(peak, 8 * 1024 * 1024)
+        points[0]['source']['time_base'][0] = 99
+        self.assertEqual(points[1]['source']['time_base'], [1, 1000])
+        self.assertEqual(track['source']['time_base'], [1, 1000])
 
     def test_truncation_flag_preserved(self):
         self.event['track_samples_truncated']=True

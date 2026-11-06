@@ -232,9 +232,9 @@ const MagiEvents = (()=>{
   }
   function draftChanges(){return {labels:labels(el('review-labels').value),notes:el('review-notes').value,reviewed:el('review-reviewed').checked,protected:el('review-protected').checked};}
   function validateDraft(changes){
-    if(changes.labels.length>8)return 'Up to eight labels per event. Remove a label before submitting.';
-    if(changes.labels.some(label=>[...label].length>32 || /[\p{C}\p{Z}]/u.test(label.replaceAll(' ',''))))return 'Each label must contain 1–32 printable characters.';
-    if([...changes.notes].length>2000 || /[\x00-\x08\x0b-\x1f]/.test(changes.notes))return 'Notes must be text of up to 2,000 characters.';
+    if(changes.labels?.length>8)return 'Up to eight labels per event. Remove a label before submitting.';
+    if(changes.labels?.some(label=>[...label].length>32 || /[\p{C}\p{Z}]/u.test(label.replaceAll(' ',''))))return 'Each label must contain 1–32 printable characters.';
+    if(changes.notes!=null && ([...changes.notes].length>2000 || /[\x00-\x08\x0b-\x1f]/.test(changes.notes)))return 'Notes must be text of up to 2,000 characters.';
     return '';
   }
   function dirty(){
@@ -252,7 +252,11 @@ const MagiEvents = (()=>{
   async function saveReview(action='update',changes=draftChanges()){
     if(!reviewEvent || reviewBusy || mutating || pendingSaves.has(eventKey(reviewEvent)))return;
     const event=reviewEvent, key=eventKey(event);
-    if(action==='update')changes=labelReview(changes,event);
+    if(action==='update'){
+      const invalid=validateDraft(changes);
+      if(invalid){el('review-save-status').textContent=invalid;return;}
+      changes=labelReview(changes,event);
+    }
     reviewBusy=true;reviewControls();el('review-save-status').textContent='Saving…';
     try {
       const result=await api('/api/station/events/update',{targets:[{id:event.id,camera_id:event.camera_id || selectedCamera}],action,...(action==='update'?{changes}:{})});

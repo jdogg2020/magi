@@ -180,6 +180,23 @@ const settle=async()=>{for(let i=0;i<20;i++)await new Promise(resolve=>setImmedi
  el('review-labels').value='a,b,c,d,e,f,g,h,i';el('review-notes').value='Preserve invalid draft';
  await el('review-submit').onclick();await settle();assert.equal(updates,tooMany);assert.equal(ctx.reviewEvent.id,'0180');
  assert.equal(el('review-labels').value,'a,b,c,d,e,f,g,h,i');assert.equal(el('review-notes').value,'Preserve invalid draft');
+ // Save in place and Submit share validation without writing or losing drafts.
+ for(const [draftLabels,draftNotes] of [
+   ['a,b,c,d,e,f,g,h,i','Keep this draft'],['x'.repeat(33),'Keep this draft'],
+   ['bad\u0001label','Keep this draft'],['weather','x'.repeat(2001)],['weather','bad\u0001note']
+ ]){
+   el('review-labels').value=draftLabels;el('review-notes').value=draftNotes;
+   const invalidStart=updates;
+   await el('review-submit').onclick();const message=el('review-save-status').textContent;
+   await el('review-save').onclick();await settle();
+   assert.equal(updates,invalidStart,'Invalid drafts must not reach either save path');
+   assert.equal(ctx.reviewEvent.id,'0180');assert.equal(el('review-save-status').textContent,message);
+   assert.equal(el('review-labels').value,draftLabels);assert.equal(el('review-notes').value,draftNotes);
+   assert(!el('review-save').disabled,'Validation must leave Save review available for correction');
+ }
+ // Partial quick actions do not submit, validate, or discard unrelated draft fields.
+ before=updates;await el('review-keep').onclick();assert.equal(updates,before+1);
+ assert.equal(el('review-labels').value,'weather');assert.equal(el('review-notes').value,'bad\u0001note');
  ctx.openReview({...records[180],review:{...records[180].review,trashed_at:1}});await settle();assert(el('review-label-weather').disabled);
  ctx.openReview({...records[180],review:{...records[180].review,annotation_error:true}});await settle();assert(el('review-label-weather').disabled);
  ctx.openReview(records[180]);await settle();el('review-notes').value='Unsaved manual note';failUpdate=true;

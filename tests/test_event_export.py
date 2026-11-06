@@ -235,3 +235,31 @@ class ExportHTTPTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=5)
+
+
+class SidecarDownloadTests(unittest.TestCase):
+    def test_replaced_sidecar_uses_open_file_size(self):
+        from magi.web import Handler
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'identification.json'
+            original = b'{"status":"disabled"}'
+            path.write_bytes(original)
+            class ReplacedPath:
+                parent = path.parent
+                name = path.name
+                def open(self, mode):
+                    stream = path.open(mode)
+                    replacement = path.with_suffix('.new')
+                    replacement.write_bytes(b'{"status":"disabled","radio_evidence":{}}')
+                    replacement.replace(path)
+                    return stream
+                def stat(self):
+                    return path.stat()
+            handler = object.__new__(Handler)
+            handler.headers = {}
+            handler.wfile = io.BytesIO()
+            headers = []
+            handler.headers_out = lambda *args: headers.append(args)
+            handler.send_file(ReplacedPath(), 'identification')
+            self.assertEqual(headers[0][2], len(original))
+            self.assertEqual(handler.wfile.getvalue(), original)

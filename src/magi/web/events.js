@@ -79,7 +79,7 @@ const MagiEvents = (()=>{
   const labels=value=>value.split(',').map(v=>v.trim()).filter(Boolean);
   function selection(){
     el('event-selection-count').textContent=`${selected.size} selected${selected.size ? ' (across pages)' : ''}`;
-    el('event-apply').disabled=el('event-export').disabled=!selected.size || mutating || !!pendingSaves.size;
+    el('event-apply').disabled=el('event-export').disabled=!selected.size || mutating || exporting || !!pendingSaves.size;
     el('event-export-zip').disabled=!selected.size || mutating || exporting || !!pendingSaves.size;
     el('event-select-page').checked=rows.length>0 && rows.every(row=>selected.has(eventKey(row)));
     el('event-select-page').indeterminate=rows.some(row=>selected.has(eventKey(row))) && !el('event-select-page').checked;
@@ -273,9 +273,22 @@ const MagiEvents = (()=>{
     el('event-filters').onsubmit=event=>{event.preventDefault();return applyFilters();};
     el('event-reset').onclick=()=>{for(const id of ['event-search','event-label-filter','event-start','event-end'])el(id).value='';for(const id of ['event-exported','event-reviewed','event-protected','event-state','event-reference','event-type'])el(id).value='all';el('event-hide-likely').checked=false;el('event-camera').value='all';el('event-folder').value='active';el('event-sort').value='newest';applyFilters();};
     el('event-select-page').onchange=()=>{for(const row of rows){if(el('event-select-page').checked && selected.size<100)selected.set(eventKey(row),row);else if(!el('event-select-page').checked)selected.delete(eventKey(row));}render();};
+    el('event-select-all').onclick=async()=>{
+      const version=requestVersion;
+      el('event-select-all').disabled=true;
+      try{
+        const result=await api('/api/station/events/list',{...(currentFilters || filters()),offset:0,limit:100});
+        if(version!==requestVersion)return;
+        if(result.total>100)throw new Error(`${result.total} events match. Narrow your filters to 100 or fewer events per export.`);
+        if(result.events.length!==result.total)throw new Error('Could not select every matching event. Refresh and try again.');
+        selected.clear();for(const row of result.events)selected.set(eventKey(row),withLocalReview(row));
+        render();el('event-action-status').textContent=`Selected all ${selected.size} matching events across pages.`;
+      }catch(error){el('event-action-status').textContent=error.message;}
+      finally{el('event-select-all').disabled=false;}
+    };
     el('event-clear-selection').onclick=()=>{selected.clear();render();};
     el('event-prev').onclick=()=>{offset=Math.max(0,offset-25);requestVersion++;refresh(true);};el('event-next').onclick=()=>{offset+=25;requestVersion++;refresh(true);};el('event-refresh').onclick=()=>refresh(true);
-    el('event-apply').onclick=()=>{const action=el('event-action').value;const changes={reviewed:{reviewed:true},unreviewed:{reviewed:false},labels:{labels:labels(el('event-bulk-labels').value)},protect:{protected:true},unprotect:{protected:false}};return mutate([...selected.values()],action==='trash'||action==='restore'?action:'update',changes[action]);};
+    el('event-apply').onclick=()=>{const action=el('event-action').value;if(action==='export')return el('event-export-zip').onclick();const changes={reviewed:{reviewed:true},unreviewed:{reviewed:false},labels:{labels:labels(el('event-bulk-labels').value)},protect:{protected:true},unprotect:{protected:false}};return mutate([...selected.values()],action==='trash'||action==='restore'?action:'update',changes[action]);};
     el('event-export-zip').onclick=async()=>{
       if(!selected.size || mutating || exporting || pendingSaves.size)return;
       const targets=[...selected.values()].map(row=>({id:row.id,camera_id:row.camera_id || selectedCamera}));
@@ -291,7 +304,7 @@ const MagiEvents = (()=>{
           if(status.state==='failed')throw new Error('Download interrupted. Events were not marked exported. Retry the selection.');
           el('event-action-status').textContent=
             `Sent ${status.sent} event(s). ${status.failed.length} unavailable; ${status.flag_failed.length} export flags could not be saved. Check manifest.json and your downloaded ZIP before relying on your copy.`;
-          lastRefresh=0;await refresh(true);return;
+          selected.clear();lastRefresh=0;await refresh(true);return;
         }
         throw new Error('Export status timed out. Check your browser download and refresh the event list.');
       }catch(error){el('event-action-status').textContent='Export: '+error.message;}

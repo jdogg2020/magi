@@ -123,6 +123,31 @@ class RecoveryJobTests(unittest.TestCase):
         client.close()
         self.assertEqual(client.scan(),[])
 
+    def test_recovered_still_pair_commits_through_manifest(self):
+        from magi.media import Media
+        from unittest.mock import patch
+        handle=EventHandle(self.cfg,self.directory)
+        try:publish(handle,self.meta,'camera-a',recover(self.directory,'camera-a'),'still')
+        finally:handle.close()
+        self.cfg.ffmpeg='ffmpeg';self.cfg.ffprobe='ffprobe'
+        media=Media(self.cfg,'camera-a');self.addCleanup(media.close)
+        info=self.mount.stat();identity=(info.st_dev,info.st_ino,'fixture')
+        prior={'status':'ready','thumbnail':{'file':'thumbnail.jpg','full_frame_file':'best-frame.jpg'}}
+        (self.directory/'media.json').write_text(json.dumps(prior))
+        (self.directory/'best-frame.jpg').write_bytes(b'old frame')
+        (self.directory/'thumbnail.jpg').write_bytes(b'old thumbnail')
+        with patch.object(EventHandle,'write',side_effect=OSError('crash before manifest')):
+            with self.assertRaises(OSError):media._render(self.directory,self.meta,identity)
+        self.assertEqual(bounded_json(self.directory/'media.json'),prior)
+        self.assertEqual((self.directory/'best-frame.jpg').read_bytes(),b'old frame')
+        media._render(self.directory,self.meta,identity)
+        product=bounded_json(self.directory/'media.json')
+        self.assertEqual(product['track_revision'],bounded_json(self.directory/'tracks.json')['revision'])
+        for key,stem in (('file','thumbnail-'),('full_frame_file','best-frame-')):
+            name=product['thumbnail'][key]
+            self.assertTrue(name.startswith(stem))
+            self.assertTrue((self.directory/name).is_file())
+
     def test_pin_excludes_duplicate_admission(self):
         handle=EventHandle(self.cfg,self.directory)
         try:

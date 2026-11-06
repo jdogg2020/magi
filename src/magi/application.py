@@ -761,14 +761,14 @@ class Application:
                              | {'camera_id':meta.get('camera_id',self.camera_id),'camera_name':meta.get('camera_name',self.camera_name), 'review': review, 'hq_preview': (path.parent / 'preview-substream.mp4').is_file(),
                                 'substream_preview': (path.parent / 'preview-substream.mp4').is_file(),
                                 'full_video': (path.parent / 'full-video.mp4').is_file(),
-                                'best_frame': (path.parent / 'best-frame.jpg').is_file(),
+                                'best_frame': (path.parent / 'best-frame.jpg').is_file() or bool(media.get('track_revision')),
                                 'media_status': 'queued' if meta['id'] in self.media.protected() else media.get('status', 'not_generated'),
                                 'media_detail': media.get('thumbnail', {}),
                                 'media_error': media.get('detail', ''),
                                 'original': (path.parent / 'clip.mkv').is_file(),
                                 'preview': (path.parent / 'preview.mp4').is_file(),
                                 'identification': report.get('status', 'not_checked' if meta.get('state')=='not_retained' else 'pending' if self.cfg.identification['enabled'] else 'disabled'),
-                                'thumbnail': (path.parent / 'thumbnail.jpg').is_file(),
+                                'thumbnail': (path.parent / 'thumbnail.jpg').is_file() or bool(media.get('track_revision')),
                                 'motion': (path.parent / 'motion.jsonl.gz').is_file() and (path.parent / 'preview.mp4').is_file()})
             except (OSError, ValueError,TypeError,AttributeError):
                 continue
@@ -995,6 +995,13 @@ class Application:
         if kind not in names:
             raise ValueError('Unknown file.')
         base = self.cfg.root / 'events'
+        if kind in ('frame','thumbnail'):
+            media=bounded_json(base/event_id/'media.json',{})
+            field='full_frame_file' if kind=='frame' else 'file'
+            candidate=media.get('thumbnail',{}).get(field)
+            stem='best-frame' if kind=='frame' else 'thumbnail'
+            if isinstance(candidate,str) and re.fullmatch(stem+r'-[0-9a-f]{64}\.jpg',candidate):
+                names[kind]=candidate
         path = base / event_id / names[kind]
         if path.is_symlink() or not path.resolve().is_relative_to(base.resolve()) or not path.is_file():
             raise ValueError('File unavailable.')

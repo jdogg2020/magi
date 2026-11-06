@@ -199,6 +199,11 @@ class Exports:
                                     media = track_contract._load(track_contract._read(files['media.json'].fileno()))
                                     files['media.json'].seek(0)
                                     derivative = media.get('track_revision')
+                                    for field,alias,stem in (('full_frame_file','best-frame.jpg','best-frame'),('file','thumbnail.jpg','thumbnail')):
+                                        reference=media.get('thumbnail',{}).get(field)
+                                        if isinstance(reference,str) and re.fullmatch(stem+r'-[0-9a-f]{64}\.jpg',reference):
+                                            files[reference]=stack.enter_context(open_regular(fd,reference))
+                                            files.pop(alias,None)
                                     if derivative is not None:
                                         if not track_contract._hash(derivative): raise ValueError('Invalid derivative revision')
                                         revisions.add(derivative)

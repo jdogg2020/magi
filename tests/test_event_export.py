@@ -110,11 +110,18 @@ class ExportTests(unittest.TestCase):
             (directory/f'tracks-{sha}.json').write_bytes(raw)
         old,current=revisions
         (directory/'tracks.json').write_text(json.dumps({'revision':current,'sha256':current,'file':f'tracks-{current}.json'}))
-        (directory/'media.json').write_text(json.dumps({'track_revision':old}))
+        frame=b'immutable frame';thumb=b'immutable thumbnail'
+        frame_name='best-frame-'+hashlib.sha256(frame).hexdigest()+'.jpg'
+        thumb_name='thumbnail-'+hashlib.sha256(thumb).hexdigest()+'.jpg'
+        (directory/frame_name).write_bytes(frame);(directory/thumb_name).write_bytes(thumb)
+        (directory/'media.json').write_text(json.dumps({'track_revision':old,'thumbnail':{'file':thumb_name,'full_frame_file':frame_name}}))
         (directory/'recovery.json').write_text(json.dumps({'state':'complete'}))
         with zipfile.ZipFile(self.download(self.prepare())) as archive:
             prefix='primary/'+self.identity+'/'
             for sha in revisions:self.assertIn(prefix+f'tracks-{sha}.json',archive.namelist())
+            self.assertEqual(archive.read(prefix+frame_name),frame)
+            self.assertEqual(archive.read(prefix+thumb_name),thumb)
+            self.assertNotIn(prefix+'best-frame.jpg',archive.namelist())
             entry=json.loads(archive.read('manifest.json'))['events'][0]
             self.assertEqual(entry['recovery']['track_revision'],current)
             self.assertEqual(entry['recovery']['derivative_revision'],old)

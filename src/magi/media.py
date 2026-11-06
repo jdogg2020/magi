@@ -1,6 +1,9 @@
 """Bounded, low-priority review renders from finalized original recordings."""
 from datetime import datetime
 import json
+import hashlib
+import os
+import re
 import math
 from pathlib import Path
 import queue
@@ -339,16 +342,40 @@ class Media:
                 current=bounded_json(directory/'tracks.json',{}).get('revision')
                 if current!=revision:
                     raise ValueError('track revision changed during still generation; retry pending')
-                (work / 'best.jpg').replace(directory / 'best-frame.jpg')
-                (work / 'thumbnail.jpg').replace(directory / 'thumbnail.jpg')
-                atomic_json(directory / 'media.json', {'profile': PROFILE, 'status': 'ready', 'source': original.name, 'track_revision': revision,
+                names={'best':'best-frame.jpg','thumbnail':'thumbnail.jpg'}
+                if revision:
+                    # Commit the pair through media.json; a crash between image
+                    # renames must never make an old revision name new pixels.
+                    for kind,stem in (('best','best-frame'),('thumbnail','thumbnail')):
+                        path=work/(kind+'.jpg')
+                        digest=hashlib.sha256(path.read_bytes()).hexdigest()
+                        names[kind]=f'{stem}-{digest}.jpg'
+                        with path.open('rb') as source:os.fsync(source.fileno())
+                        path.replace(directory/names[kind])
+                else:
+                    (work / 'best.jpg').replace(directory / names['best'])
+                    (work / 'thumbnail.jpg').replace(directory / names['thumbnail'])
+                handle.write('media.json', {'profile': PROFILE, 'status': 'ready', 'source': original.name, 'track_revision': revision,
                     'video': {'file': 'preview-substream.mp4', 'method': 'camera_substream_stream_copy; no video transcode'},
-                    'thumbnail': {'file': 'thumbnail.jpg', 'full_frame_file': 'best-frame.jpg',
+                    'thumbnail': {'file': names['thumbnail'], 'full_frame_file': names['best'],
                         'source_stream':recovered[0]['source']['stream'] if recovered else 'mainstream','track_revision':revision,
                         'selection': 'highest_local_contrast_and_sharpness_among_persistent_track_samples', 'candidate_count': ranked, 'attempted_candidate_count': attempted,
                         'crop_format': 'left_top_right_bottom_native_pixels',
                         'zoom': 'full_frame; no crop or upscaling', 'timing': 'estimated host-receipt mapping',
                         'geometry': 'native same-stream recovery' if recovered else 'main and analysis streams assumed to share the same field of view', **best}})
+                if revision:
+                    # Compatibility aliases are not the authoritative pair.
+                    for kind,alias in (('best','best-frame.jpg'),('thumbnail','thumbnail.jpg')):
+                        try:
+                            temporary=work/(kind+'-alias.jpg')
+                            shutil.copyfile(directory/names[kind],temporary)
+                            temporary.replace(directory/alias)
+                        except OSError:pass
+                    for name in os.listdir(handle.fd):
+                        if re.fullmatch(r'(best-frame|thumbnail)-[0-9a-f]{64}\.jpg',name) and name not in names.values():
+                            try:os.unlink(name,dir_fd=handle.fd)
+                            except OSError:pass
+
         finally:
             handle.close()
             try:

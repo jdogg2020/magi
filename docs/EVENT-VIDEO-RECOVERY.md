@@ -37,6 +37,9 @@ frames with yellow detector/purple recovered paths; source and revision are save
 in media.json. Exports snapshot manifest, current and current-derivative revisions,
 media and state under a short publication lock before streaming open descriptors.
 An export during regeneration explicitly reports pending derivative revision.
+Recovered still pairs use content-addressed image names committed through
+media.json; interrupted publication cannot make old metadata refer to new pixels.
+Review and export resolve these references; compatibility aliases are secondary.
 
 ## Isolation and limits
 

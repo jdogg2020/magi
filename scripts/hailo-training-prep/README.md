@@ -5,6 +5,14 @@ classifier (issue #58). This is preparation only: no training run,
 no model, no HEF, no live filtering, no Pi change, no merge is
 requested here. The PR is for review.
 
+## Public tooling and future proprietary training
+
+These published preparation tools retain their existing applicable licenses.
+Future Nomadobile-specific training pipelines, datasets, weights and compiled
+models must be developed in separate private repositories/storage. The target
+is local Pi / AI HAT inference, not a hosted service. See
+[model policy](../../docs/MODEL-POLICY.md).
+
 ## What is in this PR, and what is deliberately not
 
 In this folder:
@@ -246,3 +254,4 @@ in the Magi test set.
   compatible training environment are ready; Hailo execution,
   compiled-output comparison on device, and Pi performance /
   power / temperature validation require hardware.
+

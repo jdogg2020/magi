@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 import zipfile
+from check_public_assets import require_public_paths
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -12,10 +13,14 @@ ROOT = Path(__file__).resolve().parents[1]
 def build(destination):
     version = ast.literal_eval((ROOT / 'src/magi/__init__.py').read_text().split('=', 1)[1].strip())
     files = {}
+    candidates = []
     for directory in ('src', 'scripts', 'docs', 'systemd', 'tests', '.github'):
         for path in (ROOT / directory).rglob('*'):
             if path.is_file() and '__pycache__' not in path.parts and path.suffix != '.pyc':
-                files[path.relative_to(ROOT).as_posix()] = path.read_bytes()
+                candidates.append(path)
+    require_public_paths(path.relative_to(ROOT).as_posix() for path in candidates)
+    for path in candidates:
+        files[path.relative_to(ROOT).as_posix()] = path.read_bytes()
     for name in ('LICENSE', 'README.md', 'START-HERE.md', 'config.example.json', 'pyproject.toml',
                  'requirements-dev.lock', 'requirements-identification.lock', '.gitignore'):
         files[name] = (ROOT / name).read_bytes()
@@ -34,3 +39,4 @@ def build(destination):
 
 if __name__ == '__main__':
     build(sys.argv[1] if len(sys.argv) > 1 else ROOT.parent / 'magi-prototype.zip')
+

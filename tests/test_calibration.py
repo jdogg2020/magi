@@ -144,6 +144,90 @@ class CalibrationStateTests(unittest.TestCase):
         with self.assertRaises(CalibrationError):self.app.calibrate('calibration_solve',{'token':token,'matches':self.matches})
 
 
+class CameraCalibrationInvalidationTests(unittest.TestCase):
+    def make_app(self, *, star_report=True):
+        import tempfile
+        from pathlib import Path
+        from magi.application import Application
+        from magi.calibration import GEOMETRY_KEYS, source_fingerprint
+        from magi.config import Config
+        from magi.storage import atomic_json
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        raw = {'camera': {'host': '192.168.1.2', 'username': 'user',
+                          'password': 'secret', 'mainstream_path': '/main'},
+               'storage': {'mount': str(root), 'directory': str(root/'recordings'),
+                           'require_mount': False, 'min_free_bytes': 0},
+               'control_socket': str(root/'control.sock'),
+               'identification': {'enabled': True, 'calibrated': True,
+                                  'latitude': 40, 'longitude': -98,
+                                  'elevation_m': 500, **SETTINGS}}
+        cfg = Config.from_dict(raw)
+        if star_report:
+            raw['calibration'] = {'schema': 1, 'source_event': 'previous-event',
+                                  'source_fingerprint': source_fingerprint(cfg),
+                                  'geometry': {key: cfg.identification[key] for key in GEOMETRY_KEYS}}
+        path = root/'config.json'
+        atomic_json(path, raw)
+        app = Application(path, archive_only=True)
+        self.addCleanup(app.close)
+        return app
+
+    def test_camera_endpoint_or_stream_change_disables_matching_and_persists(self):
+        from magi.config import Config
+        from magi.identification import configured
+        for star_report in (False, True):
+            for change in ({'host': '192.168.1.3'}, {'port': 8554},
+                           {'mainstream_path': '/other-main'}, {'substream_path': '/other-sub'}):
+                with self.subTest(star_report=star_report, change=change):
+                    app = self.make_app(star_report=star_report)
+                    self.assertTrue(configured(app.cfg.identification))
+                    original_report = json.loads(app.path.read_text()).get('calibration')
+                    # The dashboard can resubmit its old calibration checkbox
+                    # together with the reassigned camera connection.
+                    result = app.update_settings({'camera': change, 'identification': {'calibrated': True}})
+                    self.assertFalse(app.cfg.identification['calibrated'])
+                    self.assertFalse(configured(app.cfg.identification))
+                    self.assertFalse(Config.load(app.path).identification['calibrated'])
+                    self.assertIsNone(app.calibration_report)
+                    report = app.identifier.classify({'id': 'after-reassignment'})
+                    self.assertEqual(report['status'], 'calibration_required')
+                    self.assertFalse(report['satellite_filter']['hideable'])
+                    self.assertIn('recalibrate', result['message'])
+                    self.assertEqual(json.loads(app.path.read_text()).get('calibration'), original_report)
+
+    def test_credential_api_and_equivalent_default_changes_preserve_calibrated(self):
+        for change in ({'username': 'viewer'}, {'password': 'replacement'},
+                       {'api_scheme': 'https', 'api_port': 443},
+                       {'host': '192.168.1.2', 'port': 554,
+                        'mainstream_path': '/main', 'substream_path': '/h264Preview_01_sub'}):
+            with self.subTest(change=change):
+                app = self.make_app()
+                result = app.update_settings({'camera': change})
+                self.assertTrue(app.cfg.identification['calibrated'])
+                self.assertTrue(json.loads(app.path.read_text())['identification']['calibrated'])
+                self.assertNotIn('recalibrate', result['message'])
+
+    def test_reverting_endpoint_does_not_restore_old_calibration(self):
+        app = self.make_app()
+        app.update_settings({'camera': {'host': '192.168.1.3'}})
+        app.update_settings({'camera': {'host': '192.168.1.2'}})
+        self.assertFalse(app.cfg.identification['calibrated'])
+        self.assertIsNone(app.calibration_report)
+
+    def test_invalid_camera_change_preserves_saved_calibration(self):
+        app = self.make_app()
+        original = app.path.read_bytes()
+        for changes in ({'camera': {'port': 0}},
+                        {'camera': {'host': '192.168.1.3'}, 'identification': {'calibrated': 'yes'}}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                app.update_settings(changes)
+        self.assertEqual(app.path.read_bytes(), original)
+        self.assertTrue(app.cfg.identification['calibrated'])
+        self.assertIsNotNone(app.calibration_report)
+
+
 class CalibrationReferenceTests(unittest.TestCase):
     def test_changed_calibration_does_not_reinterpret_old_event(self):
         from types import SimpleNamespace

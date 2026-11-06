@@ -2,7 +2,7 @@
 
 Filename-based accident prevention only; never store secrets in a public checkout.
 """
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import subprocess
 
 MODEL_SUFFIXES = frozenset({
@@ -36,6 +36,9 @@ def require_public_paths(paths):
 
 
 if __name__ == '__main__':
-    paths = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
+    root = Path(__file__).resolve().parents[1]
+    paths = subprocess.check_output(
+        ['git', '-C', str(root), 'ls-files', '-z'],
+    ).decode().split('\0')
     require_public_paths(filter(None, paths))
     print('Tracked filenames passed the public-asset check (not a content audit).')

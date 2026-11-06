@@ -15,6 +15,9 @@ from PIL import Image, ImageDraw
 
 from .recorder import stop_process
 from .storage import atomic_json
+from .event_lifetime import POSTPROCESSING
+from .event_tracks import read_tracks
+from .recovery import EventHandle, bounded_json
 
 PROFILE = 4
 VIDEO_PROFILE = 2
@@ -51,7 +54,8 @@ def track_rows(meta, duration):
                 continue
             track_id = row.get('track_id')
             result.append({'seconds':seconds, 'target':point, 'box':box,
-                           'track_id':track_id if isinstance(track_id,str) else None})
+                           'track_id':track_id if isinstance(track_id,str) else None,
+                           'origin':row.get('origin','detector')})
         except (KeyError, TypeError, ValueError, IndexError, ZeroDivisionError):
             continue
     return sorted(result, key=lambda r:r['seconds'])
@@ -76,26 +80,56 @@ def candidates(meta, duration):
              'track_id':None, 'box':None} for f in (.25,.5,.75)]
 
 
+def recovery_candidates(meta, timing, product, duration):
+    detector = track_rows({**meta, 'segments':timing['segments']}, duration)
+    groups = {}
+    for row in detector:
+        if row['track_id']: groups.setdefault(row['track_id'], []).append(row)
+    if not groups: return [], meta
+    primary = max(groups, key=lambda tid:(groups[tid][-1]['seconds']-groups[tid][0]['seconds'],len(groups[tid]),tid))
+    rows = list(groups[primary])
+    samples = list(meta.get('track_samples', []))
+    for p in product['recovered_points']:
+        if p['track_id'] != primary: continue
+        source = p['source']; w,h = source['width'],source['height']
+        seconds = (p['pts']-source['pts_origin'])*source['time_base'][0]/source['time_base'][1]
+        rows.append({'seconds':seconds,'target':[(p['x']+.5)/w,(p['y']+.5)/h,
+                    (p['box'][2]-p['box'][0])/w,(p['box'][3]-p['box'][1])/h],
+                    'box':[v/(w if i%2==0 else h) for i,v in enumerate(p['box'])],
+                    'track_id':primary,'origin':'video_recovered','frame_index':p['frame_index']})
+        samples.append({**p,'sample_host_unix':p['host_unix'],'width':w,'height':h})
+    rows.sort(key=lambda row:row['seconds'])
+    # Elapsed supported intervals only, never sample across a missing interval.
+    supported=[0.]
+    for a,b in zip(rows,rows[1:]):
+        dt=b['seconds']-a['seconds'];supported.append(supported[-1]+(dt if 0<dt<=.75 else 0))
+    indices=list(dict.fromkeys(min(range(len(rows)),key=lambda i:abs(supported[i]-supported[-1]*q/3)) for q in range(4)))
+    return [rows[i] for i in indices], {**meta,'segments':timing['segments'],'track_samples':samples}
+
+
 def annotate_thumbnail(image, candidate, meta, duration):
     """Full native image with estimated substream geometry; clean frame is separate."""
     output = image.copy().convert('RGB')
     draw = ImageDraw.Draw(output)
     width,height = image.size
     line = max(2, round(min(width,height)/350))
-    paths, current, previous = [], [], None
+    paths, recovered_paths = [], []
     if candidate.get('track_id'):
         rows = [r for r in track_rows(meta,duration) if r['track_id']==candidate['track_id']]
-        # Split gaps; do not draw a fictitious straight line across a lost track.
-        for row in rows:
-            if previous is not None and row['seconds']-previous>1:
-                if len(current)>1:paths.append(current)
-                current=[]
-            current.append(row['target'][:2]);previous=row['seconds']
-        if len(current)>1:paths.append(current)
-    for path in paths:
-        pixels=[(round(x*width),round(y*height)) for x,y in path]
-        draw.line(pixels,fill='#151a22',width=line+4)
-        draw.line(pixels,fill='#ffce5b',width=line)
+        for origin, destination in (('detector',paths),('video_recovered',recovered_paths)):
+            current,previous=[],None
+            for row in rows:
+                if row['origin']!=origin: continue
+                if previous is not None and row['seconds']-previous>(.75 if origin=='video_recovered' else 1.):
+                    if len(current)>1:destination.append(current)
+                    current=[]
+                current.append(row['target'][:2]);previous=row['seconds']
+            if len(current)>1:destination.append(current)
+    for collection,color in ((paths,'#ffce5b'),(recovered_paths,'#bb88ff')):
+        for path in collection:
+            pixels=[(round(x*width),round(y*height)) for x,y in path]
+            draw.line(pixels,fill='#151a22',width=line+4)
+            draw.line(pixels,fill=color,width=line)
     box = candidate.get('box')
     if box:
         pad=max(6,round(min(width,height)*.006))
@@ -103,7 +137,7 @@ def annotate_thumbnail(image, candidate, meta, duration):
                 min(width-1,round(box[2]*width)+pad),min(height-1,round(box[3]*height)+pad)]
         draw.rectangle(pixels,outline='#151a22',width=line+4)
         draw.rectangle(pixels,outline='#ff665e',width=line)
-    return output, {'box':box, 'paths':paths, 'coordinates':'normalized_full_frame'}
+    return output, {'box':box, 'paths':paths, 'recovered_paths':recovered_paths, 'coordinates':'normalized_full_frame'}
 
 
 def crop_box(size, target):
@@ -129,8 +163,9 @@ def quality(image):
 
 
 class Media:
-    def __init__(self, cfg):
+    def __init__(self, cfg, camera_id="primary"):
         self.cfg = cfg
+        self.camera_id = camera_id
         self.pending = queue.Queue(maxsize=4)
         self.lock = threading.Lock()
         self.ids = set()
@@ -241,8 +276,16 @@ class Media:
     def _render(self, directory, meta, identity):
         self._guard(directory, identity)
         original = directory / 'clip.mkv'
+        product = read_tracks(directory,meta,camera_id=self.camera_id,mode='extended')
+        recovered = product.get('recovered_points',[])
+        revision = product.get('revision') if recovered else None
+        timing = meta
+        if recovered:
+            original = directory/recovered[0]['source']['file']
+            timing = meta if recovered[0]['source']['stream']=='mainstream' else bounded_json(directory/'substream.json')
         work = directory / ('.media-work-' + uuid.uuid4().hex[:12])
         work.mkdir(mode=0o700)
+        handle = EventHandle(self.cfg,directory)
         try:
             properties = self._probe(original, 'stream=width,height:format=duration')
             stream = properties['streams'][0]
@@ -254,12 +297,16 @@ class Media:
             attempted = 0
             ranked = 0
             common = [self.cfg.ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-threads', '1', '-filter_threads', '1']
-            for candidate in candidates(meta, duration):
+            selected, overlay_meta = recovery_candidates(meta,timing,product,duration) if recovered else (candidates(meta,duration),meta)
+            for candidate in selected:
                 self._guard(directory, identity)
                 path = work / 'candidate.jpg'
                 attempted += 1
                 try:
-                    self._run(common + ['-ss', str(candidate['seconds']), '-i', str(original),
+                    selection = (['-i', str(original), '-vf', f"select=eq(n\\,{candidate['frame_index']})", '-fps_mode', 'passthrough']
+                                 if candidate.get('origin')=='video_recovered' else
+                                 ['-ss', str(candidate['seconds']), '-i', str(original)])
+                    self._run(common + selection + [
                         '-map', '0:v:0', '-frames:v', '1', '-q:v', '2', '-threads', '1', '-fs', '12000000', str(path)], 30)
                     with Image.open(path) as image:
                         image.load()
@@ -267,7 +314,7 @@ class Media:
                         score = quality(image.crop(box))
                         ranked += 1
                         if best is None or score > best['score']:
-                            annotated, overlay = annotate_thumbnail(image, candidate, meta, duration)
+                            annotated, overlay = annotate_thumbnail(image, candidate, overlay_meta, duration)
                             annotated.save(work / 'candidate-full.jpg', 'JPEG', quality=95)
                             annotated.close()
                             self._guard(directory, identity)
@@ -287,16 +334,23 @@ class Media:
             if best is None:
                 raise ValueError('no candidate frame decoded')
             self._guard(directory, identity)
-            (work / 'best.jpg').replace(directory / 'best-frame.jpg')
-            (work / 'thumbnail.jpg').replace(directory / 'thumbnail.jpg')
-            atomic_json(directory / 'media.json', {'profile': PROFILE, 'status': 'ready', 'source': 'clip.mkv',
-                'video': {'file': 'preview-substream.mp4', 'method': 'camera_substream_stream_copy; no video transcode'},
-                'thumbnail': {'file': 'thumbnail.jpg', 'full_frame_file': 'best-frame.jpg',
-                    'selection': 'highest_local_contrast_and_sharpness_among_persistent_track_samples', 'candidate_count': ranked, 'attempted_candidate_count': attempted,
-                    'crop_format': 'left_top_right_bottom_native_pixels',
-                    'zoom': 'full_frame; no crop or upscaling', 'timing': 'estimated host-receipt mapping',
-                    'geometry': 'main and analysis streams assumed to share the same field of view', **best}})
+            with handle.lock('.tracks-publication.lock'):
+                handle.check()
+                current=bounded_json(directory/'tracks.json',{}).get('revision')
+                if current!=revision:
+                    raise ValueError('track revision changed during still generation; retry pending')
+                (work / 'best.jpg').replace(directory / 'best-frame.jpg')
+                (work / 'thumbnail.jpg').replace(directory / 'thumbnail.jpg')
+                atomic_json(directory / 'media.json', {'profile': PROFILE, 'status': 'ready', 'source': original.name, 'track_revision': revision,
+                    'video': {'file': 'preview-substream.mp4', 'method': 'camera_substream_stream_copy; no video transcode'},
+                    'thumbnail': {'file': 'thumbnail.jpg', 'full_frame_file': 'best-frame.jpg',
+                        'source_stream':recovered[0]['source']['stream'] if recovered else 'mainstream','track_revision':revision,
+                        'selection': 'highest_local_contrast_and_sharpness_among_persistent_track_samples', 'candidate_count': ranked, 'attempted_candidate_count': attempted,
+                        'crop_format': 'left_top_right_bottom_native_pixels',
+                        'zoom': 'full_frame; no crop or upscaling', 'timing': 'estimated host-receipt mapping',
+                        'geometry': 'native same-stream recovery' if recovered else 'main and analysis streams assumed to share the same field of view', **best}})
         finally:
+            handle.close()
             try:
                 self._guard(directory, identity, allow_stopped=True)
                 shutil.rmtree(work, ignore_errors=True)
@@ -338,7 +392,8 @@ class Media:
             except queue.Empty:
                 continue
             try:
-                (self._full_video if full_quality else self._render)(directory, meta, identity)
+                with POSTPROCESSING.acquire('media', self.stop.is_set):
+                    (self._full_video if full_quality else self._render)(directory, meta, identity)
             except InterruptedError:
                 pass
             except Exception as error:

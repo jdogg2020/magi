@@ -8,6 +8,7 @@ import time
 import uuid
 from pathlib import Path
 from .event_review import read as read_review
+from .event_lifetime import serialized, busy, reserved
 
 
 def atomic_json(path: Path, value):
@@ -88,11 +89,13 @@ class Volume:
             return self._last_usage[1], shutil.disk_usage(self.cfg.root).free
         return self.usage()
 
+    @serialized
     def prune(self, protected=(), reserve=0, *, maintenance=False):
         """Delete only owned, finished event directories, oldest first."""
         # Main and companion share this Volume. Run their periodic archive
         # cleanup once per second, not twice. Explicit pruning/allocation
         # requests always scan afresh. Failed checks are never cached.
+        reserve += reserved(self.cfg.root)
         limits = (self.cfg.max_bytes, self.cfg.min_free, self.cfg.retention_days,
                   self.cfg.trash_days, self.cfg.cleanup_margin)
         if maintenance and not reserve and self._maintenance is not None:
@@ -111,7 +114,7 @@ class Volume:
         target_free = self.cfg.min_free + (self.cfg.cleanup_margin if pressure else 0)
         events = []
         for directory in (self.cfg.root / "events").iterdir():
-            if directory.name in protected or not directory.is_dir():
+            if directory.name in protected or busy(directory) or not directory.is_dir():
                 continue
             try:
                 review = read_review(directory)

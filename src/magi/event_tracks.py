@@ -1,7 +1,7 @@
 """Versioned recovered-track reader; detector evidence is never rewritten.
 
-No live consumer opts into this module yet. Publication, video recovery and
-retention integration are separate milestones. See docs/EVENT-TRACK-CONTRACT.md.
+Consumers must explicitly opt into extended evidence. See
+docs/EVENT-TRACK-CONTRACT.md and docs/EVENT-VIDEO-RECOVERY.md.
 """
 from contextlib import contextmanager
 from copy import deepcopy
@@ -312,7 +312,9 @@ def read_tracks(directory, event, *, camera_id, mode, revision=None):
             payload = _load(raw)
             points = validate_revision(payload, event, camera_id, timeline)
         result.update(status=payload['status'], revision=manifest['revision'], recovered_points=points,
-                      algorithm=payload['algorithm'], parameters=deepcopy(payload['parameters']))
+                      algorithm=payload['algorithm'], parameters=deepcopy(payload['parameters']),
+                      algorithm_version=payload.get('algorithm_version'),
+                      work=deepcopy(payload.get('work',{})), summaries=deepcopy(payload.get('summaries',{})))
     except FileNotFoundError:
         result.update(status='unavailable', reason='track revision not available')
     except BlockingIOError:

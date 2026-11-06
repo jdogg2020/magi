@@ -101,6 +101,26 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(receipt(directory)['export_id'], second['id'])
         self.assertEqual((directory/'review.json').read_bytes(), original_review)
 
+    def test_current_and_derivative_revisions_export_together(self):
+        directory=self.event()
+        revisions=[]
+        for label in ('old','current'):
+            raw=json.dumps({'event_id':self.identity,'camera_id':'primary','label':label}).encode()
+            sha=hashlib.sha256(raw).hexdigest();revisions.append(sha)
+            (directory/f'tracks-{sha}.json').write_bytes(raw)
+        old,current=revisions
+        (directory/'tracks.json').write_text(json.dumps({'revision':current,'sha256':current,'file':f'tracks-{current}.json'}))
+        (directory/'media.json').write_text(json.dumps({'track_revision':old}))
+        (directory/'recovery.json').write_text(json.dumps({'state':'complete'}))
+        with zipfile.ZipFile(self.download(self.prepare())) as archive:
+            prefix='primary/'+self.identity+'/'
+            for sha in revisions:self.assertIn(prefix+f'tracks-{sha}.json',archive.namelist())
+            entry=json.loads(archive.read('manifest.json'))['events'][0]
+            self.assertEqual(entry['recovery']['track_revision'],current)
+            self.assertEqual(entry['recovery']['derivative_revision'],old)
+            self.assertEqual(entry['recovery']['derivative_status'],'pending_or_unavailable')
+        self.assertEqual(receipt(directory)['track_revision'],current)
+
     def test_disconnect_never_sets_flags_and_releases_slot(self):
         directory = self.event()
         class Disconnected(io.BytesIO):

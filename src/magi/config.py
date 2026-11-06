@@ -73,6 +73,7 @@ class Config:
     detection: dict = field(default_factory=dict)
     web: dict = field(default_factory=dict, repr=False)
     identification: dict = field(default_factory=dict, repr=False)
+    recovery_enabled: bool = False
 
     @classmethod
     def load(cls, path):
@@ -146,7 +147,13 @@ class Config:
         if web['host'] not in ('127.0.0.1', '0.0.0.0') or not 1 <= int(web['port']) <= 65535 or not isinstance(web['username'], str) or not web['username']:
             raise ValueError('invalid web configuration')
         web['port'] = int(web['port'])
-        cfg = cls(source=source, root=root, mount=mount, require_mount=storage.get('require_mount', True),
+        processing = data.get('event_processing', {})
+        if not isinstance(processing, dict) or set(processing)-{'track_recovery'}:
+            raise ValueError('invalid event processing settings')
+        recovery = processing.get('track_recovery', {})
+        if not isinstance(recovery, dict) or set(recovery)-{'enabled'} or type(recovery.get('enabled', False)) is not bool:
+            raise ValueError('invalid track recovery settings')
+        cfg = cls(recovery_enabled=recovery.get('enabled', False), source=source, root=root, mount=mount, require_mount=storage.get('require_mount', True),
                   socket=socket, max_bytes=int(storage.get('max_bytes', 100_000_000_000)),
                   min_free=int(storage.get('min_free_bytes', 1_000_000_000)),
                   cleanup_margin=int(storage.get('cleanup_margin_bytes', 0)),

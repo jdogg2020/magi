@@ -166,6 +166,7 @@ class FrameTiming:
     """Per-camera peaks by host receipt time, using at most 60 second buckets."""
     def __init__(self):
         self.seconds = deque(maxlen=60)
+        self.gaps = deque(maxlen=8192)
         self.session = {}
         self.reset_stream()
 
@@ -190,7 +191,9 @@ class FrameTiming:
 
     def analyzed(self, receipt, wall_offset):
         if self.previous is not None:
-            self._peak('gap_ms', (receipt - self.previous) * 1000, receipt, wall_offset)
+            gap = (receipt - self.previous) * 1000
+            self._peak('gap_ms', gap, receipt, wall_offset)
+            self.gaps.append((receipt,gap))
         self.previous = receipt
         self.skips = 0
 
@@ -204,7 +207,11 @@ class FrameTiming:
         def describe(peaks):
             return {key: {'value': round(value, 2), 'end_unix': end}
                     for key, (value, end) in peaks.items()}
-        return {'session': describe(self.session), 'last_minute': describe(recent)}
+        values=sorted(gap for stamp,gap in self.gaps if stamp>now-60)
+        return {'session': describe(self.session), 'last_minute': describe(recent),
+                'gap_distribution': {'window_seconds':60,'sample_count':len(values),
+                                     'capacity':8192,'truncated':bool(len(self.gaps)==8192 and self.gaps[0][0]>now-60),
+                                     'p99_ms':values[max(0,math.ceil(len(values)*.99)-1)] if values else None}}
 
 
 class Analysis:

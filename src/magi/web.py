@@ -238,9 +238,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.headers_out(200, 'image/jpeg', len(data))
                 self.wfile.write(data)
         else:
-            match = re.fullmatch(r'/api/clips/([^/]+)/(full-video|full-video-status|original|preview|thumbnail|metadata|motion|identification|video|frame|media|timeline|radio)', path)
+            match = re.fullmatch(r'/api/clips/([^/]+)/(full-video|full-video-status|original|preview|thumbnail|metadata|motion|identification|video|frame|media|timeline|radio|tracks)', path)
             if match:
                 try:
+                    if match[2] == 'tracks':
+                        self.reply(200, app.recovered_tracks(match[1]))
+                        return
                     file = app.clip_path(*match.groups())
                     self.send_file(file, match[2], app.camera_id, download=parse_qs(urlsplit(self.path).query).get('download')==['1'])
                 except (OSError, ValueError):
@@ -354,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/events/list':
                 self.reply(200, app.event_page(body))
                 return
-            commands = {'/api/events/list': 'events_list', '/api/events/update': 'events_update', '/api/camera/setup': 'camera_setup', '/api/camera/info': 'camera_info', '/api/trigger': 'trigger', '/api/settings': 'settings', '/api/reconnect': 'reconnect', '/api/identify': 'identify', '/api/render': 'render', '/api/full-video': 'full_video', '/api/calibration/load': 'calibration_load', '/api/calibration/search': 'calibration_search', '/api/calibration/solve': 'calibration_solve', '/api/calibration/apply': 'calibration_apply', '/api/auto-calibration/start': 'auto_calibration_start', '/api/auto-calibration/status': 'auto_calibration_status', '/api/auto-calibration/apply': 'auto_calibration_apply', '/api/auto-calibration/cancel': 'auto_calibration_cancel'}
+            commands = {'/api/events/list': 'events_list', '/api/events/update': 'events_update', '/api/camera/setup': 'camera_setup', '/api/camera/info': 'camera_info', '/api/trigger': 'trigger', '/api/settings': 'settings', '/api/reconnect': 'reconnect', '/api/identify': 'identify', '/api/render': 'render', '/api/recover': 'recover', '/api/full-video': 'full_video', '/api/calibration/load': 'calibration_load', '/api/calibration/search': 'calibration_search', '/api/calibration/solve': 'calibration_solve', '/api/calibration/apply': 'calibration_apply', '/api/auto-calibration/start': 'auto_calibration_start', '/api/auto-calibration/status': 'auto_calibration_status', '/api/auto-calibration/apply': 'auto_calibration_apply', '/api/auto-calibration/cancel': 'auto_calibration_cancel'}
             if path not in commands:
                 self.reply(404, {'error': 'Not found.'})
                 return

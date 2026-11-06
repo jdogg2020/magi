@@ -5,6 +5,14 @@ will be developed privately and licensed separately, with inference running
 locally on the Raspberry Pi / AI HAT. No proprietary model or hosted inference
 service is included here. See [model policy](docs/MODEL-POLICY.md).
 
+## Experimental saved-video track recovery (0.20.29)
+
+Adds opt-in automatic backward recovery from actual saved detection-stream video,
+with an isolated bounded worker, durable revisions, distinct review overlays,
+full-frame still regeneration and consistent exports. Recovery stays **disabled
+by default** pending real-footage and two-camera Pi validation. Existing installs
+need one-time worker provisioning; see [operation and bench procedure](docs/EVENT-VIDEO-RECOVERY.md).
+
 ## Event track contract groundwork (0.20.28)
 
 Adds an explicit reader for separately attributed recovered-track revisions,

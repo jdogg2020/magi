@@ -49,6 +49,22 @@ const MagiTracks = (() => {
     }
     return last;
   }
-  return {clipSeconds,collect,position};
+  function recovered(product, stream) {
+    if (!product || !Array.isArray(product.recovered_points)) return [];
+    const groups=new Map();
+    for(const p of product.recovered_points.slice(0,4800)) {
+      const source=p.source;
+      if(p.origin!=='video_recovered'||!source||source.stream!==stream||!Array.isArray(source.time_base)||source.time_base.length!==2)continue;
+      const t=(p.pts-source.pts_origin)*source.time_base[0]/source.time_base[1];
+      const x=(p.x+.5)/source.width,y=(p.y+.5)/source.height;
+      if(![t,x,y].every(Number.isFinite)||t<0||x<0||x>1||y<0||y>1)continue;
+      const key=JSON.stringify([p.track_id,p.segment_id]);
+      const entry=groups.get(key)||{id:p.track_id,origin:'video_recovered',points:[]};
+      if(!entry.points.length||t>entry.points[entry.points.length-1][0])entry.points.push([t,x,y]);
+      groups.set(key,entry);
+    }
+    return [...groups.values()].filter(g=>g.points.length>=2);
+  }
+  return {clipSeconds,collect,position,recovered};
 })();
 if(typeof module !== 'undefined' && module.exports) module.exports=MagiTracks;

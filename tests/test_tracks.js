@@ -41,3 +41,10 @@ assert.equal(context.currentTracks().length,0);
 context.quality='analysis';assert.equal(context.currentTracks()[0].id,'analysis');
 context.quality='full';assert.equal(context.currentTracks().length,0);
 context.quality='substream';context.reviewMeta={};assert.equal(context.currentTracks()[0].id,'color','Legacy substream events retain tracking');
+
+const recoveredFixture={recovered_points:[0,1].map(i=>({origin:'video_recovered',track_id:'bird',segment_id:'a',pts:100+i*100,source:{stream:'substream',time_base:[1,1000],pts_origin:0,width:640,height:360},x:10+i,y:20}))};
+assert.equal(tracks.recovered(recoveredFixture,'mainstream').length,0,'Never map recovered substream points onto main video');
+const recovered=tracks.recovered(recoveredFixture,'substream');
+assert.equal(recovered[0].origin,'video_recovered');
+assert.equal(recovered[0].points[0][0],.1);
+assert.equal(recovered[0].points[1][1],11.5/640);

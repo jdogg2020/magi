@@ -28,6 +28,9 @@ from .event_review import ReviewError, read as read_review, changes as review_ch
 from .sensors import snapshot as sensor_snapshot, effective as sensor_effective, aircraft_status
 from .identification import Identifier, defaults as identification_defaults, report_hideable
 from .media import Media
+from .recovery import Client as Recovery, bounded_json
+from .event_lifetime import serialized, busy as recovery_busy
+from .event_tracks import read_tracks
 from .hailo import advisory_summary as hailo_advisory_summary
 from .previews import Previews
 from .recorder import Recorder
@@ -74,8 +77,10 @@ class Application:
         self.reference_retention_pending = set()
         self.last_trigger_error = None
         self.identifier = Identifier(self.cfg, radio=self.radio)
-        self.media = Media(self.cfg)
+        self.media = Media(self.cfg, self.camera_id)
+        self.recovery = Recovery(self.cfg, self.camera_id, self.media)
         if self.archive_only:
+            self.recovery.close()
             self.media.close()
             self.identifier.close()
         self._snapshot()
@@ -113,6 +118,7 @@ class Application:
                             'retention_days': self.cfg.retention_days, 'cleanup_margin_bytes': self.cfg.cleanup_margin,
                             'trash_days': self.cfg.trash_days},
                 'detection': self.cfg.detection,
+                'event_processing': {'track_recovery': {'enabled': self.cfg.recovery_enabled}},
                 'effective_location': {k: sensor_effective(self.cfg.identification)[k] for k in ('latitude','longitude','elevation_m','location_effective_source','altitude_effective_source')},
                 'star_calibration': self.calibration_report, 'identification': {**{k: v for k, v in self.cfg.identification.items() if k not in ('opensky_client_secret', 'opensky_client_id')},
                                    'has_opensky_credentials': bool(self.cfg.identification.get('opensky_client_secret'))}}
@@ -130,6 +136,7 @@ class Application:
             'recording': {'pre_roll_seconds', 'post_roll_seconds', 'max_event_seconds'},
             'storage': {'max_bytes', 'min_free_bytes', 'retention_days', 'cleanup_margin_bytes', 'trash_days'},
             'detection': {'stream', 'enabled', 'threshold', 'min_pixels', 'max_pixels', 'min_hits', 'min_seconds', 'min_travel', 'ignore_zones','lightning_enabled','meteor_enabled','retain_types','retain_aircraft_matches','retain_satellite_matches'},
+            'event_processing': {'track_recovery'},
             'identification': set(identification_defaults())
         }
         try:
@@ -180,6 +187,7 @@ class Application:
             self.camera_setup.close()
             self.camera_setup = Setup()
         self.identifier.close()
+        self.recovery.close()
         self.media.close()
         atomic_json(self.path.with_suffix('.backup'), raw)
         atomic_json(self.path, new)
@@ -187,8 +195,10 @@ class Application:
         self.calibration_session = None
         self.calibration_report = active_report(new, self.cfg)
         self.identifier = Identifier(self.cfg, radio=self.radio)
-        self.media = Media(self.cfg)
+        self.media = Media(self.cfg, self.camera_id)
+        self.recovery = Recovery(self.cfg, self.camera_id, self.media)
         if self.archive_only:
+            self.recovery.close()
             self.media.close()
             self.identifier.close()
         self.last_error = None
@@ -272,6 +282,9 @@ class Application:
                     task['result'] = self.calibrate(task['command'], task['value'])
                 elif task['command'].startswith('auto_calibration_'):
                     task['result'] = self.auto_calibrate(task['command'], task['value'])
+                elif task['command'] == 'recover':
+                    self.recovery.request(self.event_directory(task['value']['id']))
+                    task['result'] = {'state': 'queued'}
                 elif task['command'] in ('render', 'full_video'):
                     path = self.clip_path(task['value'].get('id', ''), 'metadata')
                     if not self.queue_media(path.parent, json.loads(path.read_text()), force=True, full_quality=task['command'] == 'full_video'):
@@ -619,6 +632,7 @@ class Application:
             'timing_basis':'estimated_host_receipt; not camera exposure time'})
         self.event_count += 1
 
+    @serialized
     def apply_reference_retention(self):
         if not self.recorder:
             return
@@ -643,7 +657,7 @@ class Application:
                 if not path.is_file():
                     self.reference_retention_pending.discard(event_id)
                     continue
-                if path.parent.name in busy or path.parent.is_symlink() or path.is_symlink():
+                if path.parent.name in busy or recovery_busy(path.parent) or path.parent.is_symlink() or path.is_symlink():
                     continue
                 meta = json.loads(path.read_text())
                 if not isinstance(meta,dict):
@@ -856,6 +870,7 @@ class Application:
         volume.check()
         return {'events':rows,'total':len(matched),'offset':f['offset'],'limit':f['limit'],'labels':sorted(labels)}
 
+    @serialized
     def manage_events(self, value, *, purge=False, expected=None):
         if not isinstance(value,dict) or set(value)-{'ids','action','changes'}:
             raise ReviewError('Invalid event action.')
@@ -884,7 +899,7 @@ class Application:
                 if review.get('annotation_error'):
                     raise ReviewError('Review metadata is damaged; event was protected for recovery.')
                 if action == 'purge':
-                    if review['protected'] or event_id in busy:
+                    if review['protected'] or event_id in busy or recovery_busy(directory):
                         raise ReviewError('Event is protected or in use; it was not deleted.')
                     self.event_volume().check()
                     info = directory.stat()
@@ -897,7 +912,7 @@ class Application:
                 if action == 'trash':
                     if review['protected']:
                         raise ReviewError('Unprotect the event before moving it to trash.')
-                    if event_id in busy:
+                    if event_id in busy or recovery_busy(directory):
                         raise ReviewError('Event is in use by capture, review processing or star calibration. Try later.')
                     if review['trashed_at'] is None:
                         review['trashed_at'] = time.time()
@@ -957,6 +972,16 @@ class Application:
         with self.lock:
             self.view = {'status': status, 'clips': clips, 'settings': self.safe_settings()}
 
+    def recovered_tracks(self, event_id):
+        directory = self.event_directory(event_id)
+        event = bounded_json(directory/'event.json')
+        result = read_tracks(directory, event, camera_id=self.camera_id, mode='extended')
+        result['processing'] = bounded_json(directory/'recovery.json', {'state':'disabled' if not self.cfg.recovery_enabled else 'pending'})
+        media = bounded_json(directory/'media.json', {})
+        result['derivative_revision'] = media.get('track_revision')
+        result['derivative_status'] = 'current' if result['revision'] and media.get('track_revision') == result['revision'] else 'pending_or_unavailable'
+        return result
+
     def clip_path(self, event_id, kind):
         if not EVENT_ID.fullmatch(event_id):
             raise ValueError('Invalid event ID.')
@@ -1010,6 +1035,7 @@ class Application:
             self.radio.close()
         self.camera_setup.close()
         self.camera_info.close()
+        self.recovery.close()
         self.media.close()
         self.identifier.close()
         self.stop_capture()

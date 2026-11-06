@@ -1,6 +1,7 @@
 """Bounded-memory, authenticated event ZIP downloads and export receipts."""
 from contextlib import ExitStack
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import io
 import json
@@ -13,6 +14,7 @@ import time
 import zipfile
 
 from . import __version__
+from . import event_tracks as track_contract
 from .event_review import ID, read as read_review, optional_json
 
 SIDECARS = ('event.json', 'media.json', 'substream.json', 'identification.json',
@@ -62,7 +64,7 @@ def open_regular(directory_fd, name):
         raise
 
 
-def mark_exported(app, event_id, identity, export_id, mode, stamp):
+def mark_exported(app, event_id, identity, export_id, mode, stamp, track_revision=None):
     directory = app.event_directory(event_id)
     fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     temporary = '.export-' + secrets.token_hex(12) + '.tmp'
@@ -71,7 +73,7 @@ def mark_exported(app, event_id, identity, export_id, mode, stamp):
         if (info.st_dev, info.st_ino) != identity:
             raise ValueError('Event changed during export.')
         value = {'schema': 1, 'exported_unix': stamp, 'export_id': export_id,
-                 'media': mode, 'meaning': 'archive_sent_by_server'}
+                 'media': mode, 'meaning': 'archive_sent_by_server', 'track_revision': track_revision}
         output_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                             0o600, dir_fd=fd)
         with os.fdopen(output_fd, 'w') as output:
@@ -174,11 +176,50 @@ class Exports:
                             stack.callback(os.close, fd)
                             info = os.fstat(fd)
                             files = {}
-                            for name in (*SIDECARS, *IMAGES, *MEDIA[job['media']]):
-                                try:
-                                    files[name] = stack.enter_context(open_regular(fd, name))
-                                except FileNotFoundError:
-                                    entry['missing'].append(name)
+                            lock_fd = os.open('.tracks-publication.lock', os.O_RDONLY|os.O_CREAT|os.O_NOFOLLOW|os.O_NONBLOCK, 0o600, dir_fd=fd)
+                            try:
+                                if not stat.S_ISREG(os.fstat(lock_fd).st_mode): raise ValueError('Unsafe publication lock')
+                                fcntl.flock(lock_fd,fcntl.LOCK_SH)
+                                for name in (*SIDECARS, *IMAGES, *MEDIA[job['media']], 'tracks.json', 'recovery.json'):
+                                    try:
+                                        files[name] = stack.enter_context(open_regular(fd, name))
+                                    except FileNotFoundError:
+                                        entry['missing'].append(name)
+                                revision = None
+                                revisions = set()
+                                if 'tracks.json' in files:
+                                    manifest = track_contract._load(track_contract._read(files['tracks.json'].fileno()))
+                                    files['tracks.json'].seek(0)
+                                    revision = manifest.get('revision')
+                                    if not track_contract._hash(revision) or manifest.get('file') != f'tracks-{revision}.json' or manifest.get('sha256') != revision:
+                                        raise ValueError('Invalid recovered track manifest')
+                                    revisions.add(revision)
+                                derivative = None
+                                if 'media.json' in files:
+                                    media = track_contract._load(track_contract._read(files['media.json'].fileno()))
+                                    files['media.json'].seek(0)
+                                    derivative = media.get('track_revision')
+                                    if derivative is not None:
+                                        if not track_contract._hash(derivative): raise ValueError('Invalid derivative revision')
+                                        revisions.add(derivative)
+                                for sha in revisions:
+                                    name = f'tracks-{sha}.json'
+                                    source = stack.enter_context(open_regular(fd,name))
+                                    raw = source.read(track_contract.MAX_BYTES+1)
+                                    if len(raw)>track_contract.MAX_BYTES or hashlib.sha256(raw).hexdigest()!=sha:
+                                        raise ValueError('Invalid recovered revision bytes')
+                                    payload = track_contract._load(raw)
+                                    if payload.get('event_id')!=target['id'] or payload.get('camera_id')!=target['camera_id']:
+                                        raise ValueError('Recovered revision identity mismatch')
+                                    source.seek(0); files[name]=source
+                                state = 'unavailable'
+                                if 'recovery.json' in files:
+                                    state = track_contract._load(track_contract._read(files['recovery.json'].fileno())).get('state','unavailable')
+                                    files['recovery.json'].seek(0)
+                                entry['recovery'] = {'state':state, 'track_revision':revision,
+                                    'derivative_revision':derivative, 'derivative_status':'current' if revision and derivative==revision else 'pending_or_unavailable'}
+                            finally:
+                                os.close(lock_fd)
                             if ('event.json' not in files
                                     or (job['media'] == 'originals' and 'clip.mkv' not in files)
                                     or not any(name in files for name in MEDIA[job['media']])):
@@ -217,7 +258,7 @@ class Exports:
                                 entry['files'].append({'path': prefix + name, 'bytes': size,
                                                        'sha256': digest.hexdigest()})
                             entry['status'] = 'exported'
-                            completed.append((app, target, (info.st_dev, info.st_ino)))
+                            completed.append((app, target, (info.st_dev, info.st_ino), revision))
                     except (ValueError, OSError) as exc:
                         # Network failures must abort the whole transfer, never mark it.
                         if isinstance(exc, (BrokenPipeError, ConnectionError, TimeoutError)):
@@ -233,9 +274,9 @@ class Exports:
             output.flush()
             # Receipt means successful server transmission, not a browser/disk acknowledgement.
             stamp = time.time()
-            for app, target, identity in completed:
+            for app, target, identity, revision in completed:
                 try:
-                    mark_exported(app, target['id'], identity, export_id, job['media'], stamp)
+                    mark_exported(app, target['id'], identity, export_id, job['media'], stamp, revision)
                 except (OSError, ValueError):
                     with self.lock:
                         job['flag_failed'].append(dict(target))

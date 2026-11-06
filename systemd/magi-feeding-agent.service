@@ -1,0 +1,35 @@
+[Unit]
+Description=Magi unprivileged OpenSky feeding controller
+Requires=magi-feeding-agent.socket
+After=network-online.target readsb.service
+Wants=network-online.target
+ConditionPathExists=/usr/local/lib/magi-feeder/openskyd-dump1090
+
+[Service]
+Type=simple
+User=magi-feed
+Group=magi-feed
+ExecStart=/usr/bin/python3 -I /usr/local/lib/magi/feeding_agent.py
+StateDirectory=magi-feeding
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/openskyd
+InaccessiblePaths=-/etc/magi -/etc/magi-sensors -/mnt/magi-ssd -/var/lib/magi-updater -/run/dbus/system_bus_socket -/run/systemd/private
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

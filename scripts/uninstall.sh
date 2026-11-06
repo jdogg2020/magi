@@ -2,7 +2,7 @@
 set -euo pipefail
 if [[ "${1:-}" == --dry-run && "$#" -eq 1 ]]; then
   echo "Would stop/disable Magi, remove its unit, installed code and previous-code backups,"
-  echo "configuration and service user. SSD recordings and volume marker are retained."
+  echo "configuration and service user. Stop Magi-managed OpenSky feeding; retain receiver identity, recordings and volume marker."
   exit 0
 fi
 if [[ "$#" -ne 0 ]]; then echo "Usage: $0 [--dry-run]" >&2; exit 2; fi
@@ -10,12 +10,15 @@ if [[ "$EUID" -ne 0 ]]; then echo "Run with sudo after reviewing this script." >
 read -r -p "Remove Magi service, code, configuration and user? Type REMOVE: " answer
 [[ "$answer" == REMOVE ]] || exit 1
 echo "Stopping and disabling service..."
+systemctl disable --now magi-feeding-agent.socket magi-feeding-agent.service || true
 systemctl disable --now magi-update-agent.socket magi-update-agent.service || true
 systemctl disable --now magi.service || true
+rm -f /etc/systemd/system/magi-feeding-agent.socket /etc/systemd/system/magi-feeding-agent.service
 rm -f /etc/systemd/system/magi.service /etc/systemd/system/magi-update-agent.socket /etc/systemd/system/magi-update-agent.service
 systemctl daemon-reload
 echo "Removing installed code and configuration; retaining recordings..."
-rm -rf /opt/magi /etc/magi /opt/magi.releases /var/lib/magi-updater /usr/local/lib/magi
+rm -f /usr/local/lib/magi-feeder/openskyd-dump1090 /usr/local/lib/magi-feeder/COPYRIGHT
+rm -rf /opt/magi /etc/magi /opt/magi.releases /var/lib/magi-updater /var/lib/magi-feeding /usr/local/lib/magi
 rm -f /usr/local/bin/magi-update /usr/local/bin/magi-update-github
 for backup in /opt/magi.previous.*; do
   [[ -d "$backup" ]] && rm -rf -- "$backup"

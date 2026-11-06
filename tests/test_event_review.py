@@ -133,6 +133,19 @@ class EventReviewTests(unittest.TestCase):
         self.assertEqual(page['total'],206);self.assertEqual(len(page['events']),6)
 
 
+    def test_exported_filter_and_receipt_are_separate_from_review(self):
+        first, directory = self.event(1)
+        second, _ = self.event(2)
+        atomic_json(directory/'export.json', {'schema':1, 'exported_unix':time.time(),
+                                             'export_id':'abc', 'media':'originals'})
+        page = self.app.event_page({'exported':'yes'})
+        self.assertEqual([row['id'] for row in page['events']], [first])
+        self.assertEqual(page['events'][0]['export']['media'], 'originals')
+        self.assertEqual([row['id'] for row in self.app.event_page({'exported':'no'})['events']], [second])
+        self.update([first], changes={'labels':['aircraft']})
+        self.assertEqual(self.app.event_page({'exported':'yes'})['total'], 1)
+
+
 class CandidateDetectionTests(unittest.TestCase):
     def setUp(self):self.settings=Config.from_dict({'camera':{},'storage':{'mount':'/tmp','directory':'/tmp/test-events'},'control_socket':'/tmp/test-control'}).detection
     def test_brief_broad_flash_after_stability_and_disabled_profile(self):

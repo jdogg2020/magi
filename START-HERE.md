@@ -53,6 +53,22 @@ bash scripts/install.sh --dry-run --lan
 sudo bash scripts/install.sh --lan
 ```
 
+A successful installation sets **text-mode boot** (`multi-user.target`) for the
+next reboot. The current desktop session keeps running, desktop packages remain
+installed, and the installer does not reboot. Use SSH or the dashboard for remote
+access; a local text console remains available. Configure SSH access in Raspberry
+Pi OS before relying on remote administration.
+
+Add `--keep-desktop` to preserve your current boot target. This applies on
+installer reruns too; it does not re-enable a desktop that is already disabled.
+Normal dashboard application updates do not change the boot target.
+
+To restore desktop boot later (takes effect after your next reboot):
+
+```bash
+sudo systemctl set-default graphical.target
+```
+
 `--lan` explicitly lets other devices on your local network reach the dashboard.
 The installer uses the configured OS package repositories, asks you to choose a
 **dashboard** username/password, and starts the service automatically. You can
@@ -216,3 +232,135 @@ Settings → Motion detection → **Event types & footage retention** contains t
 lightning/meteor candidate switches and footage retention choices. All footage
 is kept by default. Aircraft/satellite discard uses tentative reference matches;
 leave it off while checking calibration/data quality. See [Events](docs/EVENTS.md).
+
+### Reference Pi 5: optional AI HAT+
+
+The installer automatically detects the supported Hailo-8 on PCIe, including
+the 26 TOPS reference build. Use the same command with or without the AI HAT:
+
+```bash
+sudo bash scripts/install.sh --lan --identification
+```
+
+When detected, it installs OS-managed `dkms` and `hailo-all`. If absent, AI
+setup is skipped successfully. Use `--skip-hailo` to opt out even when attached,
+or `--hailo` to require the device (a missing device then reports incomplete
+setup). If both options are supplied, the last one wins. Detection requires
+the device already to be visible on PCIe: a disconnected or faulty ribbon
+looks like absent hardware. The installer does not change boot settings, upgrade the
+whole OS, or reboot automatically. It follows the Raspberry Pi
+[AI HAT+ software setup](https://www.raspberrypi.com/documentation/computers/ai.html).
+It is not the AI HAT+ 2 / Hailo-10 installation path. `--skip-dependencies` skips
+the base application packages and automatic AI provisioning; explicit
+`--hailo` still provisions AI packages. Sensor provisioning is controlled
+separately with `--skip-sensors`.
+
+If firmware communication is not ready after package installation, the summary
+reports verification pending reboot. At a convenient time run `sudo reboot`,
+then after reconnecting:
+
+```bash
+python3 /opt/magi/scripts/setup_hailo.py --verify-only
+```
+
+This verifies hardware/driver/firmware communication, not model inference or
+Magi acceleration. If it still fails after reboot, inspect `dkms status` and
+`sudo journalctl -k -b`. A missing PCIe device points to hardware/connection
+troubleshooting before software installation.
+
+### Installer completion and retry behavior
+
+Only one `install.sh` can run at a time. An interrupted login does not commit a
+new example configuration; rerunning also recognizes unfinished configurations
+from older installers. Completed settings and recordings are preserved.
+
+Final checks cover the dashboard and services required by saved sensor
+configuration. GPS lock and aircraft reception are not installation requirements.
+A detected modem that cannot be configured reports **INSTALL INCOMPLETE** with
+exit code 2, even if ADS-B and the dashboard work. Serial probe diagnostics
+include the exception type and reason. Fix the reported component and rerun;
+there is no need to reimage for a recoverable setup failure. Other failed steps
+retain a nonzero exit and log the last step. AI packages awaiting a reboot are
+explicitly reported as pending verification, not as a verified AI installation.
+
+Reference acceptance still requires a clean-card run, reboot recovery, live
+GNSS/ADS-B checks and a Hailo inference test. Startup clock stepping is unchanged.
+
+### Optional OpenSky feeding
+
+The normal arm64 installer supplies the feeder executable but does not start
+feeding. `--skip-dependencies` skips provisioning it. The dashboard cannot
+install software: it can only configure and control the preinstalled feeder.
+
+In aircraft settings open **Share local ADS-B data with OpenSky**. Enter your
+OpenSky username (no password or API secret), verify the GPS-suggested antenna
+position or enter it manually, acknowledge the bandwidth warning, and click
+**Enable OpenSky feeding**. This choice is station-wide and independent of API
+lookups. Camera settings, API credentials, and page loads never enable uploads.
+
+Feeding continuously sends aircraft data and antenna location, including over
+cellular connections when Magi is not recording. There is no data cap or automatic
+metered-network pause. Camera footage is not uploaded. **Disable feeding** stops
+the feeder process and its automatic restart without affecting local reception.
+A running process does not prove delivery; confirm data in OpenSky **My Sensors**.
+
+The controller and feeder run as the dedicated unprivileged `magi-feed` account.
+Systemd restricts writes to feeder state, denies access to camera secrets and the
+standard recording directory, removes capabilities, and prevents privilege gain.
+The controller has no package-installation or systemctl commands. It can spawn
+only the fixed feeder executable, and it supervises that process directly.
+Enabling is persisted only after explicit consent; previously enabled stations
+resume after reboot. Fresh stations remain off. Receiver identity is preserved
+when disabling; transferring its linked username requires OpenSky assistance.
+Altitude for feeding is above sea level, not WGS84 observer height.
+
+At installation, Magi checks a pinned SHA-256 for OpenSky's official 2.1.7-1 arm64
+package and copies only its executable and copyright file. It does not execute
+the package's maintainer scripts or install its auto-starting service. Updates
+to this binary require rerunning the administrator installer with a reviewed
+package version. Existing standalone OpenSky installations are left untouched
+and require explicit migration. No receiver identity belongs in reusable images.
+
+Diagnostics: `sudo journalctl -u magi-feeding-agent`. Emergency administrator stop:
+`sudo systemctl stop magi-feeding-agent.service magi-feeding-agent.socket`.
+For older Magi installations, rerun the installer once to supply the account and
+binary; normal dashboard application updates do not acquire that capability.
+
+Sources: [OpenSky Debian feeder](https://opensky-network.org/feed/debian),
+[receiver setup](https://opensky-network.org/feed/raspberry).
+Live arm64 feeding and actual cellular usage still need reference-Pi testing.
+
+### Export events for training
+
+In **Events**, filter by label, camera, date, review state, or **Not exported**.
+Select up to 100 events across pages, choose **Originals + previews** or
+**Previews only (smaller)**, then click **Download selected ZIP**. Wait for any
+label saves to finish first. Choose your external drive in your browser's save
+dialog, or move the finished download there afterward. The destination is on
+the computer running the browser; this does not mount or write to a Pi USB drive.
+
+Each ZIP has camera/event folders with the selected existing videos, best frame
+and thumbnail when available, event metadata, operator labels/notes in
+review.json, and available motion, radio, identification and Hailo reports.
+manifest.json lists included files with SHA-256 checksums and reports missing
+optional files and failed events. Operator labels remain separate from automated
+suggestions and are not certified ground truth. Only finished or interrupted
+events with the requested video are exportable. Originals mode requires the
+original clip. No videos are transcoded and camera passwords/configuration files
+are not included.
+
+Downloads stream directly from the Pi without creating a second full archive
+on its storage. One ZIP can stream at a time. Large exports use network bandwidth,
+including cellular data. Keep the dashboard open for its completion report;
+the browser download indicator shows transfer progress.
+
+After the server finishes sending the ZIP, successfully exported events receive
+a persistent **Exported** timestamp and media choice. Interrupted downloads do
+not set new flags. This records server transmission, not confirmation that the
+browser saved the file to your drive. Check the downloaded ZIP and its manifest
+before relying on your copy. Missing events or failed flag writes are reported;
+retention can remove events during an export, so use **Keep selected events**
+first if you need them protected. Exporting itself never protects or deletes
+footage, changes labels, or prevents exporting the same event again. The flag
+describes the last export; later label edits do not clear it. The older
+**Export selected JSON** action remains metadata-only and does not set this flag.

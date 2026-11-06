@@ -1,7 +1,7 @@
 'use strict';
 const MagiEvents = (()=>{
   const el=id=>document.getElementById(id), selected=new Map();
-  let rows=[], total=0, offset=0, loaded=false, loading=false, lastRefresh=0, requestVersion=0, mutating=false, currentFilters=null;
+  let rows=[], total=0, offset=0, loaded=false, loading=false, lastRefresh=0, requestVersion=0, mutating=false, exporting=false, currentFilters=null;
   let neighbors={previous:null,next:null}, navigationVersion=0, reviewBusy=false;
   let navigationTask=null, navigationKey=null, navigationFilter=-1, navigationReady=false;
   const pendingSaves=new Map(), localReviews=new Map();
@@ -79,12 +79,13 @@ const MagiEvents = (()=>{
   const labels=value=>value.split(',').map(v=>v.trim()).filter(Boolean);
   function selection(){
     el('event-selection-count').textContent=`${selected.size} selected${selected.size ? ' (across pages)' : ''}`;
-    el('event-apply').disabled=el('event-export').disabled=!selected.size || mutating || !!pendingSaves.size;
+    el('event-apply').disabled=el('event-export').disabled=!selected.size || mutating || exporting || !!pendingSaves.size;
+    el('event-export-zip').disabled=!selected.size || mutating || exporting || !!pendingSaves.size;
     el('event-select-page').checked=rows.length>0 && rows.every(row=>selected.has(eventKey(row)));
     el('event-select-page').indeterminate=rows.some(row=>selected.has(eventKey(row))) && !el('event-select-page').checked;
   }
   function filters(){
-    return {camera_id:el('event-camera').value || 'all',q:el('event-search').value.trim(),label:el('event-label-filter').value.trim(),reviewed:el('event-reviewed').value || 'all',protected:el('event-protected').value || 'all',reference:el('event-reference').value || 'all',state:el('event-state').value || 'all',type:el('event-type').value || 'all',trash:el('event-folder').value || 'active',sort:el('event-sort').value || 'newest',hide_likely_satellites:!!el('event-hide-likely').checked,start:el('event-start').value ? new Date(el('event-start').value).getTime()/1000:null,end:el('event-end').value ? new Date(el('event-end').value).getTime()/1000:null};
+    return {exported:el('event-exported').value || 'all',camera_id:el('event-camera').value || 'all',q:el('event-search').value.trim(),label:el('event-label-filter').value.trim(),reviewed:el('event-reviewed').value || 'all',protected:el('event-protected').value || 'all',reference:el('event-reference').value || 'all',state:el('event-state').value || 'all',type:el('event-type').value || 'all',trash:el('event-folder').value || 'active',sort:el('event-sort').value || 'newest',hide_likely_satellites:!!el('event-hide-likely').checked,start:el('event-start').value ? new Date(el('event-start').value).getTime()/1000:null,end:el('event-end').value ? new Date(el('event-end').value).getTime()/1000:null};
   }
   function setOptions(values){
     const list=el('event-label-options'), filter=el('event-label-filter'), previous=filter.value;
@@ -139,7 +140,7 @@ const MagiEvents = (()=>{
   }
   function render(){
     const active=currentFilters || filters();
-    const count=Object.entries(active).filter(([key,value])=>value!=null && value!=='' && value!==({camera_id:'all',reviewed:'all',protected:'all',reference:'all',state:'all',type:'all',trash:'active',sort:'newest',hide_likely_satellites:false}[key])).length;
+    const count=Object.entries(active).filter(([key,value])=>value!=null && value!=='' && value!==({exported:'all',camera_id:'all',reviewed:'all',protected:'all',reference:'all',state:'all',type:'all',trash:'active',sort:'newest',hide_likely_satellites:false}[key])).length;
     el('event-filter-summary').textContent=count ? `Filters · ${count} active · ${active.sort==='oldest'?'Oldest first':'Newest first'}`:'Filters · All cameras · Newest first';
     const body=el('all-events');body.replaceChildren();
     for(const sourceRow of rows){
@@ -161,7 +162,7 @@ const MagiEvents = (()=>{
       const when=node('td');when.append(button(new Date(row.trigger_utc).toLocaleString(),()=>openReview(row),'event-time'),node('small',row.id));tr.append(when);
       tr.append(node('td',row.estimated_duration_seconds!=null ? `${Number(row.estimated_duration_seconds).toFixed(1)}s`:'—'));
       const annotation=node('td');const badges=node('div',null,'event-labels');for(const label of review.labels || [])badges.append(node('span',label,'event-label'));if(!review.labels?.length)badges.append(node('span','Unlabelled','muted'));
-      annotation.append(badges,node('small',`${review.reviewed?'✓ Reviewed':'Unreviewed'}${review.protected?' · Protected':''}${review.trashed_at!=null?' · In trash':''}${review.annotation_error?' · Review metadata needs repair':''}`));if(review.notes)annotation.append(node('small',review.notes.slice(0,100)));if(row.hailo_advisory?.advisory_text)annotation.append(node('small',row.hailo_advisory.advisory_text));tr.append(annotation);
+      annotation.append(badges,node('small',`${review.reviewed?'✓ Reviewed':'Unreviewed'}${review.protected?' · Protected':''}${review.trashed_at!=null?' · In trash':''}${review.annotation_error?' · Review metadata needs repair':''}`));if(row.export?.exported_unix)annotation.append(node('small','Exported '+new Date(row.export.exported_unix*1000).toLocaleString()+' · '+(row.export.media==='previews'?'previews':'originals + previews')));if(review.notes)annotation.append(node('small',review.notes.slice(0,100)));if(row.hailo_advisory?.advisory_text)annotation.append(node('small',row.hailo_advisory.advisory_text));tr.append(annotation);
       tr.append(node('td',human(row.identification)));const recording=node('td',human(row.state));recording.append(node('small',(row.detection_types || [row.trigger_type]).map(human).join(', ')));if(row.retention?.reason)recording.append(node('small',human(row.retention.reason)));tr.append(recording);
       const actions=node('td',null,'event-row-actions');actions.append(button('Review',()=>openReview(row),'secondary'));
       actions.append(downloadMenu(row));
@@ -270,11 +271,45 @@ const MagiEvents = (()=>{
     }
     el('event-filters').addEventListener('change',event=>{if(event.target.matches('select'))applyFilters();});
     el('event-filters').onsubmit=event=>{event.preventDefault();return applyFilters();};
-    el('event-reset').onclick=()=>{for(const id of ['event-search','event-label-filter','event-start','event-end'])el(id).value='';for(const id of ['event-reviewed','event-protected','event-state','event-reference','event-type'])el(id).value='all';el('event-hide-likely').checked=false;el('event-camera').value='all';el('event-folder').value='active';el('event-sort').value='newest';applyFilters();};
+    el('event-reset').onclick=()=>{for(const id of ['event-search','event-label-filter','event-start','event-end'])el(id).value='';for(const id of ['event-exported','event-reviewed','event-protected','event-state','event-reference','event-type'])el(id).value='all';el('event-hide-likely').checked=false;el('event-camera').value='all';el('event-folder').value='active';el('event-sort').value='newest';applyFilters();};
     el('event-select-page').onchange=()=>{for(const row of rows){if(el('event-select-page').checked && selected.size<100)selected.set(eventKey(row),row);else if(!el('event-select-page').checked)selected.delete(eventKey(row));}render();};
+    el('event-select-all').onclick=async()=>{
+      const version=requestVersion;
+      el('event-select-all').disabled=true;
+      try{
+        const result=await api('/api/station/events/list',{...(currentFilters || filters()),offset:0,limit:100});
+        if(version!==requestVersion)return;
+        if(result.total>100)throw new Error(`${result.total} events match. Narrow your filters to 100 or fewer events per export.`);
+        if(result.events.length!==result.total)throw new Error('Could not select every matching event. Refresh and try again.');
+        selected.clear();for(const row of result.events)selected.set(eventKey(row),withLocalReview(row));
+        render();el('event-action-status').textContent=`Selected all ${selected.size} matching events across pages.`;
+      }catch(error){el('event-action-status').textContent=error.message;}
+      finally{el('event-select-all').disabled=false;}
+    };
     el('event-clear-selection').onclick=()=>{selected.clear();render();};
     el('event-prev').onclick=()=>{offset=Math.max(0,offset-25);requestVersion++;refresh(true);};el('event-next').onclick=()=>{offset+=25;requestVersion++;refresh(true);};el('event-refresh').onclick=()=>refresh(true);
-    el('event-apply').onclick=()=>{const action=el('event-action').value;const changes={reviewed:{reviewed:true},unreviewed:{reviewed:false},labels:{labels:labels(el('event-bulk-labels').value)},protect:{protected:true},unprotect:{protected:false}};return mutate([...selected.values()],action==='trash'||action==='restore'?action:'update',changes[action]);};
+    el('event-apply').onclick=()=>{const action=el('event-action').value;if(action==='export')return el('event-export-zip').onclick();const changes={reviewed:{reviewed:true},unreviewed:{reviewed:false},labels:{labels:labels(el('event-bulk-labels').value)},protect:{protected:true},unprotect:{protected:false}};return mutate([...selected.values()],action==='trash'||action==='restore'?action:'update',changes[action]);};
+    el('event-export-zip').onclick=async()=>{
+      if(!selected.size || mutating || exporting || pendingSaves.size)return;
+      const targets=[...selected.values()].map(row=>({id:row.id,camera_id:row.camera_id || selectedCamera}));
+      exporting=true;selection();
+      try{
+        const prepared=await api('/api/station/events/export',{targets,media:el('event-export-media').value});
+        const link=node('a');link.href=prepared.download;link.download='';document.body.append(link);link.click();link.remove();
+        el('event-action-status').textContent='Export download started. Watch browser downloads; keep this tab open for the export result.';
+        for(let attempt=0;attempt<1800;attempt++){
+          await new Promise(resolve=>setTimeout(resolve,2000));
+          const status=await api('/api/station/events/export/'+prepared.id+'/status');
+          if(status.state==='ready' || status.state==='sending')continue;
+          if(status.state==='failed')throw new Error('Download interrupted. Events were not marked exported. Retry the selection.');
+          el('event-action-status').textContent=
+            `Sent ${status.sent} event(s). ${status.failed.length} unavailable; ${status.flag_failed.length} export flags could not be saved. Check manifest.json and your downloaded ZIP before relying on your copy.`;
+          selected.clear();lastRefresh=0;await refresh(true);return;
+        }
+        throw new Error('Export status timed out. Check your browser download and refresh the event list.');
+      }catch(error){el('event-action-status').textContent='Export: '+error.message;}
+      finally{exporting=false;selection();}
+    };
     el('event-export').onclick=async()=>{
       const chosen=[...selected.values()];
       if(!chosen.length || mutating)return;

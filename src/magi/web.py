@@ -10,6 +10,7 @@ import threading
 import time
 from urllib.parse import urlsplit, parse_qs
 
+from .event_export import Exports
 from .auth import Sessions
 from . import __version__
 from .updates import request as update_request
@@ -25,6 +26,7 @@ class Server(ThreadingHTTPServer):
 
     def __init__(self, app, address=None):
         self.app = app
+        self.exports = Exports(app)
         self.auth = Sessions(app.cfg.web['username'], app.cfg.web['password_hash'])
         self.semaphore = threading.BoundedSemaphore(12)
         super().__init__(address or (app.cfg.web['host'], app.cfg.web['port']), Handler)
@@ -146,6 +148,36 @@ class Handler(BaseHTTPRequestHandler):
         token, session = self.session()
         if not session:
             self.reply(401, {'error': 'Sign in to continue.'})
+            return
+        export_match = re.fullmatch(r'/api/station/events/export/([a-f0-9]{32})/(download|status)', path)
+        if export_match:
+            export_id, action = export_match.groups()
+            try:
+                if action == 'status':
+                    self.reply(200, self.server.exports.status(token, export_id))
+                    return
+                job = self.server.exports.begin(token, export_id)
+            except ValueError as exc:
+                self.reply(409, {'error': str(exc)})
+                return
+            try:
+                # ZIP streams directly to the browser; no whole-archive RAM or disk copy.
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/zip')
+                self.send_header('Content-Disposition', f'attachment; filename="magi-training-{export_id}.zip"')
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.send_header('Connection', 'close')
+                self.end_headers()
+            except OSError:
+                with self.server.exports.lock:
+                    job['state'] = 'failed'
+                self.server.exports.active.release()
+                return
+            try:
+                self.server.exports.send(job, export_id, self.wfile)
+            except (OSError, ValueError):
+                self.close_connection = True
             return
         if path == '/api/session':
             self.reply(200, {'csrf': session['csrf'], 'username': self.server.app.cfg.web['username']})
@@ -288,6 +320,9 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, {'ok': True}, {'Set-Cookie': 'magi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})
             return
         try:
+            if path == '/api/station/events/export':
+                self.reply(200, self.server.exports.prepare(token, body))
+                return
             if path == '/api/station/feeding':
                 if body.get('action') not in ('enable', 'disable'):
                     raise ValueError('Choose Enable feeding or Disable feeding.')

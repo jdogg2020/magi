@@ -60,3 +60,24 @@ If local-file input is enabled and no URL is supplied, Magi reads `/run/readsb/a
 7. Update through the dashboard, repeat the checks, and confirm previous camera settings and recordings remain.
 
 The updater retains legacy `/opt/magi/deps` and restarts an installed sensor collector against new code; rollback to a version without sensor support stops that collector. The stable readsb binary/service remains independent. An upgrade never installs chrony, builds a decoder or enables hardware without explicit provisioning.
+
+## OpenSky feeder setup
+
+The optional feeding panel refreshes station status and GPS suggestions without
+interrupting typing or replacing antenna coordinates you have edited. Use
+**Use current GPS fix** to copy a new fix explicitly. This uses altitude above
+sea level, not the WGS84 observer elevation used for camera calibration.
+
+Enabling requires the OpenSky website username, antenna position and explicit
+bandwidth consent. API client credentials are separate. A failed submission
+keeps the draft and consent, and its specific error remains visible across
+background refreshes until you edit or retry. A linked receiver's username
+stays locked to preserve its identity.
+
+If setup reports that local ADS-B output is unavailable, the controller could
+not connect to the receiver's loopback Beast output at `127.0.0.1:30005`.
+Working GPS or a local `aircraft.json` alone does not establish that output.
+Check the receiver installation and service before retrying. Other errors
+distinguish missing feeder installation, receiver configuration permissions,
+consent storage, and an unavailable controller. A running process still does
+not prove delivery; verify incoming data in OpenSky's **My Sensors**.

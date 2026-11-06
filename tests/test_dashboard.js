@@ -1,3 +1,5 @@
+require('./test_export_ui.js');
+require('./test_feeding_ui.js');
 require('./test_mask_editor.js');
 require('./test_event_review.js');
 require('./test_downloads.js');
@@ -191,7 +193,22 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  elements['event-action'].value='reviewed';await elements['event-apply'].onclick();
  assert(elements['event-action-status'].textContent.includes('Updated 2 events'));
 
- let tracked;for(let i=0;i<60;i++){const page=await vm.runInContext("api('/api/station/events/list',{limit:100})",context);tracked=page.events.find(row=>row.camera_id===cameraId && row.trigger_type!=='manual' && row.motion && row.best_frame && row.substream_preview);if(tracked)break;await new Promise(resolve=>setTimeout(resolve,150));}
+ // A motion sidecar can exist without a two-sample track (for example at
+ // startup). Select a finalized event with alignable tracks for this UI test.
+ const trackGeometry=require('../src/magi/web/tracks.js');
+ let tracked;
+ for(let i=0;i<100;i++){
+   const page=await vm.runInContext("api('/api/station/events/list',{limit:100})",context);
+   for(const candidate of page.events.filter(row=>row.camera_id===cameraId && row.trigger_type!=='manual' && ['complete','interrupted'].includes(row.state) && row.motion && row.best_frame && row.substream_preview)){
+     context.trackCandidate=candidate;
+     const records=await vm.runInContext("fetch(eventPath(trackCandidate,'motion')).then(r=>r.text())",context);
+     const [meta,...samples]=records.trim().split('\n').map(JSON.parse);
+     const timeline=await vm.runInContext("api(eventPath(trackCandidate,'timeline'))",context);
+     if(Array.isArray(timeline.segments) && trackGeometry.collect(samples,meta,timeline.segments).length){tracked=candidate;break;}
+   }
+   if(tracked)break;
+   await new Promise(resolve=>setTimeout(resolve,150));
+ }
  assert(tracked,'Synthetic detection must yield a tracked event');
  context.trackedEvent=tracked;
  await vm.runInContext('MagiEvents.refresh(true)',context);

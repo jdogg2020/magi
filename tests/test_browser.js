@@ -107,6 +107,34 @@ const base = process.argv[2];
     await page.screenshot({path:'dist/browser/events.png',fullPage:true});
     const event=rows.find(row=>row.camera!=='primary' && row.hasImage && row.hasVideo) || rows.find(row=>row.camera!=='primary' && row.hasImage);
     const eventRow=page.locator(`#all-events tr[data-camera-id="${event.camera}"][data-event-id="${event.id}"]`);
+    // Exercise the actual browser download and persistent export receipt.
+    await eventRow.getByRole('checkbox').check();
+    await page.locator('#event-export-media').selectOption('previews');
+    const zipDownload = page.waitForEvent('download');
+    await page.locator('#event-export-zip').click();
+    const exportedZip = await zipDownload;
+    assert.match(exportedZip.suggestedFilename(), /^magi-training-[a-f0-9]{32}\.zip$/);
+    const zipPath = await exportedZip.path();
+    const inspectZip = require('node:child_process').spawnSync('python3', ['-c',
+      'import json,sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print(z.read("manifest.json").decode())', zipPath], {encoding:'utf8'});
+    assert.equal(inspectZip.status, 0, inspectZip.stderr);
+    const exportManifest = JSON.parse(inspectZip.stdout);
+    assert.equal(exportManifest.media, 'previews');
+    assert.equal(exportManifest.events.length, 1);
+    assert.equal(exportManifest.events[0].id, event.id);
+    assert.equal(exportManifest.events[0].camera_id, event.camera);
+    assert.equal(exportManifest.events[0].status, 'exported');
+    assert(exportManifest.events[0].files.some(file=>file.path.endsWith('/preview-substream.mp4')));
+    assert(!exportManifest.events[0].files.some(file=>file.path.endsWith('/clip.mkv')));
+    await page.locator('#event-action-status').filter({hasText:'Sent 1 event(s). 0 unavailable; 0 export flags'}).waitFor();
+    await eventRow.locator('small').filter({hasText:'Exported '}).waitFor();
+    await page.locator('#event-clear-selection').click();
+    // Recording completion and report publication are asynchronous. Open the
+    // fixture only once its radio report exists; the review fetch happens once.
+    await page.waitForFunction(async ({camera,id})=>{
+      const response=await fetch('/api/cameras/'+camera+'/clips/'+id+'/identification');
+      return response.ok && !!(await response.json()).radio_evidence;
+    },event);
     await eventRow.getByRole('button',{name:'Review',exact:true}).click();
     await page.locator('#review').waitFor();
     for(const id of ['review-event-prev','review-event-next']){
@@ -122,7 +150,16 @@ const base = process.argv[2];
     await page.screenshot({path:'dist/browser/full-frame-review.png',fullPage:true});
     const fullImage=await page.evaluate(()=>({size:[document.getElementById('review-still').naturalWidth,document.getElementById('review-still').naturalHeight],detail:reviewEvent.media_detail,best:reviewEvent.best_frame}));
     if(fullImage.best)assert.deepEqual(fullImage.size,[fullImage.detail.native_width,fullImage.detail.native_height],'Displayed still must retain native full-frame dimensions');
-    await page.locator('#radio-report').waitFor({state:'visible'});
+    try {
+      await page.locator('#radio-report').waitFor({state:'visible'});
+    } catch (error) {
+      console.error('Radio report failure context:', await page.evaluate(()=>({
+        status:document.getElementById('identification-status').textContent,
+        radio:document.getElementById('radio-status').textContent,
+        event:reviewEvent, generation:reviewGeneration,
+      })), errors);
+      throw error;
+    }
     assert((await page.locator('#radio-status').textContent()).includes('aircraft recorded'));
     const radioResponse=await page.request.get(new URL(await page.locator('#radio-report').getAttribute('href'),base).href);
     assert(radioResponse.ok());assert.equal((await radioResponse.json()).source,'local_readsb');

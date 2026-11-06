@@ -1,3 +1,10 @@
+# Magi by Nomadobile
+
+Magi remains Apache-2.0 open-source software. Future Nomadobile AI models
+will be developed privately and licensed separately, with inference running
+locally on the Raspberry Pi / AI HAT. No proprietary model or hosted inference
+service is included here. See [model policy](docs/MODEL-POLICY.md).
+
 ## Camera removal (0.16.5)
 
 Use **Remove camera** in the selected camera’s settings to stop its capture and
@@ -244,3 +251,4 @@ Existing clips can be improved from the review dialog. See
 [docs/REVIEW-QUALITY.md](docs/REVIEW-QUALITY.md) for timing, selection and limits.
 
 Station GPS, local ADS-B, automatic location fields and optional GNSS clock setup: [Sensor setup and validation](docs/SENSORS.md).
+

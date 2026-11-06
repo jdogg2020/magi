@@ -379,10 +379,12 @@ class Recorder:
                 event["process"] = subprocess.Popen(args, stdin=subprocess.DEVNULL,
                                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 event["assembly_started"] = time.monotonic()
+                meta["assembly_started_unix"] = time.time()
                 continue
             if process.poll() is None and time.monotonic() - event["assembly_started"] <= 60:
                 continue
             stop_process(process)
+            meta["assembly_finished_unix"] = time.time()
             output = directory / self.part_name
             if process.returncode == 0 and output.exists() and output.stat().st_size:
                 with output.open("rb") as saved:

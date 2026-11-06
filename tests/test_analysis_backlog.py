@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock
 
 from magi.config import Config
-from magi.detection import Analysis
+from magi.detection import Analysis, FrameTiming
 
 
 class AnalysisBacklogTests(unittest.TestCase):
@@ -51,6 +51,9 @@ class AnalysisBacklogTests(unittest.TestCase):
             samples = analysis.poll()
             self.assertEqual([int(sample[1][0, 0]) for sample in samples], [37, 38, 39])
             self.assertEqual(analysis.dropped, 37)
+            peaks = analysis.timing.status(time.monotonic())['last_minute']
+            self.assertEqual(peaks['skip_burst']['value'], 37)
+            self.assertLessEqual(peaks['skip_burst']['end_unix'], time.time())
             self.assertLessEqual(len(analysis.pending_frames), 3)
         finally:
             analysis.reader_stop.set()
@@ -64,6 +67,26 @@ class AnalysisBacklogTests(unittest.TestCase):
         self.assertEqual(analysis.poll(), [])
         self.assertEqual(analysis.last_frame, previous)
         self.assertEqual(analysis.dropped, 1)
+
+    def test_distinguishes_receipt_gaps_skip_bursts_and_reconnects(self):
+        timing = FrameTiming()
+        wall = 1_700_000_000
+        timing.analyzed(5, wall)
+        timing.skipped(2, 5.08, wall)  # evicted from the queue
+        timing.skipped(1, 5.12, wall)  # stale in the following poll
+        timing.analyzed(5.16, wall)
+        timing.analyzed(5.66, wall)  # input pause without any decoded skips
+        timing.skipped(1, 5.70, wall)
+        timing.analyzed(5.74, wall)
+        first = timing.status(6)['session']
+        self.assertEqual(first['gap_ms'], {'value': 500, 'end_unix': wall + 5.66})
+        self.assertEqual(first['skip_burst'], {'value': 3, 'end_unix': wall + 5.12})
+        timing.reset_stream()
+        timing.analyzed(100, wall)
+        timing.analyzed(100.04, wall)
+        second = timing.status(101)
+        self.assertEqual(second['session'], first)
+        self.assertEqual(second['last_minute'], {'gap_ms': {'value': 40, 'end_unix': wall + 100.04}})
 
     def test_close_unblocks_reader_and_releases_process(self):
         analysis = self.make_analysis()

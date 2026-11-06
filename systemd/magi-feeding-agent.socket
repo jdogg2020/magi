@@ -1,0 +1,12 @@
+[Unit]
+Description=Magi OpenSky feeding control socket
+
+[Socket]
+ListenStream=/run/magi-feeding-agent.sock
+SocketUser=root
+SocketGroup=magi
+SocketMode=0660
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

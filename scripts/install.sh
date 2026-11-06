@@ -7,10 +7,15 @@ lan=false
 identification=false
 require_mounted_ssd=false
 skip_sensors=false
+hailo=auto
+keep_desktop=false
 sensor_options=()
 for argument in "$@"; do
   case "$argument" in
     --dry-run) dry_run=true ;;
+    --keep-desktop) keep_desktop=true ;;
+    --hailo) hailo=required ;;
+    --skip-hailo) hailo=skip ;;
     --skip-dependencies) skip_dependencies=true ;;
     --lan) lan=true ;;
     --identification) identification=true ;;
@@ -20,12 +25,13 @@ for argument in "$@"; do
     --gnss-time) sensor_options+=(--gnss-time) ;;
     --require-mounted-ssd) require_mounted_ssd=true ;;
     --skip-sensors) skip_sensors=true ;;
-    *) echo "Usage: $0 [--dry-run] [--skip-dependencies] [--lan] [--identification] [--require-mounted-ssd] [--skip-sensors] [--gnss-port=PATH] [--nmea-port=PATH] [--adsb-serial=SERIAL] [--gnss-time]" >&2; exit 2 ;;
+    *) echo "Usage: $0 [--dry-run] [--keep-desktop] [--hailo | --skip-hailo] [--skip-dependencies] [--lan] [--identification] [--require-mounted-ssd] [--skip-sensors] [--gnss-port=PATH] [--nmea-port=PATH] [--adsb-serial=SERIAL] [--gnss-time]" >&2; exit 2 ;;
   esac
 done
 source_dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 if "$dry_run"; then
   echo "Would install Python 3, NumPy, Pillow and FFmpeg from OS package sources unless skipped."
+  echo "Would supply the arm64 OpenSky feeder, disabled on new stations until dashboard consent."
   echo "Would create /mnt/magi-ssd if needed; use the Pi's storage when no SSD is mounted;"
   echo "create the magi service user with a private recording folder;"
   echo "install /opt/magi, preserve existing /etc/magi/config.json and recordings;"
@@ -36,19 +42,33 @@ if "$dry_run"; then
   if "$skip_sensors"; then echo "Sensor provisioning explicitly skipped.";
   elif [[ ${#sensor_options[@]} -gt 0 ]]; then echo "Would provision explicitly selected GNSS/ADS-B sensors and optional chrony using setup_sensors.py.";
   else echo "Would auto-detect attached GNSS/ADS-B sensors and provision any found hardware using setup_sensors.py."; fi
+  if [[ "$hailo" == skip || ( "$hailo" == auto && "$skip_dependencies" == true ) ]]; then
+    echo "AI HAT setup skipped."
+  elif [[ "$hailo" == required ]]; then
+    echo "Would require Hailo-8 on PCIe, install dkms and hailo-all, verify firmware, and report whether a reboot is needed."
+  else
+    echo "Would auto-detect Hailo-8 on PCIe and install/verify support if present; skip if absent."
+  fi
+  if "$keep_desktop"; then
+    echo "Would preserve the current default boot target (--keep-desktop)."
+  else
+    echo "Would boot to text mode on the next reboot; keep desktop packages and the current session."
+  fi
   exit 0
 fi
 if [[ "$EUID" -ne 0 ]]; then echo "Run the reviewed installer with sudo." >&2; exit 1; fi
 # Save diagnostics without terminal input or setup credentials.
 install -d -m 0750 /var/log/magi
+exec 9>/var/log/magi/installer.lock
+if ! flock -n -x 9; then echo "Another Magi installer is running; wait for it to finish." >&2; exit 1; fi
 log_file="$(mktemp /var/log/magi/install-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX.log)"
-exec 9>"$log_file.lock"
-flock -x 9
 exec 3>&1 4>&2
 exec > >(tee -a "$log_file") 2>&1
 current_step="initial checks"
 active_runner=""
 started_at=$SECONDS
+partial=false
+reboot_required=false
 progress() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*"; }
 finish() {
   result=$?
@@ -58,7 +78,13 @@ finish() {
     wait "$active_runner" 2>/dev/null || true
   fi
   if [[ "$result" -eq 0 ]]; then
-    progress "INSTALL COMPLETE ($((SECONDS-started_at)) seconds)."
+    if "$reboot_required"; then
+      progress "INSTALL FINISHED: AI HAT verification pending reboot ($((SECONDS-started_at)) seconds)."
+    else
+      progress "INSTALL COMPLETE ($((SECONDS-started_at)) seconds)."
+    fi
+  elif [[ "$result" -eq 2 && "$partial" == true ]]; then
+    progress "INSTALL INCOMPLETE: dashboard installed; see component warnings above (exit 2)."
   else
     progress "INSTALL STOPPED: $current_step (exit $result)."
     echo "It is safe to rerun the installer after fixing the reported issue."
@@ -97,6 +123,12 @@ if ! "$skip_dependencies"; then
   run_step 300 "Step 1/7: Refresh package lists (limit 5 minutes)" apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
   run_step 0 "Step 2/7: Install required packages (no overall time limit)" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confold install -y python3 python3-numpy python3-pil ffmpeg openssl
   if "$identification"; then run_step 0 "Step 2/7: Install satellite packages (no overall time limit)" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confold install -y python3-skyfield; fi
+fi
+if ! "$skip_dependencies"; then
+  if ! run_step 120 "Supply optional OpenSky feeder (new stations remain disabled)" /usr/bin/python3 "$source_dir/scripts/install_opensky.py"; then
+    partial=true
+    echo "WARNING: Optional OpenSky feeder provisioning failed. Local recording and receiver setup will continue."
+  fi
 fi
 current_step='Step 3/7: Validate dependencies'
 progress "$current_step"
@@ -140,14 +172,8 @@ cp "$source_dir/README.md" "$source_dir/START-HERE.md" "$source_dir/config.examp
 # Application code is public-readable; secrets live separately in /etc/magi.
 /usr/bin/python3 "$source_dir/scripts/update.py" --repair-permissions
 run_step 30 "Verify installed source is readable by the service account" runuser -u magi -- env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/opt/magi/src /usr/bin/python3 -c 'from magi import __version__; print("Installed Magi", __version__)'
-fresh_config=false
-if [[ ! -e /etc/magi/config.json ]]; then
-  install -m 0600 -o magi -g magi "$source_dir/config.example.json" /etc/magi/config.json
-  fresh_config=true
-fi
 setup_options=()
 if "$lan"; then setup_options+=(--lan); fi
-if "$fresh_config"; then setup_options+=(--fresh-storage); fi
 if "$require_mounted_ssd"; then setup_options+=(--require-mounted-ssd); fi
 current_step="Step 6/7: Configure dashboard login (waiting for your input)"
 progress "$current_step"
@@ -186,11 +212,42 @@ if ! "$ready"; then
 fi
 if ! "$skip_sensors"; then
   if [[ ${#sensor_options[@]} -eq 0 ]]; then sensor_options+=(--detect); fi
-  run_step 0 "Provision station sensors" /usr/bin/python3 /opt/magi/scripts/setup_sensors.py "${sensor_options[@]}"
+  sensor_result=0
+  run_step 0 "Provision station sensors" /usr/bin/python3 -u /opt/magi/scripts/setup_sensors.py "${sensor_options[@]}" || sensor_result=$?
+  if [[ "$sensor_result" -eq 2 ]]; then partial=true;
+  elif [[ "$sensor_result" -ne 0 ]]; then exit "$sensor_result"; fi
+else
+  echo "Sensor provisioning: skipped by --skip-sensors; existing configuration unchanged."
 fi
 if [[ -f /etc/systemd/system/magi-sensors.service ]]; then
   systemctl try-restart magi-sensors.service
 fi
+if [[ "$hailo" == skip || ( "$hailo" == auto && "$skip_dependencies" == true ) ]]; then
+  echo "AI HAT: setup skipped by installer option; existing installation unchanged."
+else
+  hailo_options=()
+  if [[ "$hailo" == auto ]]; then hailo_options+=(--detect); fi
+  hailo_result=0
+  run_step 0 "Install and verify optional Hailo-8 support" /usr/bin/python3 -u /opt/magi/scripts/setup_hailo.py "${hailo_options[@]}" || hailo_result=$?
+  if [[ "$hailo_result" -eq 10 ]]; then reboot_required=true;
+  elif [[ "$hailo_result" -ne 0 ]]; then partial=true; fi
+fi
+run_step 60 "Verify final dashboard and configured services" /usr/bin/python3 /opt/magi/scripts/verify_install.py
+if "$reboot_required"; then
+  echo "AI HAT: reboot required. When ready: sudo reboot"
+  echo "After reconnecting: python3 /opt/magi/scripts/setup_hailo.py --verify-only"
+fi
+if "$partial"; then exit 2; fi
+# Change only the next boot; never isolate a target or stop the current desktop.
+if "$keep_desktop"; then
+  echo "Desktop boot: current default target preserved (--keep-desktop)."
+else
+  run_step 30 "Configure text-mode boot for this station" systemctl set-default multi-user.target
+  echo "Desktop boot: disabled for the next reboot. Current session and desktop packages are unchanged."
+  echo "Use SSH or the dashboard remotely; a local text console remains available."
+  echo "To restore desktop boot later: sudo systemctl set-default graphical.target"
+fi
+echo "Magi dashboard: final health check passed. Sensor configuration is summarized above; GPS lock is not required."
 echo "Magi is running. Open http://PI-IP:8090 if LAN access is enabled."
 echo "Otherwise use http://localhost:8090 on the Pi, or an SSH tunnel."
 echo "Sign in with your dashboard login, then connect the camera in Settings."

@@ -7,3 +7,5 @@ The main stream is decoded at its camera-configured native resolution and frame 
 Main original footage and small substream recordings are unchanged. Detection replay remains sampled at 4 fps, with native-resolution masks and source metadata. Main-stream detections are not overlaid on substream playback because their timing differs. Full-quality video retains its existing no-tracking safeguard.
 
 Pixel thresholds, maximum component area, travel and jump distances are unchanged; switching resolution changes what these represent in the sky. Existing normalized ignore zones remain, but check their placement and camera calibration if the streams have different fields of view. Higher detection resolution can increase CPU, RAM, preview storage and review bandwidth substantially. Test a fresh event and inspect capture continuity, frame drops and system load before extending the experiment to all cameras.
+
+For per-camera skip bursts and timing gaps, see the [two-minute Pi check](FRAME-TIMING.md).

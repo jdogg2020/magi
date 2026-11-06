@@ -23,6 +23,7 @@ from .calibration import CalibrationError, GEOMETRY_KEYS, active_report, source_
 from .auto_calibration import AutoCalibrationError, AutoCalibrationJob, apply_candidate, latest_event_with_frame, process_pending_apply, read_candidate, read_status
 from .detection import Analysis
 from .health import metrics, cpu_counters
+from .event_export import receipt as export_receipt
 from .event_review import ReviewError, read as read_review, changes as review_changes, filters as event_filters, matches as event_matches, optional_json
 from .sensors import snapshot as sensor_snapshot, effective as sensor_effective, aircraft_status
 from .identification import Identifier, defaults as identification_defaults, report_hideable
@@ -795,6 +796,9 @@ class Application:
                 report_path = path.parent/'identification.json'
                 report = optional_json(report_path)
                 reference = report.get('status','not_checked' if meta.get('state')=='not_retained' else 'pending' if self.cfg.identification['enabled'] else 'disabled')
+                exported = export_receipt(path.parent)
+                if f['exported'] != 'all' and bool(exported) != (f['exported'] == 'yes'):
+                    continue
                 if not event_matches(meta,review,reference,f,hideable=report_hideable(report)):
                     continue
                 stamp = meta.get('trigger_unix', 0)
@@ -820,6 +824,7 @@ class Application:
                 row = {k:meta.get(k) for k in ('id','camera_id','camera_name','state','trigger_type','detection_types','retention','trigger_unix','trigger_utc','estimated_duration_seconds','interruption')}
                 media_path = path.parent/'media.json'
                 media = optional_json(media_path)
+                row['export'] = export_receipt(path.parent)
                 row.update(camera_id=meta.get('camera_id',self.camera_id),camera_name=meta.get('camera_name',self.camera_name),review=review,identification=reference,satellite_hideable=report_hideable(report),media_detail=media.get('thumbnail',{}),media_status=media.get('status','not_generated'),media_error=media.get('detail',''))
                 # Advisory-only Hailo label. A missing or damaged hailo.json
                 # leaves this field out; it never hides, reorders, filters,
@@ -922,6 +927,7 @@ class Application:
                        'health': self.health, 'star_calibration': self.calibration_report, 'event_count_since_start': self.event_count,
                        'analysis': {'stream': self.cfg.detection.get('stream', 'substream'), 'state': self.analysis.state if self.analysis else 'idle',
                                     'frames': self.analysis.frames if self.analysis else 0,
+                                    'frame_timing': self.analysis.timing.status(time.monotonic()) if self.analysis else None,
                                     'dropped_frames': self.analysis.dropped if self.analysis else 0,
                                     'suppressed_frames': self.analysis.tracker.suppressed_frames if self.analysis else 0,
                                     'probe_error': self.analysis.probe_error if self.analysis else None,

@@ -5,6 +5,9 @@ function cameraPath(path, identity = selectedCamera) {
   if (identity === 'primary' || !path.startsWith('/api/') || path.startsWith('/api/cameras/') || path.startsWith('/api/station/') || ['/api/login','/api/logout','/api/session','/api/cameras'].includes(path)) return path;
   return '/api/cameras/'+encodeURIComponent(identity)+'/'+path.slice(5);
 }
+const frameTime = new Intl.DateTimeFormat(undefined, {
+  hour: 'numeric', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3, timeZoneName: 'short',
+});
 const cameraTiles = new Map();
 let stationCameras = [], cameraRefreshBusy = false, cameraAddBusy = false;
 const eventKey = row => `${row.camera_id || selectedCamera}:${row.id}`;
@@ -102,6 +105,13 @@ async function refreshCameras() {
       tile.state.textContent=`Main: ${camera.state.replaceAll('_',' ')} · Substream: ${(camera.substream?.state || 'idle').replaceAll('_',' ')} · Detection: ${(camera.analysis?.state || 'idle').replaceAll('_',' ')}`;
       tile.count.textContent=`${camera.event_count_since_start || 0} events this session · ${bytes(camera.storage_used_bytes)} used`;
       const a=camera.analysis || {};tile.analysis.textContent=`${a.stream === 'mainstream' ? 'Main stream' : 'Substream'} · ${a.width || '?'}×${a.height || '?'} @ ${a.fps || '?'} fps · ${a.frames || 0} detection frames · ${a.dropped_frames || 0} dropped`;
+      if (a.frame_timing) {
+        const recent = a.frame_timing.last_minute;
+        const peak = (record, unit) => record
+          ? `${record.value} ${unit} at ${frameTime.format(record.end_unix * 1000)}`
+          : 'none';
+        tile.analysis.textContent += ` · Last minute: longest gap ${peak(recent.gap_ms, 'ms')}, largest skip burst ${peak(recent.skip_burst, 'frames')}`;
+      }
       tile.save.disabled=tile.saving || !!tile.pendingEvent || camera.state!=='buffering';
       if(tile.pendingEvent && !tile.saving){
         try {
@@ -1242,3 +1252,61 @@ async function openStarPicker(manual){
     img.src=cameraPath('/api/clips/'+encodeURIComponent(row.id)+(row.best_frame?'/frame':'/thumbnail'));
   }
 }
+
+// Station-wide feeding is intentionally separate from camera/API settings.
+(() => {
+  const panel=$('opensky-feeding-setup');
+  if(!panel)return;
+  let state=null, loading=false, initialized=false;
+  const fields={username:'feeding-username',latitude:'feeding-latitude',longitude:'feeding-longitude',altitude_msl_m:'feeding-altitude'};
+  function controls(){
+    const unavailable=!state?.helper_available, busy=loading || !!state?.busy;
+    $('feeding-enable').disabled=unavailable || busy || !$('feeding-consent').checked;
+    $('feeding-disable').disabled=unavailable || busy || !(state?.active || state?.enabled);
+    $('feeding-gps').disabled=busy || !state?.gps;
+    for(const [key,id] of Object.entries(fields))$(id).disabled=busy || (key==='username' && !!state?.username_locked);
+  }
+  function render(next){
+    state=next;
+    const service=next.active?'Running':next.enabled?'Enabled but not running':'Off';
+    $('feeding-status').textContent=(next.helper_available?service+'. ':'')+(next.message || 'Status unavailable.');
+    if(!initialized && next.helper_available){
+      const values={...(next.gps || {}),...(next.settings || {})};
+      for(const [key,id] of Object.entries(fields))if(!$(id).value && values[key]!==undefined)$(id).value=values[key];
+      initialized=true;
+    }
+    if(next.username_locked && next.settings?.username)$('feeding-username').value=next.settings.username;
+    controls();
+  }
+  async function refresh(){
+    if(!csrf || loading)return;
+    loading=true;controls();
+    try{render(await api('/api/station/feeding'));}
+    catch(error){state=null;$('feeding-status').textContent=error.message;}
+    finally{loading=false;controls();}
+  }
+  async function action(action){
+    if(loading || state?.busy)return;
+    let settings;
+    if(action==='enable'){
+      if(!$('feeding-consent').checked)return;
+      settings={username:$('feeding-username').value.trim(),bandwidth_consent:true};
+      for(const [key,id] of Object.entries(fields))if(key!=='username'){
+        if(!$(id).value.trim() || !$(id).checkValidity()){$('feeding-status').textContent='Enter valid antenna coordinates and altitude, or use a GPS fix.';return;}
+        settings[key]=Number($(id).value);
+      }
+      if(!settings.username){$('feeding-status').textContent='Enter your OpenSky username.';return;}
+    }
+    loading=true;controls();
+    try{render(await api('/api/station/feeding',{action,...(settings?{settings}:{})}));$('feeding-consent').checked=false;}
+    catch(error){$('feeding-status').textContent=error.message;}
+    finally{loading=false;controls();}
+  }
+  panel.addEventListener('toggle',()=>{if(panel.open)refresh();});
+  $('feeding-consent').onchange=controls;
+  $('feeding-refresh').onclick=refresh;
+  $('feeding-enable').onclick=()=>action('enable');
+  $('feeding-disable').onclick=()=>action('disable');
+  $('feeding-gps').onclick=()=>{if(state?.gps)for(const [key,value] of Object.entries(state.gps))$(fields[key]).value=value;};
+  setInterval(()=>{if(panel.open && !$('settings').classList.contains('hidden'))refresh();},5000);
+})();

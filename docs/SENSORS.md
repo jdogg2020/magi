@@ -29,6 +29,53 @@ GNSS setup installs python3-serial, validates modem identity and creates magi-se
 
 The hardware binary lives at `/usr/local/lib/magi-sensors/readsb`, outside source-release swaps. Its existing readsb service is reused, with a Magi drop-in, serial-number selection, local JSON only and no listening ADS-B TCP ports. No global USB permission or driver blacklist is required. Runtime files are recreated by systemd at boot. Existing camera configurations, credentials and footage are not modified by provisioning.
 
+## Reconnection and device identity
+
+An attached sensor's readings and availability are dynamic. Its assigned role
+must not silently move to a different device just because that device appears
+first in a scan.
+
+- **RTL-SDR:** USB bus/device numbers may change when moving or reconnecting the
+  same receiver. Magi uses its serial-scoped udev rule and decoder selection,
+  not a saved USB bus number. Sensor setup now puts a five-second, unlimited
+  restart policy in the readsb drop-in, including for existing distro units and
+  clean decoder exits. A deliberate service stop still stays stopped. The
+  drop-in supplies the `magi-sdr` supplementary group; access remains limited to
+  the selected serial/product with mode `0660`. It does not override device
+  sandbox restrictions or open all USB devices.
+- **SIM7600/GNSS:** The collector retries the configured stable by-id AT port,
+  verifies the modem again after reconnecting, and re-enables standalone GNSS
+  after a modem reset. NMEA stays with its configured or same-modem stable
+  sibling. A changed ttyUSB number does not require a new selection.
+- **Rerunning detection:** A saved receiver serial and AT port take precedence.
+  If absent, their configuration is retained; a newly attached device is not
+  silently substituted. Initial discovery refuses multiple possible modems
+  before probing them. Interfaces belonging to one stable modem identity are
+  tried together. Use explicit sensor flags to intentionally select a replacement.
+  Duplicate RTL-SDR serials fail setup. Modems that expose identical by-id
+  identities cannot be distinguished safely by this scheme; assign unique
+  hardware identities before using them together.
+- **Feed readers:** Local ADS-B readers keep reopening the live file. Missing,
+  stale or malformed data is reported without permanently stopping collection;
+  valid later samples recover automatically.
+- **Cameras:** Transport reconnects to the configured host and stream. Changing
+  the host, RTSP port or stream paths through Magi settings now invalidates both manual and star
+  pointing calibration before geometry matching can resume. Credential-only
+  changes do not invalidate the calibrated flag. Automatic DHCP-address recovery
+  and physical-camera identity verification on each connection are not implemented.
+  Direct external config-file edits cannot be compared with the previous endpoint
+  at startup and are outside this guard.
+- **Other hardware:** There is no live orientation-sensor driver or integrated
+  Hailo inference path yet. Do not infer hotplug or identity guarantees from a
+  successful hardware probe alone.
+
+Existing receivers need a sensor-setup rerun while the selected hardware is
+attached to install the new readsb drop-in; an application-only update does not
+rewrite receiver provisioning. No Pi hotplug or permissions repair is established
+by the synthetic regression tests. Check the effective service account, group
+membership, device-node mode and service sandbox if readsb cannot read USB
+device details; changing the configured serial is not a diagnosis.
+
 ## Location and calibration
 
 Each camera offers GPS or manual location. Existing configured coordinates remain manual on upgrade; an unconfigured station defaults to GPS. GPS readings supply effective coordinates without overwriting manual values. Three advancing fixes establish a fixed-station position, persisted in `/var/lib/magi-sensors/location.json`; this avoids GPS jitter invalidating camera calibration. Live fix time, MSL altitude, source and freshness appear in Settings. Loss of fix retains the latched location, clearly marked last-known. A collector snapshot older than 20 seconds cannot claim a live fix or synchronized clock.
@@ -36,6 +83,11 @@ Each camera offers GPS or manual location. Existing configured coordinates remai
 CGPSINFO altitude is mean-sea-level height. It is never used as WGS84 height. Optional valid GGA contributes WGS84 height = MSL height + geoid separation. If unavailable during initial position acquisition, WGS84 elevation remains manual. Once NMEA is verified, use `--reset-location` to acquire a new station snapshot including height. GGA reports HDOP and satellites used; this is not a quantified meter accuracy estimate.
 
 Moving more than 100 m from the latched location disables automatic geometry matching while live fixes report the movement. After physically moving, run setup with `--reset-location`, then recalibrate every camera (even a small move may change orientation). Previously calibrated stored coordinates differing by more than 100 m also prevent automatic geometry matching after a reset. There is no orientation sensor driver yet; BNO085 is not installed. Star calibration still requires manually named stars.
+
+Automatic relocation is a separate, unresolved policy from device reconnection:
+live GPS position must be separated from the calibration reference and from
+externally shared antenna coordinates. The reconnection changes above do not
+change the fixed-station latch or update OpenSky's antenna location.
 
 ## Time
 

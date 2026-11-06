@@ -12,7 +12,10 @@ from update_agent import ENV
 
 def prepare_receiver_probe(root):
     """A disposable script tests the launcher, never actual sensors or units."""
-    fixture = Path(root)/'receiver-sandbox'
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True, mode=0o755)
+    root.chmod(0o755)
+    fixture = root/'receiver-sandbox'
     source = fixture/'opt/magi'
     scripts = source/'scripts'
     allowed = [fixture/name for name in ('usr/local/lib/magi-sensors', 'etc/magi-sensors',
@@ -20,6 +23,12 @@ def prepare_receiver_probe(root):
     denied = [scripts, fixture/'etc/unrelated', fixture/'usr/local/lib/unrelated', fixture]
     for directory in [*allowed, *denied]:
         directory.mkdir(parents=True, exist_ok=True, mode=0o755)
+    # mkdir(parents=True, mode=0755) applies mode only to the leaf.
+    # CI may use umask 0002, so normalize every intermediate fixture directory
+    # just as the production release extractor normalizes application code.
+    for directory in (fixture, *fixture.rglob('*')):
+        if directory.is_dir():
+            directory.chmod(0o755)
     for relative in ('etc/magi-sensors/config.json',
                      'etc/systemd/system/readsb.service.d/magi-receiver.conf',
                      'opt/magi/scripts/setup_sensors.py', 'opt/magi/scripts/receiver_service.py'):

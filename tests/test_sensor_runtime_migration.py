@@ -571,6 +571,28 @@ class ReceiverMigrationTests(unittest.TestCase):
         self.assertIn(str(source/'scripts'), probe.read_text())
         self.assertIn(str(fixture/'etc/unrelated'), probe.read_text())
 
+    def test_ci_sandbox_fixture_normalizes_intermediate_directories_under_shared_umask(self):
+        with patch.object(sys, 'path', [str(ROOT/'scripts'), *sys.path]):
+            check = load('check_update_systemd')
+        probe_root = self.root/'ci-shared-umask'
+        previous_umask = os.umask(0o002)
+        try:
+            fixture, source = check.prepare_receiver_probe(probe_root)
+        finally:
+            os.umask(previous_umask)
+        directories = [probe_root, *[path for path in probe_root.rglob('*') if path.is_dir()]]
+        for directory in directories:
+            with self.subTest(directory=directory.relative_to(self.root)):
+                self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o755)
+                self.assertEqual(directory.stat().st_mode & 0o022, 0)
+        calls = []
+        def runner(command, **kwargs):
+            calls.append(command)
+            return SimpleNamespace(returncode=0, stdout='fixture')
+        UPDATE.refresh_receiver_runtime(source, root=fixture, runner=runner)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][-1], str(source/'scripts/refresh_sensor_runtime.py'))
+
     def test_installer_calls_migration_after_successful_helper_install(self):
         calls = []
         with patch.object(INSTALL.os, 'geteuid', return_value=0), \

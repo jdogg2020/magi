@@ -4,6 +4,7 @@ require('./test_mask_editor.js');
 require('./test_event_review.js');
 require('./test_downloads.js');
 require('./test_live_refresh.js');
+require('./test_sensor_elevation.js');
 // Lightweight DOM harness for the actual dashboard JavaScript against a running
 // disposable synthetic service. This checks behavior, not browser rendering.
 const fs = require('fs');

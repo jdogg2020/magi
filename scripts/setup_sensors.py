@@ -37,6 +37,20 @@ def feeder_network_options(config):
             ' --net-bi-port 0 --net-ri-port 0 --net-ro-port 0 --net-sbs-port 0')
 
 
+def receiver_drop_in(binary, serial, config):
+    """Retry after unplug/reboot, including when reusing a distro's base unit.
+
+    USB loss can produce a clean decoder exit as well as a failure. A normal
+    systemctl stop still stops the service with Restart=always.
+    """
+    return ('[Unit]\nStartLimitIntervalSec=0\n[Service]\nExecStart=\n'
+            f'ExecStart={binary} --device-type rtlsdr --device {serial} --gain 49.6 '
+            '--write-json /run/readsb --write-json-every 1 --quiet'
+            f'{feeder_network_options(config)}\nRestart=always\nRestartSec=5\n'
+            'SupplementaryGroups=magi-sdr\n'
+            'Nice=5\nUMask=0022\n')
+
+
 def write(path, content, mode=0o644):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -123,6 +137,23 @@ def find_rtlsdr_serials(sysfs_root=Path('/sys/bus/usb/devices'),
     return serials
 
 
+def receiver_product(serial, sysfs_root=Path('/sys/bus/usb/devices')):
+    """Require one supported, exactly selected receiver before provisioning."""
+    devices = []
+    for device in Path(sysfs_root).glob('*'):
+        try:
+            product = (device/'idProduct').read_text().strip()
+            if ((device/'serial').read_text().strip() == serial
+                    and (device/'idVendor').read_text().strip() == RTLSDR_VENDOR
+                    and product in RTLSDR_PRODUCTS):
+                devices.append(product)
+        except OSError:
+            continue
+    if len(devices) != 1:
+        raise RuntimeError('Expected exactly one connected RTL2832U-family receiver with that serial.')
+    return devices[0]
+
+
 def sim7600_candidates(by_id_dir=Path('/dev/serial/by-id')):
     """Stable by-id ports named SIMCom, SIM7600, or SimTech.
 
@@ -135,6 +166,11 @@ def sim7600_candidates(by_id_dir=Path('/dev/serial/by-id')):
         return []
     return [p for p in entries
             if any(name in p.name.lower() for name in ('sim7600', 'simcom', 'simtech'))]
+
+
+def modem_identity(port):
+    """Group USB interfaces, not different modems, under one stable identity."""
+    return re.sub(r'-if[0-9a-fA-F]{2}(?:-port\d+)?$', '', Path(port).name)
 
 
 def provisioning_summary(config):
@@ -205,7 +241,7 @@ def probe_sim7600(port_path, query_fn=None, port_opener=None, time_left_fn=None,
 def detect_sensors(sysfs_root=Path('/sys/bus/usb/devices'),
                    by_id_dir=Path('/dev/serial/by-id'),
                    query_fn=None, port_opener=None, busy=None,
-                   owned_ports=(), time_left_fn=None):
+                   owned_ports=(), time_left_fn=None, owned_adsb_serial=None):
     """Detect attached sensor hardware.
 
     Returns {'adsb_serial', 'gnss_port', 'gnss_status', 'gnss_unusable'}.
@@ -214,7 +250,9 @@ def detect_sensors(sysfs_root=Path('/sys/bus/usb/devices'),
     When time_left_fn is given, it returns seconds of probe budget left:
     probing stops once it reaches zero, and unprobed candidates are
     reported unusable with a budget-expired reason.
-    Multiple RTL-SDR receivers raise instead of guessing which one to bind.
+    Multiple unselected receivers or modems raise instead of guessing. A saved
+    selection is retained on reruns, even when it is temporarily disconnected;
+    another attached device is never silently assigned its role.
     Ports in owned_ports were verified by Magi on a previous provisioning
     and are accepted without a fresh probe: our own collector may hold
     one busy, and the provisioning branch stops that collector and
@@ -224,6 +262,10 @@ def detect_sensors(sysfs_root=Path('/sys/bus/usb/devices'),
         busy = port_busy
     owned = {str(p) for p in owned_ports if p}
     serials = find_rtlsdr_serials(sysfs_root)
+    if owned_adsb_serial:
+        serials = [serial for serial in serials if serial == owned_adsb_serial]
+        if not serials:
+            print('Configured ADS-B receiver is absent; retaining its identity and waiting for reconnection.')
     if len(serials) > 1:
         raise RuntimeError(
             'Multiple RTL-SDR receivers detected; provision one explicitly '
@@ -231,7 +273,15 @@ def detect_sensors(sysfs_root=Path('/sys/bus/usb/devices'),
     adsb_serial = serials[0] if serials else None
     gnss_port = None
     unusable = []
-    for candidate in sim7600_candidates(by_id_dir):
+    candidates = sim7600_candidates(by_id_dir)
+    if owned:
+        candidates = [candidate for candidate in candidates if str(candidate) in owned]
+        if not candidates:
+            unusable.append('configured GNSS AT port is not visible; retaining its identity')
+    if len({modem_identity(candidate) for candidate in candidates}) > 1:
+        raise RuntimeError('Multiple possible GNSS modems detected; select a verified '
+                           'AT port explicitly with --gnss-port. No modem was probed.')
+    for candidate in candidates:
         text = str(candidate)
         if text in owned:
             gnss_port = text
@@ -297,7 +347,8 @@ def resolve_sensor_args(args, config, detect_fn=None, active_fn=None,
     Raises on competing-service ownership. Mutates args with detected values.
     """
     if detect_fn is None:
-        detect_fn = detect_sensors
+        def detect_fn(**kwargs):
+            return detect_sensors(owned_adsb_serial=config.get('adsb_serial'), **kwargs)
     if active_fn is None:
         active_fn = active
     if candidates_fn is None:
@@ -338,9 +389,12 @@ def resolve_sensor_args(args, config, detect_fn=None, active_fn=None,
         if gnss_incomplete:
             reasons = '; '.join(found['gnss_unusable']) or 'modem no longer visible'
             print('WARNING: GNSS provisioning incomplete: hardware was detected but could not be verified within ' +
-                  f'{gnss_wait_seconds}s ({reasons}). Provisioning without GNSS time; rerun setup once the modem is ready.')
+                  f'{gnss_wait_seconds}s ({reasons}). Existing GNSS configuration is retained; '
+                  'no new GNSS time provisioning. Rerun setup once the modem is ready.')
         if not found['adsb_serial'] and not found['gnss_port']:
-            if gnss_incomplete:
+            if config.get('at_port') or config.get('adsb_serial'):
+                print('Configured sensors are currently unavailable; saved identities and services are unchanged.')
+            elif gnss_incomplete:
                 print('No usable sensor hardware to provision; leaving sensor services unprovisioned.')
             else:
                 print('No sensor hardware detected; leaving sensor services unprovisioned.')
@@ -403,6 +457,7 @@ def main():
             raise RuntimeError('NMEA candidate is busy.')
         config['nmea_port'] = args.nmea_port
     if args.adsb_serial:
+        product = receiver_product(args.adsb_serial)
         apt('rtl-sdr')
         binary = decoder()
         # Use existing Debian account if present; no additional decoder daemon.
@@ -410,24 +465,16 @@ def main():
             run('useradd', '--system', '--user-group', '--home-dir', '/nonexistent', '--shell', '/usr/sbin/nologin', 'readsb')
         run('groupadd', '-f', 'magi-sdr')
         run('usermod', '-aG', 'magi-sdr', 'readsb')
-        devices = []
-        for device in Path('/sys/bus/usb/devices').glob('*'):
-            try:
-                if (device/'serial').read_text().strip() == args.adsb_serial and (device/'idVendor').read_text().strip() == '0bda':
-                    devices.append((device/'idProduct').read_text().strip())
-            except OSError:
-                pass
-        if len(devices) != 1 or not re.fullmatch('[0-9a-f]{4}', devices[0]):
-            raise RuntimeError('Expected exactly one connected Realtek receiver with that serial.')
-        rule = f'SUBSYSTEM=="usb", ENV{{DEVTYPE}}=="usb_device", ATTR{{idVendor}}=="0bda", ATTR{{idProduct}}=="{devices[0]}", ATTR{{serial}}=="{args.adsb_serial}", GROUP="magi-sdr", MODE="0660"\n'
+        rule = f'SUBSYSTEM=="usb", ENV{{DEVTYPE}}=="usb_device", ATTR{{idVendor}}=="0bda", ATTR{{idProduct}}=="{product}", ATTR{{serial}}=="{args.adsb_serial}", GROUP="magi-sdr", MODE="0660"\n'
         write('/etc/udev/rules.d/99-magi-sdr.rules', rule)
         run('udevadm', 'control', '--reload-rules')
-        run('udevadm', 'trigger', '--action=add', '--subsystem-match=usb', '--attr-match=idVendor=0bda', '--attr-match=idProduct='+devices[0])
+        run('udevadm', 'trigger', '--action=add', '--subsystem-match=usb', '--attr-match=idVendor=0bda', '--attr-match=idProduct='+product)
         run('udevadm', 'settle')
         # Create a base unit only on systems without the distro service.
         if not any(Path(p).exists() for p in ('/usr/lib/systemd/system/readsb.service', '/lib/systemd/system/readsb.service', '/etc/systemd/system/readsb.service')):
             write('/etc/systemd/system/readsb.service', '[Unit]\nDescription=Local ADS-B receiver\n[Service]\nUser=readsb\nRuntimeDirectory=readsb\nRuntimeDirectoryMode=0755\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=multi-user.target\n')
-        write('/etc/systemd/system/readsb.service.d/magi-receiver.conf', f'[Service]\nExecStart=\nExecStart={binary} --device-type rtlsdr --device {args.adsb_serial} --gain 49.6 --write-json /run/readsb --write-json-every 1 --quiet{feeder_network_options(config)}\nNice=5\nUMask=0022\n')
+        write('/etc/systemd/system/readsb.service.d/magi-receiver.conf',
+              receiver_drop_in(binary, args.adsb_serial, config))
         config['adsb_serial'] = args.adsb_serial
     if args.gnss_time:
         for unit in ('ntp.service', 'ntpsec.service', 'openntpd.service'):

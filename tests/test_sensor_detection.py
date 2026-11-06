@@ -173,6 +173,19 @@ class DetectionTests(unittest.TestCase):
             self.assertIn('usb-SIMCOM_SIM800_ABC-if02-port0', names)
             self.assertNotIn('usb-Other_Device-if00-port0', names)
 
+    def test_explicit_receiver_selection_rejects_wrong_product_missing_and_duplicates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_sysfs(directory, [
+                ('1-1', '0bda', '2838', 'SAVED'),
+                ('1-2', '0bda', '8153', 'ETHERNET'),
+                ('1-3', '1234', '2838', 'OTHER'),
+                ('1-4', '0bda', '2832', 'DUPLICATE'),
+                ('1-5', '0bda', '2838', 'DUPLICATE')])
+            self.assertEqual(SETUP.receiver_product('SAVED', root), '2838')
+            for serial in ('ETHERNET', 'OTHER', 'MISSING', 'DUPLICATE', 'SAV'):
+                with self.subTest(serial=serial), self.assertRaises(RuntimeError):
+                    SETUP.receiver_product(serial, root)
+
     def test_probe_accepts_only_sim7600_identity(self):
         sim = query_stub({'AT': ['OK'], 'AT+CGMM': ['SIM7600G-H', 'OK']})
         other = query_stub({'AT': ['OK'], 'AT+CGMM': ['SIM800', 'OK']})
@@ -190,40 +203,40 @@ class DetectionTests(unittest.TestCase):
 
         self.assertFalse(SETUP.probe_sim7600('port', query_fn=sim, port_opener=opener_raises))
 
-    def test_detect_finds_both_and_skips_busy_and_unverified(self):
+    def test_detect_finds_both_and_skips_busy_and_unverified_interfaces(self):
         sim = query_stub({'AT': ['OK'], 'AT+CGMM': ['SIM7600G-H', 'OK']})
         other = query_stub({'AT': ['OK'], 'AT+CGMM': ['SIM800', 'OK']})
 
         def query_by_port(port, command):
-            if '_OK-' in port.label:
+            if 'if02-port0' in port.label:
                 return sim(port, command)
             return other(port, command)
 
         with tempfile.TemporaryDirectory() as directory:
             sysfs = make_sysfs(directory, [('1-1', '0bda', '2838', 'NOOELEC1')])
             by_id = make_by_id(directory, [
-                'usb-SIMCOM_SIM7600G-H_AA-if02-port0',
-                'usb-SIMCOM_SIM7600G-H_BUSY-if02-port0',
-                'usb-SIMCOM_SIM7600G-H_OK-if02-port0',
+                'usb-SIMCOM_SIM7600G-H_ONE-if00-port0',
+                'usb-SIMCOM_SIM7600G-H_ONE-if01-port0',
+                'usb-SIMCOM_SIM7600G-H_ONE-if02-port0',
             ])
             opener = lambda path: FakePort(str(path))  # noqa: E731
-            busy = lambda path: 'BUSY' in str(path)  # noqa: E731
+            busy = lambda path: 'if01-port0' in str(path)  # noqa: E731
             found = SETUP.detect_sensors(sysfs, by_id, query_fn=query_by_port,
                                          port_opener=opener, busy=busy)
             self.assertEqual(found['adsb_serial'], 'NOOELEC1')
             self.assertEqual(found['gnss_status'], 'found')
-            self.assertTrue(found['gnss_port'].endswith('_OK-if02-port0'))
+            self.assertTrue(found['gnss_port'].endswith('_ONE-if02-port0'))
 
     def test_detect_distinguishes_unusable_from_absent(self):
         other = query_stub({'AT': ['OK'], 'AT+CGMM': ['SIM800', 'OK']})
         with tempfile.TemporaryDirectory() as directory:
             sysfs = make_sysfs(directory, [])
             by_id = make_by_id(directory, [
-                'usb-SIMCOM_SIM7600G-H_AA-if02-port0',
-                'usb-SIMCOM_SIM7600G-H_BUSY-if02-port0',
+                'usb-SIMCOM_SIM7600G-H_ONE-if00-port0',
+                'usb-SIMCOM_SIM7600G-H_ONE-if01-port0',
             ])
             opener = lambda path: FakePort(str(path))  # noqa: E731
-            busy = lambda path: 'BUSY' in str(path)  # noqa: E731
+            busy = lambda path: 'if01-port0' in str(path)  # noqa: E731
             found = SETUP.detect_sensors(sysfs, by_id, query_fn=other,
                                          port_opener=opener, busy=busy)
             self.assertIsNone(found['gnss_port'])
@@ -299,8 +312,82 @@ class DetectionTests(unittest.TestCase):
                                      port_opener=lambda p: FakePort(None),
                                      busy=lambda p: False)
 
+    def test_detect_refuses_multiple_modems_before_probing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            by_id = make_by_id(directory, [
+                'usb-SIMCOM_SIM7600G-H_FIRST-if02-port0',
+                'usb-SIMCOM_SIM7600G-H_SECOND-if02-port0'])
+            with self.assertRaisesRegex(RuntimeError, 'Multiple possible GNSS modems'):
+                SETUP.detect_sensors(make_sysfs(directory, []), by_id,
+                    port_opener=lambda _: self.fail('Ambiguous devices must not be probed'))
+
+    def test_detect_prefers_saved_modem_even_when_another_sorts_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            by_id = make_by_id(directory, [
+                'usb-SIMCOM_SIM7600G-H_AAA-if02-port0',
+                'usb-SIMCOM_SIM7600G-H_SAVED-if02-port0'])
+            saved = str(by_id / 'usb-SIMCOM_SIM7600G-H_SAVED-if02-port0')
+            found = SETUP.detect_sensors(make_sysfs(directory, []), by_id,
+                owned_ports={saved}, busy=lambda _: True,
+                port_opener=lambda _: self.fail('Previously selected port needs no discovery probe'))
+            self.assertEqual(found['gnss_port'], saved)
+
+    def test_missing_saved_modem_does_not_reassign_a_different_modem(self):
+        with tempfile.TemporaryDirectory() as directory:
+            by_id = make_by_id(directory, ['usb-SIMCOM_SIM7600G-H_NEW-if02-port0'])
+            found = SETUP.detect_sensors(make_sysfs(directory, []), by_id,
+                owned_ports={str(by_id / 'usb-SIMCOM_SIM7600G-H_SAVED-if02-port0')},
+                port_opener=lambda _: self.fail('Never probe a replacement without selection'))
+            self.assertIsNone(found['gnss_port'])
+            self.assertEqual(found['gnss_status'], 'unusable')
+            self.assertIn('retaining its identity', found['gnss_unusable'][0])
+
+    def test_saved_sdr_survives_usb_reordering_and_temporary_absence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            by_id = make_by_id(directory, [])
+            sysfs = make_sysfs(directory, [
+                ('9-4', '0bda', '2838', 'SAVED'),
+                ('1-1', '0bda', '2838', 'OTHER')])
+            self.assertEqual(SETUP.detect_sensors(sysfs, by_id,
+                owned_adsb_serial='SAVED')['adsb_serial'], 'SAVED')
+            (sysfs / '9-4' / 'serial').unlink()
+            self.assertIsNone(SETUP.detect_sensors(sysfs, by_id,
+                owned_adsb_serial='SAVED')['adsb_serial'])
+            (sysfs / '9-4' / 'serial').write_text('SAVED')
+            self.assertEqual(SETUP.detect_sensors(sysfs, by_id,
+                owned_adsb_serial='SAVED')['adsb_serial'], 'SAVED')
+
+    def test_duplicate_saved_sdr_serial_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sysfs = make_sysfs(directory, [
+                ('1-1', '0bda', '2838', 'SAVED'),
+                ('1-2', '0bda', '2838', 'SAVED')])
+            with self.assertRaises(RuntimeError):
+                SETUP.detect_sensors(sysfs, make_by_id(directory, []),
+                                     owned_adsb_serial='SAVED')
+
+    def test_receiver_drop_in_retries_after_absence_or_clean_disconnect(self):
+        with patch.object(SETUP, 'feeder_network_options', return_value=''):
+            drop_in = SETUP.receiver_drop_in('/receiver', 'SAVED', {})
+        self.assertIn('[Unit]\nStartLimitIntervalSec=0\n', drop_in)
+        self.assertIn('Restart=always\nRestartSec=5\n', drop_in)
+        self.assertIn('--device SAVED ', drop_in)
+        self.assertIn('SupplementaryGroups=magi-sdr\n', drop_in)
+        self.assertNotIn('--net', drop_in)
+        self.assertNotIn('User=root', drop_in)
+
 
 class ResolveTests(unittest.TestCase):
+    def test_default_detection_receives_existing_sdr_identity(self):
+        args = sensor_args(detect=True)
+        found = {'adsb_serial': 'SAVED', 'gnss_port': None,
+                 'gnss_status': 'absent', 'gnss_unusable': []}
+        with patch.object(SETUP, 'detect_sensors', return_value=found) as detect:
+            SETUP.resolve_sensor_args(args, {'adsb_serial': 'SAVED'},
+                active_fn=lambda _: False, candidates_fn=lambda: [])
+        detect.assert_called_once_with(owned_adsb_serial='SAVED', owned_ports=set())
+        self.assertEqual(args.adsb_serial, 'SAVED')
+
     def test_detected_adsb_blocked_by_competing_service(self):
         args = sensor_args(detect=True)
         detect = lambda owned_ports=(), time_left_fn=None: {'adsb_serial': 'NOOELEC1', 'gnss_port': None,

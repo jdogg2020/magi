@@ -9,7 +9,12 @@ AIRCRAFT = Path('/run/readsb/aircraft.json')
 
 
 def number(value):
-    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+    try:
+        return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+    except OverflowError:
+        # Valid JSON can contain an integer too large to convert to a float.
+        # A malformed sample must not terminate the shared polling thread.
+        return False
 
 
 def bounded_json(path, limit=2_000_000):

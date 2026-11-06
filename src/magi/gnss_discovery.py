@@ -305,8 +305,9 @@ class GnssConnection:
                 state = manager_state(timeout=remaining(1))
                 if state:
                     raise GnssUnavailable(state)
-                if port_busy(candidate, timeout=remaining(1)):
-                    raise GnssUnavailable('device_busy')
+                for sibling in physical:
+                    if port_busy(sibling, timeout=remaining(1)):
+                        raise GnssUnavailable('device_busy')
             try:
                 port = self.opener(str(candidate), 115200,
                                    timeout=remaining(.2), write_timeout=remaining(1),

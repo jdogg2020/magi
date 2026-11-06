@@ -41,7 +41,12 @@ class ReceiverMigrationTests(unittest.TestCase):
         self.active = 'active'
         self.enabled = 'enabled'
         self.command_failure = None
-        self.migration = M.Migration(self.root, self.source, self.run_command)
+        self.now = 0
+        self.restart_count = 0
+        self.process_samples = None
+        self.command_options = []
+        self.migration = M.Migration(self.root, self.source, self.run_command,
+                                     clock=lambda: self.now, sleep=self.advance)
         self.config = {'adsb_serial': 'BENCH_A', 'at_port': '/dev/serial/by-id/old-modem',
                        'nmea_port': '/dev/serial/by-id/old-nmea',
                        'clock_socket': '/run/chrony/magi-gnss.sock',
@@ -62,14 +67,33 @@ class ReceiverMigrationTests(unittest.TestCase):
         self.put(M.RULES, M.legacy_rule(self.config['adsb_serial'], '2838'))
         self.put(M.BINARY, b'fixture decoder; never executed', 0o755)
 
+    def advance(self, seconds):
+        self.now += seconds
+
+    @staticmethod
+    def process_sample(invocation, active='active', sub='running', pid=123, result='success'):
+        return (f'InvocationID={invocation}\nActiveState={active}\nSubState={sub}\n'
+                f'MainPID={pid}\nResult={result}\n')
+
     def run_command(self, command, **kwargs):
         self.calls.append(command)
+        self.command_options.append(kwargs)
         self.assertLessEqual(kwargs['timeout'], 5)
         if self.command_failure and self.command_failure(command):
             return SimpleNamespace(returncode=1, stdout='', stderr='fixture failure')
         output = ''
+        if command[:2] == ['systemctl', 'restart']:
+            self.restart_count += 1
         if command[:2] == ['systemctl', 'show']:
-            output = f'ActiveState={self.active}\nUnitFileState={self.enabled}\n'
+            if '--property=InvocationID' in command:
+                if self.process_samples:
+                    output = self.process_samples[0]
+                    if len(self.process_samples) > 1:
+                        self.process_samples.pop(0)
+                else:
+                    output = self.process_sample('invocation-'+str(self.restart_count))
+            else:
+                output = f'ActiveState={self.active}\nUnitFileState={self.enabled}\n'
         return SimpleNamespace(returncode=0, stdout=output, stderr='')
 
     def content(self, name):
@@ -244,6 +268,111 @@ class ReceiverMigrationTests(unittest.TestCase):
                 self.active, self.enabled = active, enabled
                 self.assertTrue(self.migration.run())
                 self.assertEqual(bool(self.service_actions()), restart)
+
+    def test_fresh_supervisor_must_be_stable_before_journal_is_removed(self):
+        sample = self.process_sample
+        self.process_samples = [sample('old'), sample('old'),
+                                sample('new', 'activating', 'start', 0),
+                                sample('new'), sample('new')]
+        observations = []
+        def observe(command):
+            if '--property=InvocationID' in command and self.restart_count:
+                observations.append((self.root/M.JOURNAL).exists())
+            return False
+        self.command_failure = observe
+        self.assertTrue(self.migration.run())
+        self.assertEqual(observations, [True, True, True, True])
+        self.assertEqual(self.now, 3)
+        self.assertFalse((self.root/M.JOURNAL).exists())
+        for command, options in zip(self.calls, self.command_options):
+            if '--property=InvocationID' in command:
+                self.assertGreater(options['timeout'], 0)
+                self.assertLessEqual(options['timeout'], 2)
+
+    def test_accepted_restart_then_startup_failure_restores_settings(self):
+        for active, sub, result in [('failed', 'failed', 'exit-code'),
+                                    ('activating', 'auto-restart', 'exit-code'),
+                                    ('inactive', 'dead', 'success')]:
+            with self.subTest(active=active, sub=sub):
+                self.provision()
+                self.calls.clear()
+                before = self.snapshot()
+                self.process_samples = [self.process_sample('old'),
+                    self.process_sample('new', active, sub, 0, result)]
+                with self.assertRaisesRegex(RuntimeError, 'supervisor startup failed.*prior receiver settings restored'):
+                    self.migration.run()
+                self.assertEqual(self.snapshot(), before)
+                self.assertFalse((self.root/M.JOURNAL).exists())
+                self.assertEqual(self.service_actions(), [
+                    ['systemctl', 'restart', '--no-block', 'readsb.service'],
+                    ['systemctl', 'restart', '--no-block', 'readsb.service']])
+
+    def test_stale_old_running_invocation_cannot_pass_startup_check(self):
+        before = self.snapshot()
+        self.process_samples = [self.process_sample('old')]
+        with self.assertRaisesRegex(RuntimeError, 'startup timed out.*prior receiver settings restored'):
+            self.migration.run()
+        self.assertEqual(self.now, 10)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.root/M.JOURNAL).exists())
+
+    def test_restart_loop_never_stabilizes_and_rolls_back(self):
+        before = self.snapshot()
+        self.process_samples = [self.process_sample('old')]+[
+            self.process_sample('new-'+str(index), pid=100+index) for index in range(12)]
+        with self.assertRaisesRegex(RuntimeError, 'startup timed out'):
+            self.migration.run()
+        self.assertEqual(self.now, 10)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.root/M.JOURNAL).exists())
+
+    def test_missing_invocation_or_zero_pid_does_not_confirm_startup(self):
+        for invocation, pid in [('', 123), ('new', 0)]:
+            with self.subTest(invocation=invocation, pid=pid):
+                self.provision()
+                before = self.snapshot()
+                self.process_samples = [self.process_sample('old'), self.process_sample(invocation, pid=pid)]
+                with self.assertRaisesRegex(RuntimeError, 'startup timed out'):
+                    self.migration.run()
+                self.assertEqual(self.snapshot(), before)
+
+    def test_startup_check_preserves_rollback_time_in_transient_budget(self):
+        self.migration.started = 0
+        self.now = 27
+        self.process_samples = [self.process_sample('old')]
+        with self.assertRaisesRegex(RuntimeError, 'startup timed out'):
+            self.migration.wait_started('old')
+        self.assertEqual(self.now, 30)
+        self.assertLessEqual(len(self.calls), 3)
+
+    def test_enabled_inactive_supervisor_starts_even_without_hardware(self):
+        self.active = 'inactive'
+        self.process_samples = [self.process_sample('', 'inactive', 'dead', 0),
+                                self.process_sample('new'), self.process_sample('new')]
+        self.assertFalse((self.root/'sys').exists())
+        self.assertTrue(self.migration.run())
+        self.assertEqual(self.now, 1)
+        self.assertEqual(len(self.service_actions()), 1)
+
+    def test_enabled_inactive_startup_failure_restores_stopped_state(self):
+        self.active = 'inactive'
+        before = self.snapshot()
+        self.process_samples = [self.process_sample('', 'inactive', 'dead', 0),
+                                self.process_sample('new', 'failed', 'failed', 0, 'exit-code')]
+        with self.assertRaisesRegex(RuntimeError, 'startup failed.*prior receiver settings restored'):
+            self.migration.run()
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.service_actions(), [
+            ['systemctl', 'restart', '--no-block', 'readsb.service'],
+            ['systemctl', 'stop', '--no-block', 'readsb.service']])
+        self.assertFalse((self.root/M.JOURNAL).exists())
+
+    def test_disabled_inactive_receiver_does_not_get_started_or_polled(self):
+        self.active, self.enabled = 'inactive', 'disabled'
+        self.assertTrue(self.migration.run())
+        self.assertEqual(self.service_actions(), [])
+        self.assertFalse(any('--property=InvocationID' in call for call in self.calls))
+        self.assertEqual(self.now, 0)
 
     def test_transient_command_failure_rolls_back_every_receiver_file(self):
         before = self.snapshot()

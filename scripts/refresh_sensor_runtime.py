@@ -14,6 +14,7 @@ import stat
 import subprocess
 import syslog
 import tempfile
+import time
 
 CONFIG = 'etc/magi-sensors/config.json'
 DROP_IN = 'etc/systemd/system/readsb.service.d/magi-receiver.conf'
@@ -62,11 +63,14 @@ def legacy_rule(serial, product):
 
 
 class Migration:
-    def __init__(self, root=Path('/'), source=None, runner=subprocess.run):
+    def __init__(self, root=Path('/'), source=None, runner=subprocess.run,
+                 clock=time.monotonic, sleep=time.sleep):
         self.root = Path(root).absolute()
         self.source = Path(source or Path(__file__).absolute().parent)
         self.runner = runner
         self.owner = os.geteuid()
+        self.clock, self.sleep = clock, sleep
+        self.started = self.clock()
 
     def path(self, relative):
         return self.root/relative
@@ -138,9 +142,9 @@ class Migration:
         finally:
             os.close(fd)
 
-    def command(self, *args):
+    def command(self, *args, timeout=5):
         try:
-            result = self.runner(list(args), capture_output=True, text=True, timeout=5)
+            result = self.runner(list(args), capture_output=True, text=True, timeout=timeout)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise RuntimeError(f'{" ".join(args)}: {type(error).__name__}') from error
         if result.returncode:
@@ -155,6 +159,53 @@ class Migration:
         if not fields.get('ActiveState') or not fields.get('UnitFileState'):
             raise RuntimeError('Cannot determine readsb.service active/enabled state')
         return {'active': fields['ActiveState'], 'enabled': fields['UnitFileState']}
+
+    def process_state(self, timeout=2):
+        output = self.command('systemctl', 'show', 'readsb.service',
+                              '--property=ActiveState', '--property=SubState',
+                              '--property=MainPID', '--property=InvocationID',
+                              '--property=Result', timeout=timeout)
+        fields = dict(line.split('=', 1) for line in output.splitlines() if '=' in line)
+        if (not fields.get('ActiveState') or not fields.get('SubState')
+                or not fields.get('MainPID', '').isdigit() or 'InvocationID' not in fields):
+            raise RuntimeError('Cannot determine readsb.service supervisor startup state')
+        return fields
+
+    def wait_started(self, previous_invocation):
+        """Confirm a new supervisor, not receiver hardware or aircraft reception."""
+        # Bound this additional check and leave at least 15 seconds of the
+        # transient unit's 45-second runtime for restoring prior settings.
+        deadline = min(self.clock()+10, self.started+30)
+        stable = None
+        stable_since = None
+        last = None
+        while self.clock() < deadline:
+            remaining = deadline-self.clock()
+            if remaining <= 0:
+                break
+            last = self.process_state(timeout=min(2, remaining))
+            now = self.clock()
+            invocation = last['InvocationID']
+            fresh = bool(invocation) and invocation != previous_invocation
+            if fresh and (last['ActiveState'] in ('failed', 'inactive')
+                          or last['SubState'] == 'auto-restart'):
+                raise RuntimeError('readsb.service supervisor startup failed '
+                                   f"({last['ActiveState']}/{last['SubState']}, result={last.get('Result', 'unknown')})")
+            if (fresh and last['ActiveState'] == 'active' and last['SubState'] == 'running'
+                    and int(last['MainPID']) > 0):
+                identity = (invocation, last['MainPID'])
+                if identity == stable and now-stable_since >= 1 and now < deadline:
+                    return
+                if identity != stable:
+                    stable, stable_since = identity, now
+            else:
+                stable = stable_since = None
+            remaining = deadline-self.clock()
+            if remaining > 0:
+                self.sleep(min(1, remaining))
+        state = 'not checked' if last is None else last['ActiveState']+'/'+last['SubState']
+        raise RuntimeError('readsb.service supervisor startup timed out waiting for a new stable running invocation '
+                           f'({state}); hardware reception was not checked')
 
     def reload(self):
         self.command('systemctl', 'daemon-reload')
@@ -282,6 +333,7 @@ class Migration:
         self.sync(self.path(JOURNAL).parent)
 
     def run(self):
+        self.started = self.clock()
         # Missing provisioning is a genuine no-op: no directories, services,
         # packages, accounts, config or permission rules are created.
         if not (self.path(CONFIG).exists() or self.path(CONFIG).is_symlink()):
@@ -328,10 +380,13 @@ class Migration:
                 if (state['active'] in ('active', 'activating', 'reloading')
                         or (state['active'] in ('inactive', 'failed')
                             and state['enabled'] in ('enabled', 'enabled-runtime'))):
+                    previous_invocation = self.process_state()['InvocationID']
                     journal['restarted'] = True
                     self.save_journal(journal)
-                    # No hardware/fix/reception wait: the supervisor owns recovery.
+                    # Queue without waiting on dependency jobs, then verify only
+                    # a fresh supervisor process. Missing/busy hardware is valid.
                     self.command('systemctl', 'restart', '--no-block', 'readsb.service')
+                    self.wait_started(previous_invocation)
                 self.path(JOURNAL).unlink()
                 self.sync(self.path(JOURNAL).parent)
             except BaseException as error:

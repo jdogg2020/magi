@@ -77,7 +77,9 @@ older manually chosen device must remain pinned.
 - **Cameras:** Transport reconnects to the configured host and stream. Changing
   the host, RTSP port or stream paths through Magi settings now invalidates both manual and star
   pointing calibration before geometry matching can resume. Credential-only
-  changes do not invalidate the calibrated flag. Automatic DHCP-address recovery
+  changes do not invalidate the calibrated flag, but the existing RTSP fingerprint
+  includes credentials, so rotating credentials hides the active star report
+  until the camera is re-solved. Automatic DHCP-address recovery
   and physical-camera identity verification on each connection are not implemented.
   Direct external config-file edits cannot be compared with the previous endpoint
   at startup and are outside this guard.
@@ -91,7 +93,11 @@ scoped udev rule and managed drop-in, and keeps explicit pins and feeding option
 It does not need the old receiver attached, download/build a decoder, install
 packages, or create a new sensor role. A short-lived root service has only the
 required sensor paths writable; the updater's permanent hardening is unchanged.
-Interrupted or failed migration restores prior files from a private journal.
+The migration keeps its private journal until a restarted supervisor has a new
+running systemd invocation stable across two checks. Startup failure or timeout
+restores prior files; interrupted rollback retains the journal for recovery.
+This checks supervisor startup, not hardware access, GPS fix or aircraft reception.
+An absent or busy receiver is a valid waiting state for the running supervisor.
 Unknown/custom rules, unsafe paths, missing original provisioning or a much
 older missing runtime directory require sensor setup rather than being guessed
 or overwritten. Enabled receiver services are restarted even when inactive, so

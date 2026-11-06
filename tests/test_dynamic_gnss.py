@@ -242,6 +242,22 @@ class DiscoveryLifecycleTests(unittest.TestCase):
         self.assert_unavailable(connection, 'manager_active')
         self.assertEqual([path for path, _ in usb.opened], [A])
 
+    def test_competitor_acquiring_failed_interface_blocks_fallback_probe(self):
+        fallback = A.replace('if02', 'if03')
+        usb = FakeUsb([A, fallback])
+        connection = self.connection(usb, {'gnss_selection': 'auto'})
+
+        def fail_first(port, command, timeout):
+            usb.query(port, command, timeout)
+            usb.busy.add(A)
+            raise ValueError('first interface stopped responding')
+
+        connection.query = fail_first
+        self.assert_unavailable(connection, 'device_busy')
+        self.assertEqual([path for path, _ in usb.opened], [A])
+        self.assertEqual([(path, command) for path, _, command, _ in usb.commands], [(A, 'AT')])
+        self.assertEqual(usb.closed, [A])
+
 
 class OwnershipAndCandidateTests(unittest.TestCase):
     def test_proc_fallback_blocks_visible_owner_and_ignores_self(self):

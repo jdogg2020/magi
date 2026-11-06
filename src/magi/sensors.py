@@ -6,6 +6,7 @@ import time
 
 STATUS = Path('/run/magi-sensors/status.json')
 AIRCRAFT = Path('/run/readsb/aircraft.json')
+RECEIVER_STATUS = Path('/run/readsb/receiver-status.json')
 
 
 def number(value):
@@ -82,6 +83,16 @@ def aircraft_status():
                 'age_seconds': round(age, 2), 'aircraft': len(data['aircraft']),
                 'usable_positions': len(usable), 'source': str(AIRCRAFT)}
     except FileNotFoundError:
+        try:
+            receiver = bounded_json(RECEIVER_STATUS, 8192)
+            age = time.time() - receiver['updated_unix']
+            if receiver.get('schema') == 1 and -2 <= age <= 20:
+                return {'state': 'unavailable', 'source': str(AIRCRAFT),
+                        'receiver_state': receiver.get('state', 'unknown'),
+                        'selection': receiver.get('selection'),
+                        'detail': receiver.get('detail', 'Waiting for a current receiver feed.')}
+        except (OSError, ValueError, TypeError, KeyError, OverflowError):
+            pass
         return {'state': 'not_configured', 'source': str(AIRCRAFT)}
     except (OSError, ValueError, TypeError, KeyError, OverflowError):
         return {'state': 'unavailable', 'source': str(AIRCRAFT)}

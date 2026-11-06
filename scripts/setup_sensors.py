@@ -38,17 +38,43 @@ def feeder_network_options(config):
 
 
 def receiver_drop_in(binary, serial, config):
-    """Retry after unplug/reboot, including when reusing a distro's base unit.
-
-    USB loss can produce a clean decoder exit as well as a failure. A normal
-    systemctl stop still stops the service with Restart=always.
-    """
-    return ('[Unit]\nStartLimitIntervalSec=0\n[Service]\nExecStart=\n'
-            f'ExecStart={binary} --device-type rtlsdr --device {serial} --gain 49.6 '
-            '--write-json /run/readsb --write-json-every 1 --quiet'
+    """An unprivileged supervisor selects current hardware, not an old index."""
+    selection = config.get('adsb_selection', 'auto')
+    if selection not in ('auto', 'pinned'):
+        raise ValueError('Invalid ADS-B selection mode.')
+    pinned = ''
+    if selection == 'pinned':
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', serial or ''):
+            raise ValueError('Pinned receiver needs a valid serial.')
+        pinned = f' --serial={serial}'
+    return ('# Managed by Magi receiver runtime v2\n'
+            '[Unit]\nStartLimitIntervalSec=0\n[Service]\n'
+            'User=readsb\nGroup=readsb\nRuntimeDirectory=readsb\nRuntimeDirectoryMode=0755\n'
+            'NoNewPrivileges=true\nCapabilityBoundingSet=\nExecStart=\n'
+            f'ExecStart=/usr/bin/python3 /usr/local/lib/magi-sensors/receiver_service.py '
+            f'--readsb {binary} --selection {selection}{pinned} -- --gain 49.6'
             f'{feeder_network_options(config)}\nRestart=always\nRestartSec=5\n'
             'SupplementaryGroups=magi-sdr\n'
             'Nice=5\nUMask=0022\n')
+
+
+def receiver_udev_rules(selection, serial=None, product=None):
+    """Auto permission covers supported receivers only, never every USB device."""
+    if selection not in ('auto', 'pinned'):
+        raise ValueError('Invalid ADS-B selection mode.')
+    match = ''
+    products = sorted(RTLSDR_PRODUCTS)
+    if selection == 'pinned':
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', serial or ''):
+            raise ValueError('Pinned receiver needs a valid serial.')
+        if product not in RTLSDR_PRODUCTS:
+            raise ValueError('Pinned receiver needs a supported product identity.')
+        match = f', ATTR{{serial}}=="{serial}"'
+        products = [product]
+    return '# Managed by Magi receiver runtime v2\n' + ''.join(
+        f'SUBSYSTEM=="usb", ENV{{DEVTYPE}}=="usb_device", ATTR{{idVendor}}=="0bda", '
+        f'ATTR{{idProduct}}=="{pid}"{match}, GROUP="magi-sdr", MODE="0660"\n'
+        for pid in products)
 
 
 def write(path, content, mode=0o644):
@@ -241,7 +267,8 @@ def probe_sim7600(port_path, query_fn=None, port_opener=None, time_left_fn=None,
 def detect_sensors(sysfs_root=Path('/sys/bus/usb/devices'),
                    by_id_dir=Path('/dev/serial/by-id'),
                    query_fn=None, port_opener=None, busy=None,
-                   owned_ports=(), time_left_fn=None, owned_adsb_serial=None):
+                   owned_ports=(), time_left_fn=None, owned_adsb_serial=None,
+                   pinned_gnss_port=None):
     """Detect attached sensor hardware.
 
     Returns {'adsb_serial', 'gnss_port', 'gnss_status', 'gnss_unusable'}.
@@ -250,9 +277,8 @@ def detect_sensors(sysfs_root=Path('/sys/bus/usb/devices'),
     When time_left_fn is given, it returns seconds of probe budget left:
     probing stops once it reaches zero, and unprobed candidates are
     reported unusable with a budget-expired reason.
-    Multiple unselected receivers or modems raise instead of guessing. A saved
-    selection is retained on reruns, even when it is temporarily disconnected;
-    another attached device is never silently assigned its role.
+    Multiple unselected receivers or modems raise instead of guessing. Only
+    explicit pins restrict replacement; previous automatic discoveries do not.
     Ports in owned_ports were verified by Magi on a previous provisioning
     and are accepted without a fresh probe: our own collector may hold
     one busy, and the provisioning branch stops that collector and
@@ -274,8 +300,8 @@ def detect_sensors(sysfs_root=Path('/sys/bus/usb/devices'),
     gnss_port = None
     unusable = []
     candidates = sim7600_candidates(by_id_dir)
-    if owned:
-        candidates = [candidate for candidate in candidates if str(candidate) in owned]
+    if pinned_gnss_port:
+        candidates = [candidate for candidate in candidates if str(candidate) == pinned_gnss_port]
         if not candidates:
             unusable.append('configured GNSS AT port is not visible; retaining its identity')
     if len({modem_identity(candidate) for candidate in candidates}) > 1:
@@ -348,7 +374,10 @@ def resolve_sensor_args(args, config, detect_fn=None, active_fn=None,
     """
     if detect_fn is None:
         def detect_fn(**kwargs):
-            return detect_sensors(owned_adsb_serial=config.get('adsb_serial'), **kwargs)
+            return detect_sensors(
+                owned_adsb_serial=config.get('adsb_serial') if config.get('adsb_selection') == 'pinned' else None,
+                pinned_gnss_port=config.get('at_port') if config.get('gnss_selection') == 'pinned' else None,
+                **kwargs)
     if active_fn is None:
         active_fn = active
     if candidates_fn is None:
@@ -393,7 +422,8 @@ def resolve_sensor_args(args, config, detect_fn=None, active_fn=None,
                   'no new GNSS time provisioning. Rerun setup once the modem is ready.')
         if not found['adsb_serial'] and not found['gnss_port']:
             if config.get('at_port') or config.get('adsb_serial'):
-                print('Configured sensors are currently unavailable; saved identities and services are unchanged.')
+                print('Configured sensors are currently unavailable; installing runtime recovery for their configured modes.')
+                return True
             elif gnss_incomplete:
                 print('No usable sensor hardware to provision; leaving sensor services unprovisioned.')
             else:
@@ -421,6 +451,7 @@ def main():
     parser.add_argument('--gnss-time', action='store_true', help='Replace systemd-timesyncd with chrony plus coarse GPS time and network fallback')
     parser.add_argument('--reset-location', action='store_true', help='Acquire a new fixed station position; recalibrate cameras after moving')
     parser.add_argument('--detect', action='store_true', help='Detect attached GNSS/ADS-B hardware and provision it; explicit sensor flags take precedence')
+    parser.add_argument('--auto-sensors', action='store_true', help='Clear explicit sensor pins and automatically select one supported device per role')
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Run with sudo.')
@@ -432,6 +463,12 @@ def main():
         parser.error('Invalid receiver serial.')
     config_path = Path('/etc/magi-sensors/config.json')
     config = json.loads(config_path.read_text()) if config_path.exists() else {}
+    explicit_adsb, explicit_gnss = bool(args.adsb_serial), bool(args.gnss_port)
+    if args.auto_sensors:
+        if explicit_adsb or explicit_gnss:
+            parser.error('--auto-sensors cannot be combined with an explicit receiver or AT-port pin.')
+        args.detect = True
+        config.update(adsb_selection='auto', gnss_selection='auto')
     if args.gnss_time and not (args.gnss_port or config.get('at_port')):
         parser.error('GNSS time requires a verified AT port.')
     apt('python3-serial')
@@ -452,30 +489,41 @@ def main():
             if not any('SIM7600' in s for s in query(port, 'AT+CGMM')):
                 raise RuntimeError('Selected port did not identify as SIM7600.')
         config['at_port'] = args.gnss_port
+        config['gnss_selection'] = 'pinned' if explicit_gnss else config.get('gnss_selection', 'auto')
     if args.nmea_port:
         if shutil.which('fuser') and subprocess.run(['fuser', args.nmea_port], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
             raise RuntimeError('NMEA candidate is busy.')
         config['nmea_port'] = args.nmea_port
-    if args.adsb_serial:
-        product = receiver_product(args.adsb_serial)
+    provision_adsb = bool(args.adsb_serial or config.get('adsb_serial'))
+    if provision_adsb:
+        selected_serial = args.adsb_serial or config['adsb_serial']
+        selection = 'pinned' if explicit_adsb else config.get('adsb_selection', 'auto')
+        product = receiver_product(selected_serial) if args.adsb_serial else config.get('adsb_product')
+        config['adsb_selection'] = selection
+        if product:
+            config['adsb_product'] = product
         apt('rtl-sdr')
         binary = decoder()
         # Use existing Debian account if present; no additional decoder daemon.
         if subprocess.run(['id', 'readsb'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
             run('useradd', '--system', '--user-group', '--home-dir', '/nonexistent', '--shell', '/usr/sbin/nologin', 'readsb')
         run('groupadd', '-f', 'magi-sdr')
+        run('groupadd', '-f', 'readsb')
         run('usermod', '-aG', 'magi-sdr', 'readsb')
-        rule = f'SUBSYSTEM=="usb", ENV{{DEVTYPE}}=="usb_device", ATTR{{idVendor}}=="0bda", ATTR{{idProduct}}=="{product}", ATTR{{serial}}=="{args.adsb_serial}", GROUP="magi-sdr", MODE="0660"\n'
+        write(BIN.parent/'receiver_service.py', (ROOT/'scripts/receiver_service.py').read_text())
+        rule = receiver_udev_rules(selection, selected_serial, product)
         write('/etc/udev/rules.d/99-magi-sdr.rules', rule)
         run('udevadm', 'control', '--reload-rules')
-        run('udevadm', 'trigger', '--action=add', '--subsystem-match=usb', '--attr-match=idVendor=0bda', '--attr-match=idProduct='+product)
+        for supported_product in sorted(RTLSDR_PRODUCTS):
+            run('udevadm', 'trigger', '--action=add', '--subsystem-match=usb',
+                '--attr-match=idVendor=0bda', '--attr-match=idProduct='+supported_product)
         run('udevadm', 'settle')
         # Create a base unit only on systems without the distro service.
         if not any(Path(p).exists() for p in ('/usr/lib/systemd/system/readsb.service', '/lib/systemd/system/readsb.service', '/etc/systemd/system/readsb.service')):
             write('/etc/systemd/system/readsb.service', '[Unit]\nDescription=Local ADS-B receiver\n[Service]\nUser=readsb\nRuntimeDirectory=readsb\nRuntimeDirectoryMode=0755\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=multi-user.target\n')
         write('/etc/systemd/system/readsb.service.d/magi-receiver.conf',
-              receiver_drop_in(binary, args.adsb_serial, config))
-        config['adsb_serial'] = args.adsb_serial
+              receiver_drop_in(binary, selected_serial, config))
+        config['adsb_serial'] = selected_serial
     if args.gnss_time:
         for unit in ('ntp.service', 'ntpsec.service', 'openntpd.service'):
             if active(unit):
@@ -509,7 +557,7 @@ def main():
     run('systemctl', 'daemon-reload')
     run('systemctl', 'enable', 'magi-sensors.service')
     run('systemctl', 'restart', 'magi-sensors.service')
-    if args.adsb_serial:
+    if provision_adsb:
         run('systemctl', 'enable', 'readsb.service')
         run('systemctl', 'restart', 'readsb.service')
     provisioning_summary(config)

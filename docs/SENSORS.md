@@ -19,6 +19,12 @@ sudo python3 /opt/magi/scripts/setup_sensors.py \
   --gnss-time
 ```
 
+These explicit device flags create **pins**. For automatic replacement, use
+`sudo python3 /opt/magi/scripts/setup_sensors.py --detect`. To clear existing
+explicit pins, use `--auto-sensors`; it also runs detection. A previously
+auto-detected serial or AT-port path is an observation, not an instruction to
+keep using that physical device forever.
+
 An optional `--nmea-port /dev/serial/by-id/YOUR-NMEA-CANDIDATE` keeps that interface open and continuously drains it (never sends commands). This avoids modem-side queues replaying old fixes when a port is opened briefly. Only GGA received within 2.5 seconds and matching the current AT fix can provide height. It is only accepted as an altitude source after checksummed GGA sentences agree with the AT fix in time and position. A SIM7600 interface number is not evidence of its function. Do not select a port owned by another application. Setup refuses active ModemManager/gpsd or a busy selected port.
 
 Fresh installation supports `--gnss-port=PATH`, `--nmea-port=PATH`, `--adsb-serial=SERIAL`, and `--gnss-time` on `scripts/install.sh`. Sensor setup is optional and installs its own dependencies even if the main install uses --skip-dependencies. No SSH server is installed implicitly.
@@ -27,34 +33,44 @@ With no sensor flags, a fresh install auto-detects attached hardware instead of 
 
 GNSS setup installs python3-serial, validates modem identity and creates magi-sensors.service. It enables standalone GNSS after each modem restart if needed; no SIM/APN/camera credentials are queried. ADS-B setup installs rtl-sdr, reuses an RTL-capable decoder or builds the pinned Debian source after SHA-256 verification. Fallback build dependencies: build-essential, pkg-config, librtlsdr-dev, libusb-1.0-0-dev, libncurses-dev, zlib1g-dev, libzstd-dev. Python handles archive download/extraction; curl/xz-utils used during manual diagnosis are not setup requirements.
 
-The hardware binary lives at `/usr/local/lib/magi-sensors/readsb`, outside source-release swaps. Its existing readsb service is reused, with a Magi drop-in, serial-number selection, local JSON only and no listening ADS-B TCP ports. No global USB permission or driver blacklist is required. Runtime files are recreated by systemd at boot. Existing camera configurations, credentials and footage are not modified by provisioning.
+The hardware binary and its unprivileged supervisor live in `/usr/local/lib/magi-sensors`, outside source-release swaps. The existing readsb service is reused, with local JSON only and no listening ADS-B TCP ports unless already enabled for the optional feeder. No global USB permission or driver blacklist is required. Runtime files are recreated by systemd at boot. Existing camera configurations, credentials and footage are not modified by provisioning.
 
 ## Reconnection and device identity
 
-An attached sensor's readings and availability are dynamic. Its assigned role
-must not silently move to a different device just because that device appears
-first in a scan.
+Automatic mode selects one currently attached supported device for an already
+provisioned role. A bench receiver can be replaced by a different outdoor
+receiver without editing its serial or repeating setup. A deliberate pin is
+different: only `adsb_selection: "pinned"` or `gnss_selection: "pinned"` makes the
+stored identity authoritative. Legacy configurations without these selection
+fields become automatic, because earlier discovery stored an identity without
+recording whether it was an explicit pin. Reapply an explicit device flag if an
+older manually chosen device must remain pinned.
 
-- **RTL-SDR:** USB bus/device numbers may change when moving or reconnecting the
-  same receiver. Magi uses its serial-scoped udev rule and decoder selection,
-  not a saved USB bus number. Sensor setup now puts a five-second, unlimited
-  restart policy in the readsb drop-in, including for existing distro units and
-  clean decoder exits. A deliberate service stop still stays stopped. The
-  drop-in supplies the `magi-sdr` supplementary group; access remains limited to
-  the selected serial/product with mode `0660`. It does not override device
-  sandbox restrictions or open all USB devices.
-- **SIM7600/GNSS:** The collector retries the configured stable by-id AT port,
-  verifies the modem again after reconnecting, and re-enables standalone GNSS
-  after a modem reset. NMEA stays with its configured or same-modem stable
-  sibling. A changed ttyUSB number does not require a new selection.
-- **Rerunning detection:** A saved receiver serial and AT port take precedence.
-  If absent, their configuration is retained; a newly attached device is not
-  silently substituted. Initial discovery refuses multiple possible modems
-  before probing them. Interfaces belonging to one stable modem identity are
-  tried together. Use explicit sensor flags to intentionally select a replacement.
-  Duplicate RTL-SDR serials fail setup. Modems that expose identical by-id
-  identities cannot be distinguished safely by this scheme; assign unique
-  hardware identities before using them together.
+- **RTL-SDR:** The supervisor discovers actual USB devices before each decoder
+  start and checks again every two seconds. It retries absent/disconnected
+  hardware after five seconds, including clean decoder exits. Automatic mode
+  requires exactly one supported receiver; adding another stops decoding until
+  selection is unambiguous. Explicit pins require one exact serial match.
+  Missing or duplicate identity is not replaced with device index zero. Small
+  numeric serials that readsb could interpret as indexes are rejected.
+- **Receiver permissions:** Automatic mode grants `magi-sdr` group access with
+  mode `0660` to USB products `0bda:2832` and `0bda:2838`, including replacements.
+  This is broader than one serial but does not grant access to other Realtek
+  products, arbitrary USB devices, or every user. Pinned mode retains a
+  serial/product-specific rule. The supervisor and decoder run as `readsb`
+  with no capabilities; device-sandbox restrictions are not disabled.
+- **SIM7600/GNSS:** Automatic mode rediscovers stable by-id interfaces, verifies
+  SIM7600 identity before enabling GNSS, and checks physical USB identity to
+  reject ambiguous devices, including duplicate by-id identities. Missing
+  identity, active ModemManager/gpsd, or a visibly busy modem causes waiting,
+  not reassignment by ttyUSB number. Known managers, visible port owners and
+  exclusive serial opens are checked. Cross-user owners hidden by `/proc`
+  permissions cannot be proven absent; no ptrace or other privilege is added.
+  `fuser` is optional, with bounded `/proc` inspection as a fallback.
+- **NMEA:** An automatic stream follows the selected modem and closes when that
+  modem is replaced. An explicitly configured NMEA port stays pinned; if it
+  belongs to the old modem it is reported incompatible and is not opened.
+  Only checksummed GGA matching the current verified AT fix supplies height.
 - **Feed readers:** Local ADS-B readers keep reopening the live file. Missing,
   stale or malformed data is reported without permanently stopping collection;
   valid later samples recover automatically.
@@ -69,12 +85,25 @@ first in a scan.
   Hailo inference path yet. Do not infer hotplug or identity guarantees from a
   successful hardware probe alone.
 
-Existing receivers need a sensor-setup rerun while the selected hardware is
-attached to install the new readsb drop-in; an application-only update does not
-rewrite receiver provisioning. No Pi hotplug or permissions repair is established
-by the synthetic regression tests. Check the effective service account, group
-membership, device-node mode and service sandbox if readsb cannot read USB
-device details; changing the configured serial is not a diagnosis.
+An update migrates recognized Magi-managed receiver installations, including the
+first update from an older updater. It installs the supervisor, updates the
+scoped udev rule and managed drop-in, and keeps explicit pins and feeding options.
+It does not need the old receiver attached, download/build a decoder, install
+packages, or create a new sensor role. A short-lived root service has only the
+required sensor paths writable; the updater's permanent hardening is unchanged.
+Interrupted or failed migration restores prior files from a private journal.
+Unknown/custom rules, unsafe paths, missing original provisioning or a much
+older missing runtime directory require sensor setup rather than being guessed
+or overwritten. Enabled receiver services are restarted even when inactive, so
+older decoders that exited cleanly after unplug recover too. Use `disable` or
+`mask` to keep an inactive receiver stopped across migration; a temporary stop
+of an enabled service is not a persistent opt-out.
+
+The supervisor publishes `receiver-status.json` beside the local feed, and
+missing-feed diagnostics include discovery state such as `device_absent`,
+`ambiguous_devices`, or `device_busy`. Old aircraft data is removed when the
+decoder stops or the selected device changes. No Pi hotplug behavior or specific
+USB permission failure is established by synthetic regression tests.
 
 ## Location and calibration
 
@@ -110,6 +139,12 @@ If local-file input is enabled and no URL is supplied, Magi reads `/run/readsb/a
 5. Save a test event and inspect downloaded metadata for `timing`, `station_sensors` and capture-time geometry.
 6. Reboot, then repeat service/feed/clock checks. Verify GNSS is re-enabled and neither USB port is contested.
 7. Update through the dashboard, repeat the checks, and confirm previous camera settings and recordings remain.
+8. In automatic mode, remove bench receiver A, connect different receiver B,
+   and verify current identity and fresh reception without editing a serial.
+   Repeat for a replacement SIM7600 and verify current AT/NMEA identity.
+9. Attach two receivers or modems: verify ambiguity is reported and no first
+   device is arbitrarily assigned. Test explicit pins separately; a missing
+   pinned device must remain unavailable rather than accept a replacement.
 
 The updater retains legacy `/opt/magi/deps` and restarts an installed sensor collector against new code; rollback to a version without sensor support stops that collector. The stable readsb binary/service remains independent. An upgrade never installs chrony, builds a decoder or enables hardware without explicit provisioning.
 

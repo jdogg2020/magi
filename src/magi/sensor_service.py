@@ -17,6 +17,8 @@ import threading
 import time
 
 from .sensors import bounded_json, number
+from .gnss_discovery import (GnssConnection, GnssUnavailable, manager_state,
+                             modem_identity, port_busy, port_identity)
 
 
 def parse_fix(line):
@@ -96,28 +98,44 @@ def automatic_nmea_port(at_port):
 
 class NmeaReader:
     """Continuously drain the read-only NMEA stream; retain only recent GGA."""
-    def __init__(self, path, stop):
-        self.path, self.stop = path, stop
+    def __init__(self, path, stop=None):
+        self.path, self.stop = path, stop if stop is not None else threading.Event()
         self.lock = threading.Lock()
         self.latest = None
         self.state = 'waiting'
         self.thread = threading.Thread(target=self.run, daemon=True)
 
+    def close(self):
+        self.stop.set()
+        self.thread.join(3)
+        with self.lock:
+            self.latest = None
+
     def run(self):
         import serial
         while not self.stop.is_set():
             try:
+                state = manager_state()
+                if state:
+                    raise GnssUnavailable(state)
+                if port_busy(self.path):
+                    raise GnssUnavailable('device_busy')
+                identity = port_identity(self.path)
+                if identity is None:
+                    raise GnssUnavailable('device_absent')
                 with serial.Serial(self.path, 115200, timeout=.2, exclusive=True) as port:
                     while not self.stop.is_set():
+                        if port_identity(self.path) != identity:
+                            raise GnssUnavailable('device_unavailable')
                         line = port.readline(512).decode('ascii', errors='replace').strip()
                         if line.startswith(('$GPGGA,', '$GNGGA,')):
                             with self.lock:
                                 self.latest = (line, time.monotonic())
                                 self.state = 'receiving'
-            except (OSError, ValueError, serial.SerialException):
+            except (OSError, ValueError, serial.SerialException) as exc:
                 with self.lock:
                     self.latest = None
-                    self.state = 'device_unavailable'
+                    self.state = exc.state if isinstance(exc, GnssUnavailable) else 'device_unavailable'
                 self.stop.wait(2)
 
     def height(self, fix):
@@ -130,6 +148,22 @@ class NmeaReader:
             return {}, 'stale'
         value = parse_gga(line, fix)
         return (value, 'verified') if value else ({}, 'waiting_for_matching_fix')
+
+
+def selected_nmea_port(config, at_port):
+    """Never transfer an explicit or automatically derived stream to a modem."""
+    explicit = config.get('nmea_port')
+    if explicit:
+        if (not isinstance(explicit, str)
+                or Path(explicit).parent != Path('/dev/serial/by-id')
+                or explicit == at_port
+                or modem_identity(explicit) != modem_identity(at_port)):
+            return None, 'incompatible_modem'
+        if port_identity(explicit) is None:
+            return None, 'device_absent'
+        return explicit, 'waiting_for_gnss'
+    candidate = automatic_nmea_port(at_port)
+    return candidate, 'waiting_for_gnss' if candidate else 'not_available'
 
 
 def query(port, command, timeout=3):
@@ -261,34 +295,34 @@ def main():
         station = None
     tracker = FixTracker(station)
     saved_station = dict(station) if station else None
-    nmea = NmeaReader(config['nmea_port'], stop) if config.get('nmea_port') else None
-    if nmea:
-        nmea.thread.start()
-    port = None
+    connection = GnssConnection(config, query, serial.Serial)
+    nmea = None
+    generation = 0
     last_fix = None
     while not stop.is_set():
         status = {'schema': 1, 'state': 'available', 'updated_unix': time.time(),
                   'clock': clock_status(), 'station_location': tracker.station,
                   'gnss': {'state': 'not_configured'}, 'time_sample': 'not_sent',
-                  'nmea': {'state': 'waiting_for_gnss' if nmea else 'not_configured'}}
+                  'nmea': {'state': 'waiting_for_gnss'}}
         try:
-            if config.get('at_port'):
-                if port is None:
-                    port = serial.Serial(config['at_port'], 115200, timeout=.2, write_timeout=2, exclusive=True)
-                    query(port, 'AT')
-                    if not any('SIM7600' in s for s in query(port, 'AT+CGMM')):
-                        raise ValueError('unsupported_modem')
-                    response = query(port, 'AT+CGPS?')
-                    state = next((re.fullmatch(r'\+CGPS:\s*([01]),([123])', s) for s in response if s.startswith('+CGPS:')), None)
-                    if state is None:
-                        raise ValueError('unknown_gnss_state')
-                    if state.group(1) == '0':
-                        query(port, 'AT+CGPS=1,1')
-                if nmea is None:
-                    candidate = automatic_nmea_port(config['at_port'])
-                    if candidate:
-                        nmea = NmeaReader(candidate, stop)
-                        nmea.thread.start()
+            port = connection.ensure()
+            if port is not None:
+                if generation != connection.generation:
+                    tracker.streak = 0
+                    generation = connection.generation
+                    if nmea:
+                        nmea.close()
+                        nmea = None
+                candidate, nmea_state = selected_nmea_port(config, connection.path)
+                if nmea and nmea.path != candidate:
+                    nmea.close()
+                    nmea = None
+                if nmea is None and candidate:
+                    nmea = NmeaReader(candidate)
+                    nmea.thread.start()
+                status['nmea'] = {'state': nmea.state if nmea else nmea_state}
+                if candidate:
+                    status['nmea']['port'] = candidate
                 begin, mono = time.time(), time.monotonic()
                 response = query(port, 'AT+CGPSINFO')
                 received = time.time()
@@ -298,7 +332,7 @@ def main():
                     if nmea:
                         height, nmea_state = nmea.height(fix)
                         fix.update(height)
-                        status['nmea'] = {'state': nmea_state}
+                        status['nmea']['state'] = nmea_state
                     state = tracker.accept(fix, mono+elapsed)
                     last_fix = {**fix, 'received_unix': received}
                     status['gnss'] = {**last_fix, 'state': state}
@@ -316,21 +350,27 @@ def main():
                 else:
                     tracker.streak = 0
                     status['gnss'] = {'state': 'no_fix'}
-        except (OSError, ValueError, StopIteration, serial.SerialException):
-            status['gnss'] = {'state': 'device_unavailable'}
+        except (OSError, ValueError, StopIteration, serial.SerialException) as exc:
+            status['gnss'] = {'state': exc.state if isinstance(exc, GnssUnavailable) else 'device_unavailable'}
+            status['nmea'] = {'state': 'waiting_for_gnss'}
             tracker.streak = 0
-            if port:
-                port.close()
-            port = None
+            connection.close()
+            if nmea:
+                nmea.close()
+                nmea = None
+        status['gnss']['selection'] = config.get('gnss_selection', 'auto' if config.get('at_port') else None)
+        if connection.path:
+            status['gnss']['port'] = connection.path
+        elif config.get('gnss_selection') == 'pinned' and config.get('at_port'):
+            status['gnss']['configured_port'] = config['at_port']
         if last_fix:
             status['last_fix'] = last_fix
         status['updated_unix'] = time.time()
         publish(Path('/run/magi-sensors/status.json'), status)
         stop.wait(5)
-    if port:
-        port.close()
+    connection.close()
     if nmea:
-        nmea.thread.join(3)
+        nmea.close()
 
 
 if __name__ == '__main__':

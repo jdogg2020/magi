@@ -5,13 +5,14 @@ will be developed privately and licensed separately, with inference running
 locally on the Raspberry Pi / AI HAT. No proprietary model or hosted inference
 service is included here. See [model policy](docs/MODEL-POLICY.md).
 
-## Sensor reconnection safeguards (0.20.27)
+## Dynamic sensor replacement (0.20.27)
 
-Sensor setup preserves previously selected hardware during rediscovery, refuses
-ambiguous initial modem selection, and installs persistent readsb reconnects with
-the intended receiver group. ADS-B history recovers from malformed numeric data.
+Automatically configured RTL-SDR and SIM7600 roles rediscover replacement hardware
+after disconnect, rather than retaining the bench device as a permanent pin.
+Ambiguous devices wait for an explicit selection. Existing managed receivers are
+migrated during update, including receiver permissions and the unprivileged
+readsb supervisor. ADS-B history recovers from malformed numeric data.
 Changing a camera host, RTSP port or stream through Magi settings now invalidates pointing calibration.
-Existing readsb installs need a sensor-setup rerun for the new service settings.
 GPS relocation and automatic camera-address rediscovery remain separate work;
 see [sensor reconnection and limits](docs/SENSORS.md#reconnection-and-device-identity).
 

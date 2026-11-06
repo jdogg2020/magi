@@ -1,4 +1,4 @@
-"""CI root integration: preflight and health probes inside helper hardening."""
+"""CI root integration: service-user checks and receiver migration hardening."""
 import json
 import os
 from pathlib import Path
@@ -8,6 +8,44 @@ import subprocess
 import tempfile
 
 from update_agent import ENV
+
+
+def prepare_receiver_probe(root):
+    """A disposable script tests the launcher, never actual sensors or units."""
+    fixture = Path(root)/'receiver-sandbox'
+    source = fixture/'opt/magi'
+    scripts = source/'scripts'
+    allowed = [fixture/name for name in ('usr/local/lib/magi-sensors', 'etc/magi-sensors',
+               'etc/udev/rules.d', 'etc/systemd/system/readsb.service.d')]
+    denied = [scripts, fixture/'etc/unrelated', fixture/'usr/local/lib/unrelated', fixture]
+    for directory in [*allowed, *denied]:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o755)
+    for relative in ('etc/magi-sensors/config.json',
+                     'etc/systemd/system/readsb.service.d/magi-receiver.conf',
+                     'opt/magi/scripts/setup_sensors.py', 'opt/magi/scripts/receiver_service.py'):
+        path = fixture/relative
+        path.write_text('# Disposable systemd sandbox fixture\n')
+        path.chmod(0o644)
+    script = scripts/'refresh_sensor_runtime.py'
+    script.write_text(f'''import errno,os
+from pathlib import Path
+assert os.geteuid() == 0
+for directory in {[str(path) for path in allowed]!r}:
+    path = Path(directory)/'write-probe'
+    path.write_text('allowed')
+    assert path.read_text() == 'allowed'
+for directory in {[str(path) for path in denied]!r}:
+    path = Path(directory)/'must-remain-read-only'
+    try:
+        path.write_text('unexpected write')
+    except OSError as error:
+        assert error.errno in (errno.EROFS, errno.EACCES, errno.EPERM), error
+    else:
+        raise AssertionError('Transient migration wrote outside its four directories: '+str(path))
+print('Receiver migration narrow write boundaries passed.')
+''')
+    script.chmod(0o644)
+    return fixture, source
 
 
 def main():
@@ -36,11 +74,13 @@ def main():
             (package/'__init__.py').chmod(0o644)
             (package/'__main__.py').write_text('import json,os;print(json.dumps({"version":"fixture-version","uid":os.getuid()}))\n')
             (package/'__main__.py').chmod(0o644)
+            fixture,receiver_source=prepare_receiver_probe(root)
             expected=pwd.getpwnam('magi').pw_uid
             script=root/'probe.py'
             script.write_text(f'''import json,sys
 sys.path.insert(0,{str(root)!r})
-from update import Updater
+from pathlib import Path
+from update import Updater,refresh_receiver_runtime
 updater=Updater(live={str(root/'live')!r})
 assert updater.read_installed_version()=='fixture-version'
 identity=updater.service_user_python(updater.live,'-c','import os;print(os.getuid())').strip()
@@ -48,6 +88,8 @@ assert int(identity)=={expected}
 status=json.loads(updater.service_user_python(updater.live,'-m','magi','status','--config','unused-fixture'))
 assert status=={{'version':'fixture-version','uid':{expected}}}
 print('Service-user imports and JSON status checks passed inside the hardened root-helper context.')
+refresh_receiver_runtime(Path({str(receiver_source)!r}),root=Path({str(fixture)!r}))
+print('Receiver migration narrow write boundaries passed inside the hardened root-helper context.')
 ''')
             script.chmod(0o644)
             # Exercise the actual hardening properties, then start the exact
@@ -64,7 +106,8 @@ print('Service-user imports and JSON status checks passed inside the hardened ro
                      '/usr/bin/python3','-I',str(script)]
             result=subprocess.run(command,capture_output=True,text=True,timeout=150)
             assert result.returncode==0,result.stdout+'\n'+result.stderr
-            assert 'passed inside the hardened' in result.stdout,result.stdout
+            assert 'Service-user imports and JSON status checks passed inside the hardened' in result.stdout,result.stdout
+            assert 'Receiver migration narrow write boundaries passed inside the hardened' in result.stdout,result.stdout
             print(result.stdout.strip())
     finally:
         if created:

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from magi import sensor_service
+from magi import gnss_discovery, sensor_service
 
 
 class StopAfter:
@@ -32,7 +32,7 @@ class ReconnectTests(unittest.TestCase):
 
         fixes = 0
 
-        def query(port, command):
+        def query(port, command, timeout=3):
             nonlocal fixes
             commands.append((port.session, command))
             if command == 'AT+CGMM':
@@ -48,7 +48,7 @@ class ReconnectTests(unittest.TestCase):
 
         def read_json(selected, *args):
             if str(selected).endswith('config.json'):
-                return {'at_port': path}
+                return {'at_port': path, 'gnss_selection': 'pinned'}
             raise FileNotFoundError()
 
         with patch.dict('sys.modules', serial=SimpleNamespace(Serial=open_port, SerialException=OSError)), \
@@ -57,6 +57,10 @@ class ReconnectTests(unittest.TestCase):
                 patch.object(sensor_service.signal, 'signal'), \
                 patch.object(sensor_service, 'bounded_json', side_effect=read_json), \
                 patch.object(sensor_service, 'query', side_effect=query), \
+                patch.object(gnss_discovery, 'port_identity', return_value=('present',)), \
+                patch.object(gnss_discovery, 'physical_modems', return_value={path: ('usb-1', '1e0e', '9001', 'SAVED')}), \
+                patch.object(gnss_discovery, 'manager_state', return_value=None), \
+                patch.object(gnss_discovery, 'port_busy', return_value=False), \
                 patch.object(sensor_service, 'automatic_nmea_port', return_value=None), \
                 patch.object(sensor_service, 'clock_status', return_value={'state': 'unknown'}), \
                 patch.object(sensor_service, 'publish', side_effect=lambda path, data: published.append(data)):

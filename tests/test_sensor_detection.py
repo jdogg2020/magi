@@ -328,7 +328,7 @@ class DetectionTests(unittest.TestCase):
                 'usb-SIMCOM_SIM7600G-H_SAVED-if02-port0'])
             saved = str(by_id / 'usb-SIMCOM_SIM7600G-H_SAVED-if02-port0')
             found = SETUP.detect_sensors(make_sysfs(directory, []), by_id,
-                owned_ports={saved}, busy=lambda _: True,
+                owned_ports={saved}, pinned_gnss_port=saved, busy=lambda _: True,
                 port_opener=lambda _: self.fail('Previously selected port needs no discovery probe'))
             self.assertEqual(found['gnss_port'], saved)
 
@@ -337,6 +337,7 @@ class DetectionTests(unittest.TestCase):
             by_id = make_by_id(directory, ['usb-SIMCOM_SIM7600G-H_NEW-if02-port0'])
             found = SETUP.detect_sensors(make_sysfs(directory, []), by_id,
                 owned_ports={str(by_id / 'usb-SIMCOM_SIM7600G-H_SAVED-if02-port0')},
+                pinned_gnss_port=str(by_id / 'usb-SIMCOM_SIM7600G-H_SAVED-if02-port0'),
                 port_opener=lambda _: self.fail('Never probe a replacement without selection'))
             self.assertIsNone(found['gnss_port'])
             self.assertEqual(found['gnss_status'], 'unusable')
@@ -371,7 +372,9 @@ class DetectionTests(unittest.TestCase):
             drop_in = SETUP.receiver_drop_in('/receiver', 'SAVED', {})
         self.assertIn('[Unit]\nStartLimitIntervalSec=0\n', drop_in)
         self.assertIn('Restart=always\nRestartSec=5\n', drop_in)
-        self.assertIn('--device SAVED ', drop_in)
+        self.assertIn('--selection auto ', drop_in)
+        self.assertNotIn('SAVED', drop_in)
+        self.assertIn('receiver_service.py', drop_in)
         self.assertIn('SupplementaryGroups=magi-sdr\n', drop_in)
         self.assertNotIn('--net', drop_in)
         self.assertNotIn('User=root', drop_in)
@@ -383,10 +386,20 @@ class ResolveTests(unittest.TestCase):
         found = {'adsb_serial': 'SAVED', 'gnss_port': None,
                  'gnss_status': 'absent', 'gnss_unusable': []}
         with patch.object(SETUP, 'detect_sensors', return_value=found) as detect:
-            SETUP.resolve_sensor_args(args, {'adsb_serial': 'SAVED'},
+            SETUP.resolve_sensor_args(args, {'adsb_serial': 'SAVED', 'adsb_selection': 'pinned'},
                 active_fn=lambda _: False, candidates_fn=lambda: [])
-        detect.assert_called_once_with(owned_adsb_serial='SAVED', owned_ports=set())
+        detect.assert_called_once_with(owned_adsb_serial='SAVED', pinned_gnss_port=None, owned_ports=set())
         self.assertEqual(args.adsb_serial, 'SAVED')
+
+    def test_legacy_discovered_serial_is_not_a_permanent_pin(self):
+        args = sensor_args(detect=True)
+        found = {'adsb_serial': 'OUTDOOR', 'gnss_port': None,
+                 'gnss_status': 'absent', 'gnss_unusable': []}
+        with patch.object(SETUP, 'detect_sensors', return_value=found) as detect:
+            SETUP.resolve_sensor_args(args, {'adsb_serial': 'BENCH'},
+                active_fn=lambda _: False, candidates_fn=lambda: [])
+        detect.assert_called_once_with(owned_adsb_serial=None, pinned_gnss_port=None, owned_ports=set())
+        self.assertEqual(args.adsb_serial, 'OUTDOOR')
 
     def test_detected_adsb_blocked_by_competing_service(self):
         args = sensor_args(detect=True)

@@ -1,4 +1,4 @@
-"""Root-only local release updater. No downloads, package installs or config writes."""
+"""Root-only local release updater. No downloads or package installs."""
 import argparse
 from datetime import datetime, timezone
 import fcntl
@@ -122,6 +122,67 @@ def extract_release(archive_path, destination):
         return manifest
 
 
+def refresh_receiver_runtime(source, root=Path('/'), runner=subprocess.run):
+    """Run the fixed-purpose migration outside the updater's read-only mount.
+
+    PID 1 creates a bounded, separately sandboxed unit. The long-lived updater
+    keeps its existing ProtectSystem/ReadWritePaths without any new privileges.
+    This entry point is also called by the new helper installer, so an old
+    updater applies the migration on the very first upgrade to this release.
+    """
+    source, root = Path(source), Path(root)
+    script = source/'scripts/refresh_sensor_runtime.py'
+    config = root/'etc/magi-sensors/config.json'
+    drop = root/'etc/systemd/system/readsb.service.d/magi-receiver.conf'
+    if not (script.exists() or script.is_symlink()):
+        return  # Rolling back to a release before receiver migration existed.
+    if not (config.exists() or config.is_symlink()) or not (drop.exists() or drop.is_symlink()):
+        return
+    for path in (script, source/'scripts/setup_sensors.py', source/'scripts/receiver_service.py', config, drop):
+        boundary = root if path.is_relative_to(root) else Path('/')
+        for node in (path, *path.parents):
+            info = node.lstat()
+            if stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                raise RuntimeError(f'Receiver migration requires root-owned, non-symlink paths: {node}')
+            if node == boundary:
+                break
+    writable = ('usr/local/lib/magi-sensors', 'etc/magi-sensors',
+                'etc/udev/rules.d', 'etc/systemd/system/readsb.service.d')
+    for relative in writable:
+        directory = root/relative
+        if not directory.is_dir():
+            raise RuntimeError(f'Receiver runtime directory is missing: {directory}; run sensor setup')
+        for node in (directory, *directory.parents):
+            info = node.lstat()
+            if stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                raise RuntimeError(f'Unsafe receiver migration directory: {node}')
+            if node == root:
+                break
+    unit = 'magi-sensor-runtime-'+uuid.uuid4().hex
+    LOG.info('Refreshing managed receiver runtime in %s.service', unit)
+    command = ['/usr/bin/systemd-run', '--quiet', '--wait', '--pipe', '--collect',
+               '--service-type=exec', '--unit='+unit,
+               '--property=User=root', '--property=Group=root',
+               '--property=WorkingDirectory=/', '--property=UMask=0077',
+               '--property=NoNewPrivileges=yes', '--property=ProtectHome=yes',
+               '--property=ProtectSystem=strict', '--property=PrivateTmp=yes',
+               '--property=RestrictAddressFamilies=AF_UNIX AF_NETLINK',
+               '--property=LockPersonality=yes',
+               '--property=ReadWritePaths='+' '.join(str(root/name) for name in writable),
+               '--property=RuntimeMaxSec=45s', '--property=TimeoutStartSec=10s',
+               '--property=TimeoutStopSec=10s', '/usr/bin/python3', '-I', '-B', str(script)]
+    try:
+        result = runner(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(f'Receiver migration unit {unit}.service could not finish: {error}') from error
+    output = (result.stdout or '').strip()
+    if output:
+        LOG.info('%s', output[-8000:])
+    if result.returncode:
+        raise RuntimeError(f'Receiver migration {unit}.service failed (exit {result.returncode}): '
+                           + (output[-2000:] or 'inspect this unit in the system journal'))
+
+
 class Updater:
     def __init__(self, live=Path('/opt/magi'), state=Path('/var/lib/magi-updater'),
                  releases=Path('/opt/magi.releases'), unit=Path('/etc/systemd/system/magi.service')):
@@ -214,6 +275,7 @@ class Updater:
         raise RuntimeError('new service failed dashboard/version checks')
 
     def refresh_sensors(self):
+        refresh_receiver_runtime(self.live)
         if Path('/etc/systemd/system/magi-sensors.service').is_file():
             action = 'try-restart' if (self.live/'src/magi/sensor_service.py').is_file() else 'stop'
             self.command('systemctl', action, 'magi-sensors.service')

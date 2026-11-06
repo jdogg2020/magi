@@ -3,6 +3,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
+import os
 from pathlib import Path
 import re
 import socket
@@ -249,7 +250,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_file(self, path, kind, camera_id="primary", *, download=False):
         with path.open('rb') as source:
-            size = path.stat().st_size
+            size = os.fstat(source.fileno()).st_size
             start, end = 0, size - 1
             extra = {'Accept-Ranges': 'bytes'}
             header = self.headers.get('Range') if kind != 'motion' else None

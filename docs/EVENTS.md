@@ -174,15 +174,25 @@ that button. Review status does not itself protect footage from retention.
 
 The review image has quick category buttons above it: **Ignore**, **Plane**,
 **Bird / insect**, **Lightning**, **Cloud / weather**, **Meteor**, **Satellite**,
-and **Unknown**. A selected category is highlighted with a check mark. Click
-a category to save the review and open the next event within the applied filters
-and sort order. This also saves any labels, notes and review/protection checkbox
-edits already made in the form. Saves run in the background; failures remain in
-the pending-save banner for retry. At
-the last matching event, the review stays open and reports the end of the list.
-Multiple labels can coexist; clicking an already selected category removes it
-and advances. Adding a new label marks the event reviewed; protection changes
-only if you explicitly edit it.
+and **Unknown**. Select all labels that match the event; selected categories are
+highlighted with a check mark. Clicking a selected category deselects it. These
+clicks only edit the draft, so the same event stays open until you choose
+**Submit & next**. Custom labels in **Your review** are kept and stay in sync with
+the category buttons. Up to eight labels can be selected in total.
+
+**Submit & next** saves all selected labels, notes and protection checkbox edits,
+marks the event reviewed, and opens the next event within the applied filters and
+sort order. You can also submit without labels. **Save review** still saves in
+place and respects the review checkbox, except that adding a new label marks the
+event reviewed. Neither action changes protection unless you explicitly edit it.
+Navigation and closing warn before discarding an unsubmitted draft. Keyboard
+users can Tab to labels and toggle them with Space or Enter, then activate Submit.
+
+Submitted saves run in the background. Failures remain in the pending-save banner
+with Review, Retry and confirmed Discard actions; keep the tab open until saving
+finishes. Closing or reloading the tab warns while drafts or saves are pending.
+The queue is held in this tab, not persisted across a forced reload. At the last
+matching event, the review stays open and reports the end of the list.
 
 Plane uses the existing `aircraft` label and Cloud / weather uses `weather`,
 so the label filter continues to find those categories. Ignore is the `ignore`

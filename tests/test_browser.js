@@ -212,9 +212,9 @@ const base = process.argv[2];
     assert(await page.locator('#show-tracker').isDisabled());
     await page.screenshot({path:'dist/browser/review-categories.png',fullPage:true});
     const next=rows[rows.findIndex(row=>row.id===event.id && row.camera===event.camera)+1];
-    let releaseArchive,releaseSave;
+    let releaseArchive,releaseSave,reviewWrites=0;
     const blockedSave=new Promise(resolve=>releaseSave=resolve);
-    await page.route('**/api/station/events/update',async route=>{await blockedSave;await route.continue();});
+    await page.route('**/api/station/events/update',async route=>{reviewWrites++;await blockedSave;await route.continue();});
     const blockedArchive=new Promise(resolve=>releaseArchive=resolve);
     const holdArchive=async route=>{await blockedArchive;await route.continue();};
     if(next){
@@ -222,9 +222,25 @@ const base = process.argv[2];
       await page.route('**/api/station/events/list',holdArchive);
     }
     try {
-      const started=Date.now();
       const saved=page.waitForResponse(response=>response.url().endsWith('/api/station/events/update') && response.request().method()==='POST');
+      // Typed labels and category buttons share one draft. Neither clicks nor
+      // keyboard activation should save or move away before Submit.
+      await page.locator('#review-labels').fill('custom observation');
       await page.locator('#review-label-lightning').click();
+      await page.locator('#review-label-weather').focus();
+      await page.keyboard.press('Space');
+      await page.locator('#review-label-aircraft').focus();
+      await page.keyboard.press('Enter');
+      await page.keyboard.press('Enter'); // Deselect without a write.
+      assert.equal(await page.locator('#review-label-lightning').getAttribute('aria-pressed'),'true');
+      assert.equal(await page.locator('#review-label-weather').getAttribute('aria-pressed'),'true');
+      assert.equal(await page.locator('#review-label-aircraft').getAttribute('aria-pressed'),'false');
+      assert.equal(await page.evaluate(()=>reviewEvent.id),event.id);
+      assert.equal(reviewWrites,0,'Category selection must not send a save request');
+      await page.screenshot({path:'dist/browser/multilabel-review-draft.png',fullPage:true});
+      await page.locator('#review-submit').focus();
+      const started=Date.now();
+      await page.keyboard.press('Enter');
 
       if(next){
         await page.waitForFunction(next=>{const image=document.getElementById('review-still');return image.getAttribute('src')?.includes('/clips/'+next.id+'/') && image.getAttribute('src')?.includes('/api/cameras/'+next.camera+'/') && image.complete && image.naturalWidth>0;},next,{timeout:3000});
@@ -232,13 +248,20 @@ const base = process.argv[2];
         assert(await page.locator('#review-background-saves').isVisible());
         assert(await page.locator('#logout').isDisabled());
         await page.screenshot({path:'dist/browser/background-review-saves.png',fullPage:true});
-        console.log(`Next image visible ${Date.now()-started} ms after category click with the save request and archive lookups blocked.`);
+        console.log(`Next image visible ${Date.now()-started} ms after Submit with the save request and archive lookups blocked.`);
       }else await page.waitForFunction(()=>document.getElementById('review-save-status').textContent.includes('Last matching event'));
       releaseSave();const saveResponse=await saved;assert(saveResponse.ok());await saveResponse.finished();
       await page.waitForFunction(()=>!MagiEvents.hasPending());
       releaseArchive();
       const labelled=await page.evaluate(async event=>(await api('/api/station/events/list',{q:event.id,camera_id:event.camera})).events.find(row=>row.id===event.id),event);
-      assert(labelled.review.reviewed,'Category save must mark the event reviewed');
+      assert(labelled.review.reviewed,'Submit must mark the event reviewed');
+      assert.deepEqual(labelled.review.labels,['custom observation','lightning','weather']);
+      assert.equal(reviewWrites,1,'Submit must save all labels together');
+      // Reopen from a fresh server read to prove persistent multi-label state.
+      await page.evaluate(row=>openReview(row),labelled);
+      assert.equal(await page.locator('#review-label-lightning').getAttribute('aria-pressed'),'true');
+      assert.equal(await page.locator('#review-label-weather').getAttribute('aria-pressed'),'true');
+      assert.equal(await page.locator('#review-labels').inputValue(),'custom observation, lightning, weather');
     } finally {
       releaseSave();releaseArchive();
       await page.unrouteAll({behavior:'wait'});

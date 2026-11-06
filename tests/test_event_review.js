@@ -1,7 +1,7 @@
 // Exercise the real review controller with a deterministic, paginated archive.
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const elements=new Map();
-function el(id){if(!elements.has(id))elements.set(id,{value:'',checked:false,disabled:false,textContent:'',open:true,tagName:'DIV',children:[],get options(){return this.children;},dataset:{},classList:{contains:()=>false,toggle(){}},append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;},setAttribute(name,value){this[name]=value;},addEventListener(name,fn){this[name]=fn;}});return elements.get(id);}
+function el(id){if(!elements.has(id))elements.set(id,{value:'',checked:false,disabled:false,textContent:'',open:true,tagName:'DIV',children:[],get options(){return this.children;},dataset:{},classList:{contains:()=>false,toggle(){}},append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;},setAttribute(name,value){this[name]=value;},focus(){},addEventListener(name,fn){this[name]=fn;}});return elements.get(id);}
 const records=Array.from({length:230},(_,i)=>({id:String(i).padStart(4,'0'),camera_id:'a',trigger_unix:i,review:{labels:[],notes:'',reviewed:false,protected:false,trashed_at:null}}));
 // Same timestamp/id on another camera must remain a distinct navigation target.
 records.push({...records[125],camera_id:'b',review:{...records[125].review}});
@@ -44,25 +44,50 @@ const settle=async()=>{for(let i=0;i<20;i++)await new Promise(resolve=>setImmedi
  key('r');await settle();assert(ctx.reviewEvent.review.reviewed);
  let played=0,paused=0;el('review-play').onclick=()=>{played++;ctx.reviewMode='video';};el('review-video').paused=false;el('review-video').pause=()=>paused++;
  key(' ');key(' ');assert.equal(played,1);assert.equal(paused,1);
+ // Selecting several categories edits a draft, not the server or current event.
+ ctx.openReview(records[190]);await settle();allowDiscard=false;
+ const draftStart=updates;
+ el('review-labels').value='custom label';
+ await el('review-label-aircraft').onclick();await el('review-label-weather').onclick();
+ assert.equal(ctx.reviewEvent.id,'0190');assert.equal(updates,draftStart);
+ assert.equal(el('review-label-aircraft')['aria-pressed'],'true');
+ assert.equal(el('review-label-weather')['aria-pressed'],'true');
+ assert.deepEqual(Array.from(records[190].review.labels),[]);
+ let draftWarning=false;windowListeners.beforeunload({preventDefault(){draftWarning=true;}});assert(draftWarning,'Leaving the page warns about unsubmitted labels');
+ await el('review-label-aircraft').onclick();assert.equal(el('review-label-aircraft')['aria-pressed'],'false');
+ assert.equal(el('review-labels').value,'custom label, weather');
+ el('review-event-next').onclick();assert.equal(ctx.reviewEvent.id,'0190','Navigation must confirm draft discard');
+ let cancelled=false;el('review').cancel({preventDefault(){cancelled=true;}});assert(cancelled,'Escape preserves an unsubmitted selection');
+ await el('review-submit').onclick();await settle();
+ assert.equal(ctx.reviewEvent.id,'0191');assert.equal(updates,draftStart+1);
+ assert.deepEqual(Array.from(records[190].review.labels),['custom label','weather']);assert(records[190].review.reviewed);
+ assert.equal(el('review-label-weather')['aria-pressed'],'false','Selections reset for the next event');
+ allowDiscard=true;
+ // Typed category labels update selected state; submitting an empty selection
+ // can mark reviewed without inventing an unknown label.
+ ctx.openReview(records[192]);await settle();el('review-labels').value=' WEATHER, aircraft';el('review-labels').input();
+ assert.equal(el('review-label-weather')['aria-pressed'],'true');assert.equal(el('review-label-aircraft')['aria-pressed'],'true');
+ el('review-labels').value='';el('review-labels').input();await el('review-submit').onclick();await settle();
+ assert(records[192].review.reviewed);assert.deepEqual(Array.from(records[192].review.labels),[]);
  // Adding a typed or quick label marks reviewed; removal alone does not undo it.
  ctx.openReview(records[200]);await settle();el('review-labels').value='custom label';
  await el('review-save').onclick();assert(records[200].review.reviewed);
  await el('review-mark').onclick();assert(!records[200].review.reviewed);
  el('review-labels').value='CUSTOM LABEL';await el('review-save').onclick();assert(!records[200].review.reviewed);
- ctx.openReview(records[201]);await settle();await el('review-label-weather').onclick();await settle();
+ ctx.openReview(records[201]);await settle();await el('review-label-weather').onclick();await el('review-submit').onclick();await settle();
  assert(records[201].review.reviewed,'Category addition must persist reviewed with the label');
- ctx.openReview(records[201]);await settle();await el('review-label-weather').onclick();await settle();
+ ctx.openReview(records[201]);await settle();await el('review-label-weather').onclick();await el('review-submit').onclick();await settle();
  assert(records[201].review.reviewed,'Removing a category must not unreview');
  const pending=()=>vm.runInContext('MagiEvents.hasPending()',ctx);
  const findButton=(title)=>el('review-background-saves').children.flatMap(n=>n.children || []).find(n=>n.textContent===title);
  const resetDraft=()=>{el('review-notes').value='';el('review-labels').value='';el('review-protected').checked=false;};
- // All category buttons advance before an intentionally unresolved save.
+ // All category buttons remain drafts until Submit advances before an unresolved save.
  for(const label of ['ignore','aircraft','bird-insect','lightning','weather','meteor','satellite','unknown']){
    ctx.openReview(records[150]);await settle();
    let releaseSave;saveGate=new Promise(resolve=>releaseSave=resolve);
    const start=queries.length;
-   await el('review-label-'+label).onclick();await settle();
-   assert.equal(ctx.reviewEvent.id,'0151','Category opens next event before save confirmation');
+   await el('review-label-'+label).onclick();assert.equal(ctx.reviewEvent.id,'0150');assert.equal(queries.length,start);await el('review-submit').onclick();await settle();
+   assert.equal(ctx.reviewEvent.id,'0151','Submit opens next event before save confirmation');
    assert(pending());assert(el('logout').disabled);
    assert.equal(queries.length,start+1,'Only the newly opened event queries its neighbors');
    let warned=false;windowListeners.beforeunload({preventDefault(){warned=true;},returnValue:null});assert(warned);
@@ -73,19 +98,27 @@ const settle=async()=>{for(let i=0;i<20;i++)await new Promise(resolve=>setImmedi
  ctx.openReview(records[20]);await settle();
  let releaseSave;saveGate=new Promise(resolve=>releaseSave=resolve);
  el('review-notes').value='Keep this note';el('review-protected').checked=true;
- await el('review-label-aircraft').onclick();await settle();
+ await el('review-label-aircraft').onclick();await el('review-submit').onclick();await settle();
  const sent=updates;
  ctx.openReview(records[20]);await settle();assert.equal(el('review-notes').value,'Keep this note');
  assert(el('review-label-aircraft')['aria-pressed']==='true');
  assert(el('review-trash').disabled,'Do not race trash/protection against a queued write');
- await el('review-label-weather').onclick();await settle();assert.equal(updates,sent,'Writes are serialized');
+ await el('review-label-weather').onclick();await el('review-submit').onclick();await settle();assert.equal(updates,sent,'Writes are serialized');
  releaseSave();saveGate=null;await settle();
  assert.deepEqual(Array.from(records[20].review.labels),['aircraft','weather']);
  assert.equal(records[20].review.notes,'Keep this note');assert(records[20].review.protected);assert(!pending());
  ctx.openReview(records[20]);await settle();assert(el('review-label-weather')['aria-pressed']==='true');
+ // Completion of an earlier queued save cannot overwrite a new event's draft.
+ ctx.openReview(records[25]);await settle();
+ let releaseEarlier;saveGate=new Promise(resolve=>releaseEarlier=resolve);
+ await el('review-label-aircraft').onclick();await el('review-submit').onclick();await settle();
+ await el('review-label-weather').onclick();el('review-notes').value='Still editing';
+ releaseEarlier();saveGate=null;await settle();
+ assert.equal(ctx.reviewEvent.id,'0026');assert.equal(el('review-label-weather')['aria-pressed'],'true');
+ assert.equal(el('review-notes').value,'Still editing');assert(!records[26].review.labels.includes('weather'));
  // A failed background save remains recoverable without yanking review back.
  ctx.openReview(records[30]);await settle();failUpdate=true;
- await el('review-label-lightning').onclick();await settle();
+ await el('review-label-lightning').onclick();await el('review-submit').onclick();await settle();
  assert.equal(ctx.reviewEvent.id,'0031');assert(pending());assert(findButton('Retry'));
  assert(!records[30].review.labels.includes('lightning'));
  vm.runInContext('MagiEvents.reset()',ctx);assert(pending(),'Session reset must not discard failed changes');
@@ -93,39 +126,60 @@ const settle=async()=>{for(let i=0;i<20;i++)await new Promise(resolve=>setImmedi
  failUpdate=false;findButton('Retry').onclick();await settle();assert(!pending());assert(records[30].review.labels.includes('lightning'));
  // Discard requires confirmation and removes only the failed local change.
  ctx.openReview(records[40]);await settle();failUpdate=true;
- await el('review-label-weather').onclick();await settle();
+ await el('review-label-weather').onclick();await el('review-submit').onclick();await settle();
  allowDiscard=false;findButton('Discard unsaved changes').onclick();assert(pending());
  allowDiscard=true;failUpdate=false;findButton('Discard unsaved changes').onclick();await settle();assert(!pending());
  ctx.openReview(records[40]);await settle();assert.equal(el('review-label-weather')['aria-pressed'],'false');
  // One failed camera/event must not block another with the same event ID.
  let releasePair;saveGate=new Promise(resolve=>releasePair=resolve);
- rejectKeys.add('a:0125');ctx.openReview(records[125]);await settle();await el('review-label-weather').onclick();
- ctx.openReview(records.at(-1));await settle();await el('review-label-lightning').onclick();
+ rejectKeys.add('a:0125');ctx.openReview(records[125]);await settle();await el('review-label-weather').onclick();await el('review-submit').onclick();
+ ctx.openReview(records.at(-1));await settle();await el('review-label-lightning').onclick();await el('review-submit').onclick();
  releasePair();saveGate=null;await settle();
  assert(records.at(-1).review.labels.includes('lightning'));assert(pending());
  rejectKeys.clear();findButton('Retry').onclick();await settle();assert(!pending());
  // Bound unsaved work without dropping the hundredth queued edit.
  let releaseBatch;saveGate=new Promise(resolve=>releaseBatch=resolve);
- for(let i=50;i<150;i++){ctx.openReview(records[i]);await settle();await el('review-label-weather').onclick();}
+ for(let i=50;i<150;i++){ctx.openReview(records[i]);await settle();await el('review-label-weather').onclick();await el('review-submit').onclick();}
  assert(pending());ctx.openReview(records[180]);await settle();
- assert(el('review-label-weather').disabled,'Backpressure must stop adding a 101st event');
- const beforeFull=updates;await el('review-label-weather').onclick();assert.equal(updates,beforeFull);
+ assert(el('review-submit').disabled,'Backpressure must stop submitting a 101st event');
+ const beforeFull=updates;await el('review-label-weather').onclick();await el('review-submit').onclick();assert.equal(updates,beforeFull);
  releaseBatch();saveGate=null;await settle();assert(!pending());
  // Early clicks share an unfinished navigation lookup, but still queue saving.
  let releaseInitial;neighborGate=new Promise(resolve=>releaseInitial=resolve);
  const start=queries.length;ctx.openReview(records[160]);await settle();
- const early=el('review-label-weather').onclick();await settle();
+ el('review-label-weather').onclick();const early=el('review-submit').onclick();await settle();
+ const once=updates;await el('review-submit').onclick();assert.equal(updates,once,'Repeated Submit cannot queue another write during navigation');
  assert.equal(queries.length,start+1);assert.equal(ctx.reviewEvent.id,'0160');
  neighborGate=null;releaseInitial();await early;await settle();assert.equal(ctx.reviewEvent.id,'0161');
+ // A late lookup cannot navigate after closing and reopening the same event.
+ let releaseReopen;neighborGate=new Promise(resolve=>releaseReopen=resolve);
+ ctx.openReview(records[162]);await settle();await el('review-label-weather').onclick();
+ const reopenSubmit=el('review-submit').onclick();await settle();
+ el('review').open=false;el('review').close();ctx.openReview(records[162]);el('review').open=true;
+ neighborGate=null;releaseReopen();await reopenSubmit;await settle();assert.equal(ctx.reviewEvent.id,'0162');
+ // New text edits during slow navigation stay on the current event after submit.
+ let releaseEdited;neighborGate=new Promise(resolve=>releaseEdited=resolve);
+ ctx.openReview(records[164]);await settle();await el('review-label-weather').onclick();
+ const editedSubmit=el('review-submit').onclick();await settle();el('review-notes').value='Newer unsent note';
+ neighborGate=null;releaseEdited();await editedSubmit;await settle();
+ assert.equal(ctx.reviewEvent.id,'0164');assert.equal(el('review-notes').value,'Newer unsent note');
+ assert.notEqual(records[164].review.notes,'Newer unsent note');
+ // Double-clicks and held button keys cannot submit or toggle another event.
+ before=updates;await el('review-submit').onclick({detail:2});assert.equal(updates,before);
+ for(const held of ['Enter',' ']){let prevented=false;key(held,'BUTTON',{repeat:true,preventDefault(){prevented=true;}});assert(prevented);}
  // Unavailable navigation must not prevent the background save.
  failNeighbors=true;ctx.openReview(records[170]);await settle();
- await el('review-label-weather').onclick();await settle();assert.equal(ctx.reviewEvent.id,'0170');
+ await el('review-label-weather').onclick();await el('review-submit').onclick();await settle();assert.equal(ctx.reviewEvent.id,'0170');
  assert(records[170].review.labels.includes('weather'));assert(el('review-save-status').textContent.includes('Navigation unavailable'));
  failNeighbors=false;
- ctx.openReview(records[229]);await settle();await el('review-label-weather').onclick();await settle();
+ ctx.openReview(records[229]);await settle();await el('review-label-weather').onclick();await el('review-submit').onclick();await settle();
  assert.equal(ctx.reviewEvent.id,'0229');assert(el('review-save-status').textContent.includes('Last matching event'));
  ctx.openReview(records[180]);await settle();
- el('review-labels').value='a,b,c,d,e,f,g,h';const tooMany=updates;await el('review-label-weather').onclick();assert.equal(updates,tooMany);
+ el('review-labels').value='a,b,c,d,e,f,g,h';const tooMany=updates;await el('review-label-weather').onclick();assert.equal(updates,tooMany);assert.equal(el('review-labels').value,'a,b,c,d,e,f,g,h');
+ // Invalid typed labels must remain editable without being queued or advanced.
+ el('review-labels').value='a,b,c,d,e,f,g,h,i';el('review-notes').value='Preserve invalid draft';
+ await el('review-submit').onclick();await settle();assert.equal(updates,tooMany);assert.equal(ctx.reviewEvent.id,'0180');
+ assert.equal(el('review-labels').value,'a,b,c,d,e,f,g,h,i');assert.equal(el('review-notes').value,'Preserve invalid draft');
  ctx.openReview({...records[180],review:{...records[180].review,trashed_at:1}});await settle();assert(el('review-label-weather').disabled);
  ctx.openReview({...records[180],review:{...records[180].review,annotation_error:true}});await settle();assert(el('review-label-weather').disabled);
  ctx.openReview(records[180]);await settle();el('review-notes').value='Unsaved manual note';failUpdate=true;

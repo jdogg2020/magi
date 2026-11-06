@@ -73,3 +73,5 @@
 #event-filters select[hidden]{display:none}
 
 @media(max-width:650px){.filter-select-panel{width:100%;box-sizing:border-box}}
+
+#review-submit{margin-top:12px;min-height:44px}

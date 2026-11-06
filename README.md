@@ -5,6 +5,14 @@ will be developed privately and licensed separately, with inference running
 locally on the Raspberry Pi / AI HAT. No proprietary model or hosted inference
 service is included here. See [model policy](docs/MODEL-POLICY.md).
 
+## Multi-label event review (0.20.26)
+
+Select every matching category in Event review, then choose **Submit & next** to
+save all labels and move to the next matching event. Category clicks now toggle
+a draft without advancing. Custom labels and notes are preserved, and failed
+background saves remain available to retry. **Save review** still saves in place.
+See [event review](docs/EVENTS.md#quick-categories).
+
 ## Camera removal (0.16.5)
 
 Use **Remove camera** in the selected camera’s settings to stop its capture and

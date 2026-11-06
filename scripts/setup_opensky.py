@@ -59,7 +59,7 @@ def configure(value):
     if username and username != value['username']:
         raise ValueError('This receiver is already linked to another username. Contact OpenSky to change its ownership.')
     if not Path(BINARY).is_file():
-        raise RuntimeError('The feeder is not installed. Run the Magi installer to supply it.')
+        raise ValueError('The feeder is not installed. Run the Magi installer to supply it.')
     # OpenSky persists its assigned serial separately; never write/delete that file.
     write(IDENTITY, f"[GPS]\nLatitude={value['latitude']}\nLongitude={value['longitude']}\nAltitude={value['altitude_msl_m']}\n\n"
           f"[IDENT]\nUsername={value['username']}\n\n[DEVICE]\nType=default\n\n[INPUT]\nHost=127.0.0.1\nPort=30005\n")

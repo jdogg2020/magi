@@ -1,5 +1,7 @@
 """Exercise accidental-publication checks without real private artifacts."""
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,6 +18,23 @@ finally:
 
 
 class PublicAssetsTests(unittest.TestCase):
+    def test_cli_checks_root_files_from_nested_or_unrelated_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'repo'
+            scripts = root / 'scripts'
+            scripts.mkdir(parents=True)
+            checker = scripts / 'check_public_assets.py'
+            shutil.copyfile(SCRIPTS / checker.name, checker)
+            subprocess.run(['git', 'init', '-q', str(root)], check=True)
+            (root / 'private.hef').write_text('synthetic model')
+            subprocess.run(['git', '-C', str(root), 'add', 'private.hef'], check=True)
+            for cwd in (scripts, Path(tmp)):
+                with self.subTest(cwd=cwd):
+                    result = subprocess.run([sys.executable, str(checker)], cwd=cwd,
+                                            capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('private.hef', result.stderr)
+
     def test_formats_and_private_directories(self):
         blocked = ['docs/MODEL.HEF', 'src/model.onnx.gz',
                    'scripts/private-training/recipe.py',

@@ -7,6 +7,13 @@ merges nothing, and changes no recording behaviour. It is safe to
 review on a station without a HAT fitted, because every Hailo path
 here is opt-in and defaults to motion-only operation.
 
+## Company model boundary
+
+The generic adapter and existing scaffolding stay open source. Future
+Nomadobile models are developed privately and distributed separately under
+model-specific terms for local Pi / AI HAT inference. No server dependency or
+footage upload is introduced. See [model policy](MODEL-POLICY.md).
+
 ## What this change does
 
 - `src/magi/hailo.py` — isolated Hailo support, standard library
@@ -230,3 +237,4 @@ Synthetic data only: synthetic track rows, synthetic Tracker
 frames, and a stub model. No saved Magi footage, no Pi, and
 no HAT were used, and no result in this change should be read
 as a night-sky accuracy result.
+

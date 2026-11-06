@@ -144,6 +144,20 @@ class Application:
                     new.setdefault(section, {})[key] = value
             if calibration is not None:
                 new['calibration'] = calibration
+            # A saved address is not a verified physical camera identity. Do
+            # not carry pointing calibration to another endpoint or stream,
+            # even if a settings form also resubmits calibrated=True. Credential
+            # and camera API changes alone do not reassign the video source.
+            def video_endpoint(camera):
+                return (camera.get('host', ''), int(camera.get('port', 554)),
+                        camera.get('mainstream_path', ''),
+                        camera.get('substream_path', '/h264Preview_01_sub'))
+            camera_changed = video_endpoint(raw.get('camera', {})) != video_endpoint(new.get('camera', {}))
+            calibration_invalidated = camera_changed and new.get('identification', {}).get('calibrated', False)
+            if camera_changed:
+                if not isinstance(calibration_invalidated, bool):
+                    raise ValueError()
+                new.setdefault('identification', {})['calibrated'] = False
             selected = new.get('identification', {})
             if selected.get('location_source') == 'gnss' and selected.get('calibrated'):
                 location = sensor_effective(selected)
@@ -180,7 +194,10 @@ class Application:
         self.last_error = None
         self.next_start = 0
         self._snapshot()
-        return {'saved': True, 'message': 'Settings saved. Camera reconnecting.'}
+        message = 'Settings saved. Camera reconnecting.'
+        if calibration_invalidated:
+            message += ' Camera source changed; recalibrate before geometry matching resumes.'
+        return {'saved': True, 'message': message}
 
     def trigger(self, kind='manual', track=None, continuation=None):
         if not self.recorder:

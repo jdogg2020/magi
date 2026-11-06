@@ -17,6 +17,7 @@ SCHEMA = 1
 MAX_BYTES = 4 * 1024 * 1024
 MAX_TRACKS = 16
 MAX_POINTS = 300
+SEED_SEARCH_SECONDS = 1.0
 HASH = re.compile(r'^[0-9a-f]{64}$')
 SOURCE_FILES = {'mainstream': 'clip.mkv', 'substream': 'preview-substream.mp4'}
 
@@ -106,8 +107,11 @@ def _snapshot(directory, requested_revision, stream):
     root_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     lock_fd = data_fd = None
     try:
-        lock_fd = os.open('.tracks-publication.lock', os.O_RDWR | os.O_CREAT |
-                          os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=root_fd)
+        try:
+            lock_fd = _open_regular(root_fd, '.tracks-publication.lock')
+        except FileNotFoundError:
+            lock_fd = os.open('.tracks-publication.lock', os.O_RDONLY | os.O_CREAT |
+                              os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=root_fd)
         _require(stat.S_ISREG(os.fstat(lock_fd).st_mode), 'invalid publication lock')
         fcntl.flock(lock_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
         manifest_fd = _open_regular(root_fd, 'tracks.json')
@@ -124,7 +128,10 @@ def _snapshot(directory, requested_revision, stream):
         filename = f'tracks-{revision}.json'
         _require(manifest.get('file') == filename, 'revision filename mismatch')
         _require(manifest.get('sha256') == revision, 'manifest hash mismatch')
-        data_fd = _open_regular(root_fd, filename)
+        try:
+            data_fd = _open_regular(root_fd, filename)
+        except FileNotFoundError as exc:
+            raise TrackContractError('manifest references missing revision data') from exc
         timeline = None
         if stream == 'substream':
             timeline_fd = _open_regular(root_fd, 'substream.json')
@@ -180,7 +187,9 @@ def validate_revision(payload, event, camera_id, timeline=None):
         _require(isinstance(source, dict), 'missing source')
         stream = source.get('stream')
         _require(stream in SOURCE_FILES and source.get('file') == SOURCE_FILES[stream], 'invalid source stream/file')
-        _require(stream == event.get('detection_settings', {}).get('stream'), 'cross-stream recovery')
+        settings = event.get('detection_settings')
+        _require(isinstance(settings, dict), 'missing detection settings')
+        _require(stream == settings.get('stream'), 'cross-stream recovery')
         _require(_hash(source.get('video_sha256')) and _hash(source.get('timeline_sha256')), 'missing source hashes')
         timing = event if stream == 'mainstream' else timeline
         _require(isinstance(timing, dict) and timing.get('id') == event['id'], 'missing/mismatched source timeline')
@@ -204,6 +213,12 @@ def validate_revision(payload, event, camera_id, timeline=None):
         _require(isinstance(base, list) and len(base) == 2 and all(_integer(v, 1) for v in base), 'invalid time base')
         origin = source.get('pts_origin')
         _require(type(origin) is int, 'missing source PTS origin')
+        anchor_host = track.get('anchor_host_unix')
+        _require(_number(anchor_host) and abs(anchor_host - anchor_time) <= SEED_SEARCH_SECONDS,
+                 'validated anchor outside seed search window')
+        _require(not any(a['host_end_unix'] < b['host_start_unix'] and
+                         min(anchor_host, anchor_time) < b['host_start_unix'] <= max(anchor_host, anchor_time)
+                         for a, b in zip(segments, segments[1:])), 'seed search crosses recording gap')
         anchor_frame, anchor_pts = track.get('anchor_frame_index'), track.get('anchor_pts')
         _require(_integer(anchor_frame) and type(anchor_pts) is int, 'missing validated anchor frame')
         def mapped_seconds(host):
@@ -215,7 +230,7 @@ def validate_revision(payload, event, camera_id, timeline=None):
                 offset += duration
             raise TrackContractError('timestamp outside saved footage')
         tick = base[0] / base[1]
-        _require(abs((anchor_pts - origin) * tick - mapped_seconds(anchor_time)) <= tick + 1e-6,
+        _require(abs((anchor_pts - origin) * tick - mapped_seconds(anchor_host)) <= tick + 1e-6,
                  'anchor PTS/timeline mismatch')
         previous = None
         segment_id = track.get('segment_id')
@@ -223,7 +238,7 @@ def validate_revision(payload, event, camera_id, timeline=None):
         for p in rows:
             _require(isinstance(p, dict) and p.get('origin') == 'video_recovered', 'revision may only add recovered points')
             frame, pts, host = p.get('frame_index'), p.get('pts'), p.get('host_unix')
-            _require(_integer(frame) and type(pts) is int and _number(host) and host < anchor_time,
+            _require(_integer(frame) and type(pts) is int and _number(host) and host < min(anchor_time, anchor_host),
                      'invalid frame/timestamp or non-backward recovery')
             _require(any(s['host_start_unix'] <= host < s['host_end_unix'] for s in segments),
                      'recovered point outside saved footage or in recording gap')
@@ -231,7 +246,7 @@ def validate_revision(payload, event, camera_id, timeline=None):
             _require(abs((pts - origin) * tick - mapped_seconds(host)) <= tick + 1e-6,
                      'recovered PTS/timeline mismatch')
             _require(not any(a['host_end_unix'] < b['host_start_unix'] and
-                             host < b['host_start_unix'] <= anchor_time
+                             host < b['host_start_unix'] <= max(anchor_time, anchor_host)
                              for a, b in zip(segments, segments[1:])), 'recovery crosses recording gap')
             current = (frame, pts, host)
             _require(previous is None or all(a < b for a, b in zip(previous, current)), 'duplicate/non-increasing points')
@@ -249,7 +264,9 @@ def validate_revision(payload, event, camera_id, timeline=None):
             _require(-1 <= scores['correlation'] <= 1 and 0 <= scores['peak_margin'] <= 2 and
                      scores['round_trip_error_px'] >= 0, 'match diagnostics out of range')
             points.append({**deepcopy(p), 'track_id': tid, 'segment_id': segment_id,
-                           'anchor_sample_index': index, 'source': deepcopy(source)})
+                           'anchor_sample_index': index, 'anchor_frame_index': anchor_frame,
+                           'anchor_pts': anchor_pts, 'anchor_host_unix': anchor_host,
+                           'source': deepcopy(source)})
     return points
 
 
@@ -276,7 +293,9 @@ def read_tracks(directory, event, *, camera_id, mode, revision=None):
             raise ValueError('detector-only reads cannot select a recovered revision')
         return result
     try:
-        stream = event.get('detection_settings', {}).get('stream')
+        settings = event.get('detection_settings')
+        _require(isinstance(settings, dict), 'missing detection settings')
+        stream = settings.get('stream')
         with _snapshot(directory, revision, stream) as (manifest, raw, timeline):
             _require(manifest.get('event_id') == event['id'] and manifest.get('camera_id') == camera_id,
                      'manifest event/camera mismatch')

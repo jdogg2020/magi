@@ -43,6 +43,21 @@ class RadioTests(unittest.TestCase):
         self.assertEqual([s['status'] for s in evidence['snapshots']],['fresh','stale','unavailable'])
         self.assertLess(len(json.dumps(evidence,indent=2)),MAX_EVENT)
 
+    def test_collector_recovers_after_missing_and_malformed_feed(self):
+        frames = [FileNotFoundError(), {'now': 10**400, 'aircraft': []},
+                  {'now': 100, 'aircraft': [self.row(alt_geom=10**400)]}]
+        # Exercise the run loop, not just parsing, to show that one bad sample
+        # does not end collection and require a camera-service restart.
+        with patch('magi.radio.bounded_json', side_effect=frames), \
+                patch('magi.radio.time.time', return_value=100), \
+                patch.object(self.radio.stop, 'is_set', side_effect=[False]*3+[True]), \
+                patch.object(self.radio.stop, 'wait'):
+            self.radio.run()
+        saved = [json.loads(frame) for _, frame in self.radio.frames]
+        self.assertEqual([frame['status'] for frame in saved],
+                         ['unavailable', 'unavailable', 'fresh'])
+        self.assertNotIn('alt_geom', saved[-1]['aircraft'][0])
+
     def test_crowded_window_is_bounded_and_reports_truncation(self):
         rows=[self.row(hex=f'{i:06x}',gs=200,track=90,alt_baro=12000) for i in range(512)]
         for stamp in range(100,160,2):self.poll(stamp,rows)

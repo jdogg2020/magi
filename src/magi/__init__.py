@@ -1,3 +1,3 @@
 """Magi: clean-room local sky-camera recording."""
 
-__version__ = "0.20.27"
+__version__ = "0.20.28"

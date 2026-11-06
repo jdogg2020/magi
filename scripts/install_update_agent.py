@@ -1,5 +1,6 @@
 """Root-only bootstrap for the fixed-purpose, socket-activated update helper."""
 import argparse
+import importlib.util
 import os
 from pathlib import Path
 import stat
@@ -62,6 +63,18 @@ def install(source, prefix=Path('/'), runner=subprocess.run):
         runner(['systemctl', 'try-restart', 'magi-feeding-agent.service'], check=True, timeout=30)
 
 
+def refresh_receiver_runtime(source):
+    # Existing installed updaters already run this new release's installer.
+    # Import the new fixed-purpose launcher rather than depending on the old
+    # updater knowing about this migration. It is a no-op when unconfigured or
+    # when the new updater has already migrated this receiver.
+    path = Path(source)/'scripts/update.py'
+    spec = importlib.util.spec_from_file_location('magi_release_updater', path)
+    updater = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(updater)
+    updater.refresh_receiver_runtime(source)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, default=Path(__file__).resolve().parents[1])
@@ -70,6 +83,7 @@ def main():
         parser.error('run with sudo')
     os.umask(0o022)  # Helper code is public-readable; state is created separately as 0700.
     install(args.source)
+    refresh_receiver_runtime(args.source)
     print('Dashboard update helper installed. Recording was not stopped.')
 
 

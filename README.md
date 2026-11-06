@@ -5,6 +5,24 @@ will be developed privately and licensed separately, with inference running
 locally on the Raspberry Pi / AI HAT. No proprietary model or hosted inference
 service is included here. See [model policy](docs/MODEL-POLICY.md).
 
+## Event track contract groundwork (0.20.28)
+
+Adds an explicit reader for separately attributed recovered-track revisions,
+with capture-evidence, geometry and timing validation. This is groundwork for
+video-based recovery: automatic recovery, review overlays and exports are not
+enabled by this change. See the [contract and current limits](docs/EVENT-TRACK-CONTRACT.md).
+
+## Dynamic sensor replacement (0.20.27)
+
+Automatically configured RTL-SDR and SIM7600 roles rediscover replacement hardware
+after disconnect, rather than retaining the bench device as a permanent pin.
+Ambiguous devices wait for an explicit selection. Existing managed receivers are
+migrated during update, including receiver permissions and the unprivileged
+readsb supervisor. ADS-B history recovers from malformed numeric data.
+Changing a camera host, RTSP port or stream through Magi settings now invalidates pointing calibration.
+GPS relocation and automatic camera-address rediscovery remain separate work;
+see [sensor reconnection and limits](docs/SENSORS.md#reconnection-and-device-identity).
+
 ## Multi-label event review (0.20.26)
 
 Select every matching category in Event review, then choose **Submit & next** to

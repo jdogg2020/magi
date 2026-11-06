@@ -29,7 +29,7 @@ def fixture():
                'evidence_sha256': tracks.evidence_hash(event, 'camera-a'),
                'geometry_sha256': tracks.digest(event['measurement_geometry']),
                'status': 'partial', 'algorithm': 'fixture-only', 'parameters': {},
-               'tracks': [{'track_id': 'bird', 'anchor_sample_index': 0, 'anchor_frame_index': 10, 'anchor_pts': 2000, 'source': source,
+               'tracks': [{'track_id': 'bird', 'anchor_sample_index': 0, 'anchor_frame_index': 10, 'anchor_pts': 2000, 'anchor_host_unix': 100., 'source': source,
                            'segment_id': 'continuous-0', 'stop_reason': 'low_confidence',
                            'points': [point]}]}
     return event, payload
@@ -228,6 +228,72 @@ class EventTrackTests(unittest.TestCase):
         self.payload['tracks'][0]['source']['width'] = 1280
         self.publish()
         self.assertEqual(self.read()['status'], 'invalid')
+
+    def test_visual_anchor_may_differ_from_detector_timestamp(self):
+        for host, pts in ((99.5, 1500), (100.5, 2500), (101., 3000)):
+            with self.subTest(host=host):
+                self.payload['tracks'][0].update(anchor_host_unix=host, anchor_pts=pts)
+                self.publish()
+                result = self.read()
+                self.assertEqual(result['status'], 'partial', result)
+                self.assertEqual(result['detector_samples'][0]['sample_host_unix'], 100.)
+                self.assertEqual(result['recovered_points'][0]['anchor_host_unix'], host)
+                self.assertEqual(result['recovered_points'][0]['anchor_pts'], pts)
+
+    def test_visual_anchor_search_boundary_and_mapping(self):
+        for host, pts in ((101.001, 3001), (98.999, 999), (100.5, 2000), (None, 2000)):
+            with self.subTest(host=host, pts=pts):
+                self.payload['tracks'][0].update(anchor_host_unix=host, anchor_pts=pts)
+                self.publish()
+                self.assertEqual(self.read()['status'], 'invalid')
+
+    def test_points_must_precede_visual_and_detector_anchor(self):
+        self.payload['tracks'][0].update(anchor_host_unix=99., anchor_pts=1000)
+        self.publish()
+        self.assertEqual(self.read()['status'], 'invalid')
+        self.payload['tracks'][0].update(anchor_host_unix=100.5, anchor_pts=2500)
+        self.payload['tracks'][0]['points'][0].update(host_unix=100.2, pts=2200)
+        self.publish()
+        self.assertEqual(self.read()['status'], 'invalid')
+
+    def test_visual_seed_search_cannot_cross_recording_gap(self):
+        self.event['segments'] = [
+            {'host_start_unix': 98., 'host_end_unix': 99.5, 'media_start': 0., 'media_end': 1.5},
+            {'host_start_unix': 99.8, 'host_end_unix': 102., 'media_start': 0., 'media_end': 2.2}]
+        self.payload['evidence_sha256'] = tracks.evidence_hash(self.event, 'camera-a')
+        track = self.payload['tracks'][0]
+        track['source']['timeline_sha256'] = tracks.digest(self.event['segments'])
+        track.update(anchor_host_unix=99.4, anchor_pts=1400)
+        self.publish()
+        self.assertIn('seed search crosses recording gap', self.read()['reason'])
+
+    def test_malformed_settings_fail_visibly(self):
+        self.publish()
+        for settings in (None, [], 'substream', 42):
+            with self.subTest(settings=settings):
+                self.event['detection_settings'] = settings
+                result = self.read()
+                self.assertEqual(result['status'], 'invalid')
+                self.assertEqual(result['recovered_points'], [])
+                self.assertEqual(result['detector_samples'], self.event['track_samples'])
+
+    def test_manifest_with_missing_revision_is_invalid(self):
+        sha = self.publish()
+        (self.root / f'tracks-{sha}.json').unlink()
+        result = self.read()
+        self.assertEqual(result['status'], 'invalid')
+        self.assertIn('missing revision data', result['reason'])
+
+    def test_existing_lock_needs_only_read_access(self):
+        self.publish()
+        (self.root / '.tracks-publication.lock').touch(mode=0o400)
+        original = tracks.os.open
+        def read_only(path, flags, *args, **kwargs):
+            if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT):
+                raise PermissionError('read-only fixture')
+            return original(path, flags, *args, **kwargs)
+        with patch.object(tracks.os, 'open', side_effect=read_only):
+            self.assertEqual(self.read()['status'], 'partial')
 
     def test_truncation_flag_preserved(self):
         self.event['track_samples_truncated']=True

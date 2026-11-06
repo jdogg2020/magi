@@ -253,8 +253,13 @@ def capture_baseline(event, sampling):
     original = event.get("detection_settings")
     if not isinstance(original, dict):
         raise ValueError("Event has no capture-time detection settings")
-    if set(original) != set(replay.settings({})):
-        raise ValueError("Capture-time detection settings are incomplete")
+    defaults = replay.settings({})
+    if original.keys() - defaults.keys():
+        raise ValueError("Unknown capture-time detection setting")
+    if not {"width", "height", "fps"} <= original.keys():
+        raise ValueError("Event export is missing capture sampling")
+    filled = {key: value for key, value in defaults.items() if key not in original}
+    original = {**filled, **original}
     try:
         tracker = replay.settings({**original, "width": sampling["width"],
                                    "height": sampling["height"], "fps": sampling["fps"]})
@@ -276,7 +281,9 @@ def capture_baseline(event, sampling):
                   f"sampling policy {sampling['width']}x{sampling['height']}@{sampling['fps']} "
                   f"from dataset ({sampling_note}; capture sampling "
                   f"{capture['width']}x{capture['height']}@{capture['fps']})")
-    return tracker, {"capture_sampling": capture, "capture_sampling_supported": supported,
+    if filled:
+        provenance += "; missing settings filled from replay defaults: " + json.dumps(filled, sort_keys=True)
+    return tracker, {"defaulted_settings": filled, "capture_sampling": capture, "capture_sampling_supported": supported,
                      "provenance": provenance}
 
 
@@ -968,6 +975,7 @@ def run(dataset_path, candidates=None, max_seconds=DEFAULT_MAX_SECONDS,
             "truncated": clip["truncated"],
             "truncated_seconds": round(clip["truncated_seconds"], 6),
             "baseline_provenance": clip["capture"]["provenance"],
+            "defaulted_settings": clip["capture"]["defaulted_settings"],
             "capture_sampling": clip["capture"]["capture_sampling"],
             "capture_sampling_supported": clip["capture"]["capture_sampling_supported"],
             "annotation_version": clip["annotation"]["version"] if clip["annotation"] else None,

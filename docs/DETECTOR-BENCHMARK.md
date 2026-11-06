@@ -83,7 +83,10 @@ Each clip's baseline is its **capture-time detector settings from its
 event export**, with one deliberate exception: width, height and fps in
 the tracker baseline always come from the dataset's explicit sampling
 policy, never from capture. Everything else is preserved, including
-ignore zones, unless a candidate override changes it.
+ignore zones, unless a candidate override changes it. Older exports can omit
+detector settings introduced later. The report lists every assumed key and
+value in `defaulted_settings` (for example, `stream: substream`). Capture
+width, height and fps must still be present to report measured sampling.
 
 Why the exception matters: capture fps in the starter set is 37 on most
 clips and 25.08 on one, both outside the supported replay range

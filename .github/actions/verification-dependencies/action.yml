@@ -27,6 +27,7 @@ runs:
       shell: bash
       run: |
         if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+          sudo /usr/bin/python3 scripts/ci_apt_sources.py
           sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
           sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends ffmpeg
         fi
@@ -53,6 +54,7 @@ runs:
           (async()=>{const browser=await require("playwright").chromium.launch({headless:true});await browser.close();})()
             .catch(error=>{console.error(error.message);process.exit(1);});
         '; then
+          sudo /usr/bin/python3 scripts/ci_apt_sources.py
           export DEBIAN_FRONTEND=noninteractive
           /tmp/magi-browser/node_modules/.bin/playwright install-deps chromium
         fi

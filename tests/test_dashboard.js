@@ -300,6 +300,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/magi/web/app.js'),'u
  await elements['review-save'].onclick();assert(elements['review-save-status'].textContent.includes('saved'));
  let managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label',camera_id:managedCamera})",context);assert(managed.events.some(e=>e.id===managedEventId && e.review.reviewed && e.review.notes==='UI regression notes'));
  await elements['review-label-ignore'].onclick();
+ await elements['review-submit'].onclick();
  for(let i=0;i<100 && vm.runInContext('MagiEvents.hasPending()',context);i++)await new Promise(resolve=>setTimeout(resolve,50));
  assert(!vm.runInContext('MagiEvents.hasPending()',context),'Queued category must finish saving');
  managed=await vm.runInContext("api('/api/station/events/list',{q:'regression-review-label',camera_id:managedCamera})",context);

@@ -5,7 +5,7 @@ const MagiEvents = (()=>{
   let neighbors={previous:null,next:null}, navigationVersion=0, reviewBusy=false;
   let navigationTask=null, navigationKey=null, navigationFilter=-1, navigationReady=false;
   const pendingSaves=new Map(), localReviews=new Map();
-  let draining=false, advancingKey=null;
+  let draining=false, advancingKey=null, reviewVisit=0;
   function withLocalReview(row){
     const patch=row && localReviews.get(eventKey(row));
     return patch ? {...row,review:{...row.review,...patch}} : row;
@@ -53,7 +53,10 @@ const MagiEvents = (()=>{
   }
   async function queueReview(changes){
     if(!reviewEvent || reviewBusy || mutating || advancingKey===eventKey(reviewEvent))return;
-    const event=withLocalReview(reviewEvent),key=eventKey(event);
+    const event=withLocalReview(reviewEvent),key=eventKey(event),visit=reviewVisit;
+    if(event.review?.trashed_at!=null || event.review?.annotation_error)return;
+    const invalid=validateDraft(changes);
+    if(invalid){el('review-save-status').textContent=invalid;return;}
     if(!pendingSaves.has(key) && pendingSaves.size>=100){el('review-save-status').textContent='100 changes are waiting. Let saves finish or retry failures before continuing.';return;}
     changes=labelReview(changes,event);
     const existing=pendingSaves.get(key);
@@ -68,9 +71,13 @@ const MagiEvents = (()=>{
     try {
       const found=navigationKey===key && navigationFilter===requestVersion && navigationTask
         ? (navigationReady || await navigationTask) : await loadNeighbors(event);
-      if(!reviewEvent || eventKey(reviewEvent)!==key)return;
-      if(found && neighbors.next)openReview(withLocalReview(neighbors.next));
-      else el('review-save-status').textContent=found?'Last matching event — changes are saving in the background.':'Changes queued. Navigation unavailable; use the list to continue.';
+      if(!reviewEvent || eventKey(reviewEvent)!==key || visit!==reviewVisit || !el('review').open)return;
+      // Do not discard edits made while an unusually slow neighbor lookup ran.
+      if(dirty()){el('review-save-status').textContent='Review submitted. Your newer edits have not been submitted.';return;}
+      if(found && neighbors.next){
+        openReview(withLocalReview(neighbors.next));
+        el('review-label-ignore').focus();
+      }else el('review-save-status').textContent=found?'Last matching event. Review submitted; check the save banner for pending changes.':'Review submitted. Navigation unavailable; use the list to continue.';
     } finally {if(advancingKey===key)advancingKey=null;reviewControls();}
   }
   const quickLabels=[['ignore','Ignore'],['aircraft','Plane'],['bird/insect','Bird / insect'],['lightning','Lightning'],['weather','Cloud / weather'],['meteor','Meteor'],['satellite','Satellite'],['unknown','Unknown']];
@@ -203,7 +210,10 @@ const MagiEvents = (()=>{
     el('review-trash').textContent=review.trashed_at!=null?'Restore from trash':'Move to trash (Delete)';
     const pendingCurrent=reviewEvent && pendingSaves.has(eventKey(reviewEvent));
     for(const id of ['review-mark','review-keep','review-save'])el(id).disabled=busy || pendingCurrent || review.trashed_at!=null || !!review.annotation_error;
-    for(const [label] of quickLabels){const item=el('review-label-'+label.replace('/','-'));item.disabled=busy || advancingKey===eventKey(reviewEvent || {}) || (!pendingCurrent && pendingSaves.size>=100) || review.trashed_at!=null || !!review.annotation_error;item.setAttribute('aria-pressed',String((review.labels || []).includes(label)));}
+    const draftLabels=labels(el('review-labels').value).map(label=>label.toLowerCase());
+    const draftDisabled=busy || advancingKey===eventKey(reviewEvent || {}) || (!pendingCurrent && pendingSaves.size>=100) || review.trashed_at!=null || !!review.annotation_error;
+    el('review-submit').disabled=!reviewEvent || draftDisabled;
+    for(const [label] of quickLabels){const item=el('review-label-'+label.replace('/','-'));item.disabled=draftDisabled;item.setAttribute('aria-pressed',String(draftLabels.includes(label)));}
     el('review-trash').disabled=busy || pendingCurrent || !!review.annotation_error || (review.trashed_at==null && !!review.protected);
   }
   function loadNeighbors(event){
@@ -221,6 +231,12 @@ const MagiEvents = (()=>{
     return navigationTask;
   }
   function draftChanges(){return {labels:labels(el('review-labels').value),notes:el('review-notes').value,reviewed:el('review-reviewed').checked,protected:el('review-protected').checked};}
+  function validateDraft(changes){
+    if(changes.labels?.length>8)return 'Up to eight labels per event. Remove a label before submitting.';
+    if(changes.labels?.some(label=>[...label].length>32 || /[\p{C}\p{Z}]/u.test(label.replaceAll(' ',''))))return 'Each label must contain 1–32 printable characters.';
+    if(changes.notes!=null && ([...changes.notes].length>2000 || /[\x00-\x08\x0b-\x1f]/.test(changes.notes)))return 'Notes must be text of up to 2,000 characters.';
+    return '';
+  }
   function dirty(){
     const review=reviewEvent?.review || {}, draft=draftChanges();
     return JSON.stringify(draft.labels)!==JSON.stringify(review.labels || []) || draft.notes!==(review.notes || '') || draft.reviewed!==!!review.reviewed || draft.protected!==!!review.protected;
@@ -228,6 +244,7 @@ const MagiEvents = (()=>{
   function mayLeave(){return !reviewBusy && (!dirty() || confirm('Discard unsaved review changes?'));}
   function navigate(direction){const target=direction<0?neighbors.previous:neighbors.next;if(target && mayLeave())openReview(target);}
   function updateReview(row, reloadNeighbors=true){
+    if(reloadNeighbors)reviewVisit++;
     if(!row)return;row=withLocalReview(row);if(reviewEvent && eventKey(reviewEvent)===eventKey(row))reviewEvent=row;const review=row.review || {};el('review-labels').value=(review.labels || []).join(', ');el('review-notes').value=review.notes || '';el('review-reviewed').checked=!!review.reviewed;el('review-protected').checked=!!review.protected;
     el('review-save-status').textContent=review.trashed_at!=null?'In trash. Restore before editing. Trash may be removed by retention or storage pressure.':review.protected?'Protected from automatic removal and trash.':'';
     reviewControls();if(reloadNeighbors)loadNeighbors(row);
@@ -235,7 +252,11 @@ const MagiEvents = (()=>{
   async function saveReview(action='update',changes=draftChanges()){
     if(!reviewEvent || reviewBusy || mutating || pendingSaves.has(eventKey(reviewEvent)))return;
     const event=reviewEvent, key=eventKey(event);
-    if(action==='update')changes=labelReview(changes,event);
+    if(action==='update'){
+      const invalid=validateDraft(changes);
+      if(invalid){el('review-save-status').textContent=invalid;return;}
+      changes=labelReview(changes,event);
+    }
     reviewBusy=true;reviewControls();el('review-save-status').textContent='Saving…';
     try {
       const result=await api('/api/station/events/update',{targets:[{id:event.id,camera_id:event.camera_id || selectedCamera}],action,...(action==='update'?{changes}:{})});
@@ -255,7 +276,7 @@ const MagiEvents = (()=>{
     finally{reviewBusy=false;reviewControls();}
   }
   function init(){
-    if(typeof window!=='undefined')window.addEventListener('beforeunload',event=>{if(pendingSaves.size){event.preventDefault();event.returnValue='';}});
+    if(typeof window!=='undefined')window.addEventListener('beforeunload',event=>{if(pendingSaves.size || (reviewEvent && el('review').open && dirty())){event.preventDefault();event.returnValue='';}});
     mount('overview');
     setOptions([]);
     for(const [label,title] of quickLabels){
@@ -265,10 +286,13 @@ const MagiEvents = (()=>{
         const current=[...new Set(labels(el('review-labels').value).map(value=>value.toLowerCase()))];
         const next=current.includes(label)?current.filter(value=>value!==label):[...current,label];
         if(next.length>8){el('review-save-status').textContent='Up to eight labels per event. Remove a label before adding another.';return;}
-        return queueReview({...draftChanges(),labels:next});
+        el('review-labels').value=next.join(', ');
+        reviewControls();
+        el('review-save-status').textContent='Selection not submitted. Choose all matching labels, then Submit & next.';
       };
-      item.title=`Add or remove ${title.toLowerCase()}; saves in the background and opens the next matching event`;
+      item.title=`Select or deselect ${title.toLowerCase()}; submit when all matching labels are selected`;
     }
+    el('review-labels').addEventListener('input',reviewControls);
     el('event-filters').addEventListener('change',event=>{if(event.target.matches('select'))applyFilters();});
     el('event-filters').onsubmit=event=>{event.preventDefault();return applyFilters();};
     el('event-reset').onclick=()=>{for(const id of ['event-search','event-label-filter','event-start','event-end'])el(id).value='';for(const id of ['event-exported','event-reviewed','event-protected','event-state','event-reference','event-type'])el(id).value='all';el('event-hide-likely').checked=false;el('event-camera').value='all';el('event-folder').value='active';el('event-sort').value='newest';applyFilters();};
@@ -336,12 +360,18 @@ const MagiEvents = (()=>{
       }catch(error){el('event-action-status').textContent='Export failed: '+error.message;}
       finally{mutating=false;selection();}
     };
+    el('review-submit').onclick=event=>{
+      // A pointer double-click must not submit the newly opened event as well.
+      if(el('review-submit').disabled || event?.detail>1)return;
+      return queueReview({...draftChanges(),reviewed:true});
+    };
     el('review-save').onclick=()=>saveReview();
     el('review-mark').onclick=()=>saveReview('update',{reviewed:!reviewEvent.review?.reviewed});
     el('review-keep').onclick=()=>saveReview('update',{protected:!reviewEvent.review?.protected});
     el('review-trash').onclick=()=>{if(!el('review-trash').disabled && mayLeave())return saveReview(reviewEvent.review?.trashed_at!=null?'restore':'trash');};
     el('review-event-prev').onclick=()=>navigate(-1);el('review-event-next').onclick=()=>navigate(1);
     el('review').addEventListener('keydown',event=>{
+      if(event.repeat && event.target?.tagName?.toLowerCase()==='button' && ['Enter',' '].includes(event.key)){event.preventDefault();return;}
       if(!el('review').open || event.defaultPrevented || event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || reviewBusy || mutating)return;
       const tag=event.target?.tagName?.toLowerCase();
       if(['input','textarea','select','video'].includes(tag) || event.target?.isContentEditable)return;
@@ -354,10 +384,10 @@ const MagiEvents = (()=>{
         const video=el('review-video');if(reviewMode!=='video')el('review-play').onclick();else if(video.paused)video.play().catch(()=>{});else video.pause();
       }
     });
-    el('review').addEventListener('close',()=>{refresh(true);});
+    el('review').addEventListener('close',()=>{reviewVisit++;refresh(true);});
     el('review').addEventListener('cancel',event=>{if(!mayLeave())event.preventDefault();});
   }
 
-  function reset(){navigationVersion++;navigationTask=null;navigationKey=null;navigationReady=false;neighbors={previous:null,next:null};selected.clear();rows=[];loaded=false;currentFilters=null;lastRefresh=0;requestVersion++;selection();}
+  function reset(){reviewVisit++;navigationVersion++;navigationTask=null;navigationKey=null;navigationReady=false;neighbors={previous:null,next:null};selected.clear();rows=[];loaded=false;currentFilters=null;lastRefresh=0;requestVersion++;selection();}
   return {init,mount,refresh,updateReview,reset,mayLeave,withLocalReview,downloadChoices,updateDownloads,hasPending:()=>!!pendingSaves.size,loaded:()=>loaded};
 })();

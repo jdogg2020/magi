@@ -38,7 +38,7 @@ if "$dry_run"; then
   echo "prompt for a dashboard password; install, enable and start magi.service."
   if "$lan"; then echo "LAN dashboard explicitly enabled on port 8090."; else echo "Dashboard binds to localhost unless existing config says otherwise."; fi
   if "$identification"; then echo "Would also install OS-managed python3-skyfield for satellite propagation."; fi
-  if "$require_mounted_ssd"; then echo "Mounted-SSD requirement explicitly enabled."; else echo "New directory installs use a storage cap up to 10 GB and reserve 2 GB free."; fi
+  if "$require_mounted_ssd"; then echo "Mounted-SSD requirement explicitly enabled."; else echo "New directory installs use a storage cap up to 10 GB, reserve 2 GB free, and keep up to 2 GB cleanup headroom."; fi
   if "$skip_sensors"; then echo "Sensor provisioning explicitly skipped.";
   elif [[ ${#sensor_options[@]} -gt 0 ]]; then echo "Would provision explicitly selected GNSS/ADS-B sensors and optional chrony using setup_sensors.py.";
   else echo "Would auto-detect attached GNSS/ADS-B sensors and provision any found hardware using setup_sensors.py."; fi

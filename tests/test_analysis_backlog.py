@@ -88,6 +88,19 @@ class AnalysisBacklogTests(unittest.TestCase):
         self.assertEqual(second['session'], first)
         self.assertEqual(second['last_minute'], {'gap_ms': {'value': 40, 'end_unix': wall + 100.04}})
 
+    def test_gap_distribution_uses_actual_gaps_and_reports_capacity(self):
+        timing=FrameTiming()
+        for i in range(101):timing.analyzed(i*.04,0)
+        report=timing.status(5)['gap_distribution']
+        self.assertEqual(report['sample_count'],100)
+        self.assertAlmostEqual(report['p99_ms'],40.)
+        self.assertFalse(report['truncated'])
+        for i in range(9000):timing.analyzed(10+i*.001,0)
+        report=timing.status(20)['gap_distribution']
+        self.assertEqual(report['sample_count'],8192)
+        self.assertTrue(report['truncated'])
+        self.assertIsNone(timing.status(100)['gap_distribution']['p99_ms'])
+
     def test_close_unblocks_reader_and_releases_process(self):
         analysis = self.make_analysis()
         analysis.process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],

@@ -1,3 +1,4 @@
+require('./test_recovery_ui.js');
 require('./test_export_ui.js');
 require('./test_feeding_ui.js');
 require('./test_mask_editor.js');

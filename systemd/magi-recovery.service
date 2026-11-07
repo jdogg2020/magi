@@ -1,0 +1,31 @@
+[Unit]
+Description=Magi isolated event video recovery
+Requires=magi-recovery.socket
+After=magi-recovery.socket
+
+[Service]
+Type=simple
+User=magi
+Group=magi
+WorkingDirectory=/opt/magi
+Environment=PYTHONPATH=/opt/magi/src
+Environment=OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+ExecStart=/usr/bin/python3 -m magi.recovery_service
+CPUQuota=50%
+MemoryMax=384M
+MemorySwapMax=0
+TasksMax=32
+Nice=19
+IOSchedulingClass=idle
+KillMode=control-group
+TimeoutStopSec=3
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX

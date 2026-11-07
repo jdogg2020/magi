@@ -1,0 +1,12 @@
+[Unit]
+Description=Magi bounded event recovery socket
+
+[Socket]
+ListenStream=/run/magi-recovery.sock
+SocketUser=magi
+SocketGroup=magi
+SocketMode=0600
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

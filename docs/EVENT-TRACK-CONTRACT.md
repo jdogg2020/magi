@@ -1,6 +1,6 @@
 # Event track contract, schema 1
 
-This is the first implementation slice of plan PR #81: a validator and reader in `magi.event_tracks`. It does not recover video frames, publish revisions, run a background worker or change a live consumer. The plan remains the authority for later milestones.
+The validator and reader in `magi.event_tracks` implement the evidence contract from plan PR #81. The opt-in worker and consumers are described in EVENT-VIDEO-RECOVERY.md.
 
 ## Reader API
 
@@ -13,7 +13,7 @@ read_tracks(event_directory, event_metadata,
 
 The caller must supply the capture event and camera identity. `detector_only` performs no filesystem access. Both modes return a deep copy of the original `detector_samples`, saved geometry and the truncation flag. Extended mode adds a separate `recovered_points` list with explicit origin, source, anchor and continuous-segment identity. Consumers must deliberately opt in; they cannot mistake the added array for detector measurements. Original samples are not assigned invented source-frame indices.
 
-Statuses are `detector_only`, `complete`, `partial`, `unavailable` and `invalid`. A missing manifest/timeline or a busy publisher produces an unavailable fallback. A manifest referencing missing revision data is invalid. Invalid schema, hash, identity, geometry or timing produces an invalid fallback with a reason and no recovered points. Neither case changes original evidence. An explicit revision must match the current manifest; historical lookup is not implemented in this slice. No existing detector benchmark, identification, media, export or review call site is changed.
+Statuses are `detector_only`, `complete`, `partial`, `unavailable` and `invalid`. A missing manifest/timeline or a busy publisher produces an unavailable fallback. A manifest referencing missing revision data is invalid. Invalid schema, hash, identity, geometry or timing produces an invalid fallback with a reason and no recovered points. Neither case changes original evidence. An explicit revision must match the current manifest; historical lookup is not implemented in this slice. Detector benchmarks and identification remain detector-only. Media, export and review explicitly consume recovered products.
 
 ## Files and identity
 
@@ -34,7 +34,7 @@ A track contains `track_id`, `anchor_sample_index`, `anchor_frame_index`, `ancho
 
 - `stream`: `substream` or `mainstream`, equal to saved detection settings;
 - `file`: respectively `preview-substream.mp4` or `clip.mkv`;
-- `video_sha256`: video provenance supplied by the future publisher;
+- `video_sha256`: video provenance supplied by the publisher;
 - `timeline_sha256`: canonical SHA-256 of the source timeline's `segments` array;
 - `width`, `height`, `time_base: [numerator, denominator]`, `pts_origin` (the source clip's presentation-time origin in ticks).
 
@@ -42,7 +42,7 @@ The reader validates the actual bounded `substream.json` timeline for substream 
 
 This first contract requires seed and source dimensions to match. A separately validated same-stream resize transform is needed before publishing tracks from seeds generated at a different analysis resolution. Missing saved stream metadata, mismatched resolution, meteors and cross-stream recovery are explicit unsupported cases, not guessed conversions.
 
-Each point contains `origin: video_recovered`, `frame_index`, integer `pts`, finite estimated `host_unix`, `x`, `y`, exclusive-edge integer `box`, `mapping_status: visually_verified_host_estimate`, boolean `excluded_zone` and `quality` (`correlation`, `peak_margin`, `round_trip_error_px`). Correlation and other diagnostics are checked for finite ranges, not treated as calibrated probabilities. Algorithm-specific acceptance thresholds belong to the future worker.
+Each point contains `origin: video_recovered`, `frame_index`, integer `pts`, finite estimated `host_unix`, `x`, `y`, exclusive-edge integer `box`, `mapping_status: visually_verified_host_estimate`, boolean `excluded_zone` and `quality` (`correlation`, `peak_margin`, `round_trip_error_px`). Correlation and other diagnostics are checked for finite ranges, not treated as calibrated probabilities. Algorithm-specific acceptance thresholds belong to the worker.
 
 Frames, PTS and estimated host times must strictly increase, all before both the visually located anchor and the original detector timestamp. The reader includes the validated anchor frame, PTS and estimated host time on returned recovered points. Coordinates must fit the source and box. Points outside recorded coverage, in a recording gap, or extending across a recording gap to the anchor are rejected. Internal gap filling and forward-tail additions are therefore excluded. Parent track/source identities override any extraneous point fields. Returned source metadata contains only the validated fields listed above; unknown source extensions are not copied onto every point. Each returned source remains independently mutable, including its time base.
 
@@ -64,30 +64,18 @@ Run with Python 3.13+:
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_event_tracks.py' -v
 ```
 
-No real-video recovery, hardware performance, accuracy improvement, live integration or deployment is claimed by this slice.
+## Worker publication and consumers
 
-## Deferred contract fields before worker publication
+The opt-in worker now publishes `published_unix`, `geometry_sha256`, and
+`request_id` in the manifest. Revisions include `algorithm_version`, the exact
+`parameters`, `geometry_snapshot`, measured `work` and effective limits, and
+separate detector-only/extended `summaries`. The generic reader remains backward
+compatible with the original reader-only contract; these extra fields are
+mandatory for the current worker writer, not invented for legacy products.
 
-This reader-only draft is not the final worker publication schema. The following
-#81 fields remain deferred to the publisher/worker milestone and must be settled
-and tested before the first real recovered revision is written:
+The worker validates native seed/template dimensions and image evidence before
+publication. Passing the generic reader alone is not proof of matching quality.
+An unsuccessful or empty retry preserves the last valid immutable revision.
 
-- Manifest `published_unix` and direct `geometry_sha256`. Geometry is currently
-  bound transitively through the revision hash; publication time is absent.
-- Explicit `algorithm_version` and a separate `work` object containing measured
-  work, effective limits and limits reached. `parameters` is configuration, not a
-  place to hide runtime counters. A partial stop reason is not a substitute for
-  those statistics.
-- Saved detector-only and extended summaries, with their own sampling/omission
-  provenance and continuous-segment rules. No consumer should infer these from
-  a gap-spanning concatenation of points in this slice.
-
-The generic reader checks source-coordinate validity, not algorithm-specific
-seed/template dimensions or image evidence. The initial matching worker must
-validate its tight native seed box (3–30 pixels per side), one-pixel context,
-contrast, foreground support and matching gates before publishing. A box passing
-this reader is not proof of a valid matching template. Its method-specific
-validation and negative fixtures remain a prerequisite for activating recovery.
-
-Any incompatible change after this draft schema is used for real revisions must
-increment the schema version rather than silently reinterpret old products.
+See [EVENT-VIDEO-RECOVERY.md](EVENT-VIDEO-RECOVERY.md) for isolation, enablement,
+consumer behavior, validation status and the required hardware rollout gates.

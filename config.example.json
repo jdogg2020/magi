@@ -13,6 +13,7 @@
     "require_mount": false,
     "max_bytes": 10000000000,
     "min_free_bytes": 2000000000,
+    "cleanup_margin_bytes": 2000000000,
     "retention_days": 14
   },
   "recording": {

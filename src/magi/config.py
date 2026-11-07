@@ -18,6 +18,7 @@ def installation_storage_defaults(storage, *, fresh, strict, mounted, free_bytes
         raise ValueError('a mounted SSD was explicitly required')
     if fresh:
         result['require_mount'] = bool(strict or mounted)
+        result['min_free_bytes'] = 2_000_000_000
         if not mounted:
             floor = 2_000_000_000
             available = free_bytes - floor
@@ -25,6 +26,9 @@ def installation_storage_defaults(storage, *, fresh, strict, mounted, free_bytes
                 raise ValueError('free at least 2.5 GB before setting up recordings')
             result['min_free_bytes'] = floor
             result['max_bytes'] = min(10_000_000_000, available // 2)
+        # Keep cleanup headroom valid even on a small automatically sized quota.
+        result['cleanup_margin_bytes'] = min(2_000_000_000,
+                                             int(result.get('max_bytes', 100_000_000_000)) // 2)
     if strict:
         result['require_mount'] = True
     return result

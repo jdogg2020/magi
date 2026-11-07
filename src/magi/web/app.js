@@ -752,9 +752,10 @@ $('recover-event').onclick=async()=>{
     const product=await api(eventPath(event,'tracks'));
     if(generation!==reviewGeneration || eventKey(reviewEvent)!==eventKey(event))return;
     recoveredProduct=product;
-    const state=product.processing?.state||product.status;
-    $('recovery-status').textContent=`Recovery: ${state} · ${product.recovered_points.length} recovered positions${product.revision ? ' · still '+product.derivative_status : ''}${product.processing?.reason ? ' · '+product.processing.reason : ''}`;
-    $('recover-event').disabled=state==='disabled'||state==='running';
+    const state=product.status==='invalid' ? 'invalid' : product.processing?.state||product.status;
+    const reason=product.status==='invalid' ? product.reason : product.processing?.reason;
+    $('recovery-status').textContent=`Recovery: ${state} · ${product.recovered_points.length} recovered positions${product.revision ? ' · still '+product.derivative_status : ''}${reason ? ' · '+reason : ''}`;
+    $('recover-event').disabled=product.processing?.state==='disabled'||product.processing?.state==='running';
     drawMotion();
   } catch {if(generation===reviewGeneration)$('recovery-status').textContent='Recovered tracks unavailable';}
 }

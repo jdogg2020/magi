@@ -148,6 +148,38 @@ class RecoveryJobTests(unittest.TestCase):
             self.assertTrue(name.startswith(stem))
             self.assertTrue((self.directory/name).is_file())
 
+    def test_cleanup_cannot_unlink_a_live_media_temporary(self):
+        handle=EventHandle(self.cfg,self.directory)
+        temporary=self.directory/('.recovery-'+'a'*32+'.tmp')
+        client=Client(self.cfg,'camera-a',Mock());client.invoke=Mock(return_value=recover(self.directory,'camera-a'))
+        try:
+            with handle.lock('.tracks-publication.lock'):
+                temporary.write_text('media commit in progress')
+                with self.assertRaises(BlockingIOError):client.process(self.directory)
+                self.assertTrue(temporary.exists())
+            client.process(self.directory)
+            self.assertFalse(temporary.exists())
+        finally:handle.close()
+
+    def test_failed_derivative_is_not_resubmitted_for_same_revision(self):
+        from magi.media import Media
+        import time
+        self.cfg.ffmpeg='ffmpeg';self.cfg.ffprobe='ffprobe'
+        media=Media(self.cfg,'camera-a');self.addCleanup(media.close)
+        client=Client(self.cfg,'camera-a',media)
+        client.invoke=Mock(return_value=recover(self.directory,'camera-a'))
+        media._probe=Mock(side_effect=ValueError('permanent decode error'))
+        client.process(self.directory)
+        deadline=time.monotonic()+5
+        while media.protected() and time.monotonic()<deadline:time.sleep(.01)
+        failed=bounded_json(self.directory/'media.json')
+        self.assertEqual(failed['status'],'failed')
+        self.assertEqual(failed['failed_track_revision'],bounded_json(self.directory/'tracks.json')['revision'])
+        media.submit=Mock()
+        for _ in range(5):self.assertEqual(client.scan(),[])
+        media.submit.assert_not_called()
+        client.close()
+
     def test_pin_excludes_duplicate_admission(self):
         handle=EventHandle(self.cfg,self.directory)
         try:
@@ -163,6 +195,16 @@ class RecoveryJobTests(unittest.TestCase):
         self.assertFalse(excluded(1,1,96,64,[{'x':.4,'y':.4,'width':.2,'height':.2}]))
 
 class RecoverySummaryTests(unittest.TestCase):
+    def test_partial_recovery_keeps_other_detector_tracks(self):
+        from magi.recovery_summary import summarize
+        event={'track_samples':[{'track_id':tid,'sample_host_unix':10.,'x':1.,'y':2.} for tid in ('a','b')]}
+        result=summarize(event,[{'track_id':'a','points':[{'host_unix':9.,'x':0.,'y':2.}]}])
+        self.assertEqual({row['track_id'] for row in result['detector_only']},{'a','b'})
+        self.assertFalse(result['partial'])
+        limited=summarize(event,[],cap=1)
+        self.assertTrue(limited['partial'])
+        self.assertEqual(len(limited['omitted_segments']),1)
+
     def test_elapsed_sampling_preserves_endpoints_and_separates_gaps(self):
         from magi.recovery_summary import summarize
         event={'track_samples':[{'track_id':'a','sample_host_unix':10.,'x':10.,'y':0.},
@@ -199,3 +241,36 @@ class RecoveryBoundaryTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             run([sys.executable,'-c','import time;time.sleep(30)'],.1,stdout_limit=100)
         self.assertLess(time.monotonic()-start,2)
+
+
+class RecoveryRequestTests(unittest.TestCase):
+    def test_clean_error_keeps_worker_but_timeout_and_malformed_reply_kill(self):
+        from unittest.mock import MagicMock,patch
+        import struct
+        client=Client(SimpleNamespace(recovery_enabled=False),'camera-a',Mock())
+        handle=SimpleNamespace(directory=Path('/unused/events/test'))
+        for reply,killed in (({'type':'error','reason':'unsupported video'},False),
+                             (TimeoutError('stalled'),True),({'type':'error'},True),
+                             ({'type':'result'},True)):
+            connection=MagicMock();connection.getsockopt.return_value=struct.pack('3i',1,os.getuid(),0)
+            with patch('magi.recovery.socket.socket',return_value=connection), \
+                 patch('magi.recovery.receive',side_effect=[{'pid':123456,'limited':True},reply]), \
+                 patch('magi.recovery.send'),patch('magi.recovery.Path.stat',return_value=SimpleNamespace(st_uid=os.getuid())), \
+                 patch('magi.recovery.os.kill') as kill:
+                with self.assertRaises((ValueError,TimeoutError)):client.invoke(handle,{})
+                self.assertEqual(kill.called,killed)
+
+    def test_malformed_requests_do_not_break_command_processing(self):
+        import queue,threading
+        from magi.application import Application
+        app=object.__new__(Application);app.queue=queue.Queue();app.recovery=Mock()
+        app.event_directory=Mock(return_value=Path('/valid/event'))
+        tasks=[]
+        for value in ({},None,[],1,{'id':[]},{'id':None},{'id':'20261107T120000-abcdef123456'}):
+            task={'command':'recover','value':value,'cancel':threading.Event(),'done':threading.Event()}
+            tasks.append(task);app.queue.put(task)
+        while not app.queue.empty():app._commands()
+        self.assertTrue(all(t['done'].is_set() for t in tasks))
+        self.assertTrue(all('error' in t for t in tasks[:-1]))
+        self.assertEqual(tasks[-1]['result'],{'state':'queued'})
+        app.recovery.request.assert_called_once()

@@ -191,7 +191,9 @@ class Exports:
                                     manifest = track_contract._load(track_contract._read(files['tracks.json'].fileno()))
                                     files['tracks.json'].seek(0)
                                     revision = manifest.get('revision')
-                                    if not track_contract._hash(revision) or manifest.get('file') != f'tracks-{revision}.json' or manifest.get('sha256') != revision:
+                                    if (type(manifest.get('schema_version')) is not int or manifest['schema_version']!=1
+                                            or manifest.get('event_id')!=target['id'] or manifest.get('camera_id')!=target['camera_id']
+                                            or not track_contract._hash(revision)) or manifest.get('file') != f'tracks-{revision}.json' or manifest.get('sha256') != revision:
                                         raise ValueError('Invalid recovered track manifest')
                                     revisions.add(revision)
                                 derivative = None
@@ -207,6 +209,15 @@ class Exports:
                                     if derivative is not None:
                                         if not track_contract._hash(derivative): raise ValueError('Invalid derivative revision')
                                         revisions.add(derivative)
+                                if revisions:
+                                    if 'event.json' not in files:raise ValueError('Recovered capture evidence unavailable')
+                                    evidence=track_contract._load(track_contract._read(files['event.json'].fileno()))
+                                    files['event.json'].seek(0)
+                                    timing=evidence
+                                    if evidence.get('detection_settings',{}).get('stream')=='substream':
+                                        if 'substream.json' not in files:raise ValueError('Recovered source timeline unavailable')
+                                        timing=track_contract._load(track_contract._read(files['substream.json'].fileno()))
+                                        files['substream.json'].seek(0)
                                 for sha in revisions:
                                     name = f'tracks-{sha}.json'
                                     source = stack.enter_context(open_regular(fd,name))
@@ -216,6 +227,7 @@ class Exports:
                                     payload = track_contract._load(raw)
                                     if payload.get('event_id')!=target['id'] or payload.get('camera_id')!=target['camera_id']:
                                         raise ValueError('Recovered revision identity mismatch')
+                                    track_contract.validate_revision(payload,evidence,target['camera_id'],timing)
                                     source.seek(0); files[name]=source
                                 state = 'unavailable'
                                 if 'recovery.json' in files:

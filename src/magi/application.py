@@ -283,7 +283,10 @@ class Application:
                 elif task['command'].startswith('auto_calibration_'):
                     task['result'] = self.auto_calibrate(task['command'], task['value'])
                 elif task['command'] == 'recover':
-                    self.recovery.request(self.event_directory(task['value']['id']))
+                    value=task['value']
+                    if not isinstance(value,dict) or not isinstance(value.get('id'),str):
+                        raise ValueError('Recovery requires an event id.')
+                    self.recovery.request(self.event_directory(value['id']))
                     task['result'] = {'state': 'queued'}
                 elif task['command'] in ('render', 'full_video'):
                     path = self.clip_path(task['value'].get('id', ''), 'metadata')

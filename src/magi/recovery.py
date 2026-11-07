@@ -156,7 +156,8 @@ class Client:
                 if state.get('evidence_sha256')==evidence and state.get('state') in ('complete','partial','unavailable','failed','cancelled'):
                     if state.get('active_revision') and state.get('state') in ('complete','partial'):
                         media=bounded_json(directory/'media.json',{})
-                        if media.get('track_revision')!=state['active_revision']:
+                        if (media.get('track_revision')!=state['active_revision']
+                                and not (media.get('status')=='failed' and media.get('failed_track_revision')==state['active_revision'])):
                             self.media.submit(directory,event,force=True)
                     continue
                 if state.get('state') not in ('queued','running') or state.get('evidence_sha256')!=evidence:
@@ -189,10 +190,11 @@ class Client:
         handle=EventHandle(self.cfg,directory)
         try:
             with pin(directory,handle.check),handle.lock('.recovery-job.lock'):
-                # Remove only our abandoned atomic-write temporaries while holding the job lock.
-                for name in os.listdir(handle.fd):
-                    if name.startswith('.recovery-') and name.endswith('.tmp') and len(name)==46:
-                        os.unlink(name,dir_fd=handle.fd)
+                # Media writes share this prefix, so cleanup also takes its publication lock.
+                with LOCK,handle.lock('.tracks-publication.lock'):
+                    for name in os.listdir(handle.fd):
+                        if name.startswith('.recovery-') and name.endswith('.tmp') and len(name)==46:
+                            os.unlink(name,dir_fd=handle.fd)
                 event=bounded_json(directory/'event.json')
                 evidence=contract.evidence_hash(event,self.camera_id)
                 state=bounded_json(directory/'recovery.json',{})
@@ -243,7 +245,10 @@ class Client:
                 if type(candidate) is int and candidate>1 and Path(f'/proc/{candidate}').stat().st_uid==os.getuid():
                     pid=candidate
                 else: pid=None
-                if not hello.get('limited'): raise ValueError('resource_limits_unavailable')
+                if hello.get('limited') is False:
+                    complete=True  # No job was submitted; leave the idle service alive.
+                    raise ValueError('resource_limits_unavailable')
+                if hello.get('limited') is not True:raise ValueError('invalid worker handshake')
                 active=0.
                 with POSTPROCESSING.acquire('recovery',self.stopped.is_set):
                     started=time.monotonic()
@@ -259,7 +264,11 @@ class Client:
                         started=time.monotonic()
                         send(stream,{'action':'continue'});reply=receive(stream)
                         active+=time.monotonic()-started
-                if reply.get('type')!='result': raise ValueError(reply.get('reason','invalid worker response'))
+                if reply.get('type')=='error' and isinstance(reply.get('reason'),str):
+                    complete=True
+                    raise ValueError(reply['reason'])
+                if reply.get('type')!='result' or not isinstance(reply.get('payload'),dict):
+                    raise ValueError('invalid worker response')
                 complete=True
                 return reply['payload']
         finally:

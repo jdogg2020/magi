@@ -279,7 +279,10 @@ class Media:
     def _render(self, directory, meta, identity):
         self._guard(directory, identity)
         original = directory / 'clip.mkv'
+        self.render_revision=bounded_json(directory/'tracks.json',{}).get('revision')
         product = read_tracks(directory,meta,camera_id=self.camera_id,mode='extended')
+        if self.render_revision and product['status'] not in ('complete','partial'):
+            raise ValueError('Recovered revision unavailable: '+str(product.get('reason',product['status'])))
         recovered = product.get('recovered_points',[])
         revision = product.get('revision') if recovered else None
         timing = meta
@@ -418,6 +421,7 @@ class Media:
                 directory, meta, identity, full_quality = self.pending.get(timeout=.2)
             except queue.Empty:
                 continue
+            self.render_revision=None
             try:
                 with POSTPROCESSING.acquire('media', self.stop.is_set):
                     (self._full_video if full_quality else self._render)(directory, meta, identity)
@@ -429,6 +433,7 @@ class Media:
                     status = directory / ('full-video.json' if full_quality else 'media.json')
                     previous = json.loads(status.read_text()) if status.is_file() else {}
                     atomic_json(status, {**previous, 'profile': VIDEO_PROFILE if full_quality else PROFILE, 'status': 'failed',
+                        'failed_track_revision':self.render_revision,
                         'reason': type(error).__name__, 'detail': str(error)[:240], 'fallback': 'detection replay remains available'})
                 except (OSError, InterruptedError):
                     pass

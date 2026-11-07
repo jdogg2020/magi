@@ -37,6 +37,9 @@ frames with yellow detector/purple recovered paths; source and revision are save
 in media.json. Exports snapshot manifest, current and current-derivative revisions,
 media and state under a short publication lock before streaming open descriptors.
 An export during regeneration explicitly reports pending derivative revision.
+Export validates both current and derivative revisions against the snapshotted
+capture evidence and timeline; stale evidence fails the event export without a
+new receipt. Continuation changes retain the existing schema-1 invalidation rule.
 Recovered still pairs use content-addressed image names committed through
 media.json; interrupted publication cannot make old metadata refer to new pixels.
 Review and export resolve these references; compatibility aliases are secondary.
@@ -95,7 +98,9 @@ existing configuration (preserve all other settings), then restart Magi:
 Set `enabled` back to `false` and restart to cancel admission. Existing revisions
 remain readable. Use the review reprocess action for the fixed saved-job workload;
 it queues a new attempt and never modifies source evidence. Busy attempts reject
-a concurrent explicit request. UI/API failure reasons should be retained in the
+a concurrent explicit request. A failed still render is recorded against its
+attempted revision and is not automatically resubmitted for that same revision;
+explicit reprocessing or a new revision permits another attempt. UI/API failure reasons should be retained in the
 bench report. Automatic archive backfill and periodic retries of terminal failures
 are deliberately absent.
 

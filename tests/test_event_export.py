@@ -103,13 +103,20 @@ class ExportTests(unittest.TestCase):
 
     def test_current_and_derivative_revisions_export_together(self):
         directory=self.event()
+        from test_event_tracks import fixture
+        from magi import event_tracks
+        event,payload=fixture()
+        event.update(id=self.identity,state='complete')
+        payload.update(event_id=self.identity,camera_id='primary',evidence_sha256=event_tracks.evidence_hash(event,'primary'))
+        (directory/'event.json').write_text(json.dumps(event))
+        (directory/'substream.json').write_text(json.dumps({'id':self.identity,'segments':event['segments']}))
         revisions=[]
         for label in ('old','current'):
-            raw=json.dumps({'event_id':self.identity,'camera_id':'primary','label':label}).encode()
+            raw=event_tracks.canonical_bytes({**payload,'parameters':{'label':label}})
             sha=hashlib.sha256(raw).hexdigest();revisions.append(sha)
             (directory/f'tracks-{sha}.json').write_bytes(raw)
         old,current=revisions
-        (directory/'tracks.json').write_text(json.dumps({'revision':current,'sha256':current,'file':f'tracks-{current}.json'}))
+        (directory/'tracks.json').write_text(json.dumps({'schema_version':1,'event_id':self.identity,'camera_id':'primary','revision':current,'sha256':current,'file':f'tracks-{current}.json'}))
         frame=b'immutable frame';thumb=b'immutable thumbnail'
         frame_name='best-frame-'+hashlib.sha256(frame).hexdigest()+'.jpg'
         thumb_name='thumbnail-'+hashlib.sha256(thumb).hexdigest()+'.jpg'
@@ -127,6 +134,20 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(entry['recovery']['derivative_revision'],old)
             self.assertEqual(entry['recovery']['derivative_status'],'pending_or_unavailable')
         self.assertEqual(receipt(directory)['track_revision'],current)
+
+    def test_stale_capture_revision_is_rejected_without_receipt(self):
+        self.test_current_and_derivative_revisions_export_together()
+        directory=self.cameras['primary'].root/self.identity
+        prior=receipt(directory)
+        event=json.loads((directory/'event.json').read_text());event['continued_by']='later-event'
+        (directory/'event.json').write_text(json.dumps(event))
+        from magi.event_tracks import read_tracks
+        self.assertEqual(read_tracks(directory,event,camera_id='primary',mode='extended')['status'],'invalid')
+        with zipfile.ZipFile(self.download(self.prepare())) as archive:
+            entry=json.loads(archive.read('manifest.json'))['events'][0]
+            self.assertNotEqual(entry['status'],'exported')
+            self.assertFalse(any('/tracks-' in name for name in archive.namelist()))
+        self.assertEqual(receipt(directory),prior)
 
     def test_disconnect_never_sets_flags_and_releases_slot(self):
         directory = self.event()
